@@ -1,8 +1,14 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sglang.srt.mem_cache.hicache_storage import PoolName, SidecarPoolSpec
+import torch
+
+from sglang.srt.mem_cache.hicache_storage import PoolName, PoolTransfer, SidecarPoolSpec
 from sglang.srt.mem_cache.hybrid_cache import hybrid_pool_assembler
+from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
+    CacheOperation,
+    HybridCacheController,
+)
 from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
     _STRATEGIES,
     StackBuildResult,
@@ -228,6 +234,75 @@ class TestApplyStackResult(unittest.TestCase):
         kvcache.register_layer_transfer_counter.assert_called_once()
         params.req_to_token_pool.register_layer_transfer_counter.assert_not_called()
         cache.register_sidecar_pool.assert_not_called()
+
+
+class TestHybridTransferIndexTranslation(unittest.TestCase):
+    def test_translates_execution_indices_without_mutating_virtual_ids(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        controller.move_indices = lambda host, device: (host, device)
+
+        full_translate = MagicMock(side_effect=lambda x: x + 100)
+        mamba_translate = MagicMock(side_effect=lambda x: x + 200)
+        full_entry = MagicMock(
+            is_primary_index_anchor=True,
+            device_index_translate_fn=full_translate,
+        )
+        mamba_entry = MagicMock(device_index_translate_fn=mamba_translate)
+        controller.mem_pool_host = MagicMock(
+            anchor_entry=full_entry,
+            entry_map={
+                PoolName.KV: full_entry,
+                PoolName.MAMBA: mamba_entry,
+            },
+        )
+
+        full_virtual = torch.tensor([3, 7], dtype=torch.int64)
+        mamba_virtual = torch.tensor([11], dtype=torch.int64)
+        operation = CacheOperation(
+            host_indices=torch.tensor([0, 1], dtype=torch.int64),
+            device_indices=full_virtual,
+            node_id=1,
+            pool_transfers=[
+                PoolTransfer(
+                    name=PoolName.MAMBA,
+                    host_indices=torch.tensor([2], dtype=torch.int64),
+                    device_indices=mamba_virtual,
+                )
+            ],
+        )
+
+        _, full_physical, transfers = controller.move_hybrid_indices(operation)
+
+        torch.testing.assert_close(full_physical, torch.tensor([103, 107]))
+        torch.testing.assert_close(transfers[0].device_indices, torch.tensor([211]))
+        # The operation remains tree/allocator-owned virtual state.
+        torch.testing.assert_close(operation.device_indices, full_virtual)
+        torch.testing.assert_close(
+            operation.pool_transfers[0].device_indices, mamba_virtual
+        )
+
+    def test_identity_when_pool_has_no_translator(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        controller.move_indices = lambda host, device: (host, device)
+        anchor_entry = MagicMock(
+            is_primary_index_anchor=True,
+            device_index_translate_fn=None,
+        )
+        controller.mem_pool_host = MagicMock(
+            anchor_entry=anchor_entry,
+            entry_map={PoolName.KV: anchor_entry},
+        )
+        virtual = torch.tensor([2, 4], dtype=torch.int64)
+        operation = CacheOperation(
+            host_indices=torch.tensor([0, 1], dtype=torch.int64),
+            device_indices=virtual,
+            node_id=1,
+        )
+
+        _, execution_indices, transfers = controller.move_hybrid_indices(operation)
+
+        self.assertIs(execution_indices, virtual)
+        self.assertIsNone(transfers)
 
 
 if __name__ == "__main__":

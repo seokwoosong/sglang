@@ -355,7 +355,25 @@ class MHATokenToKVPoolHost(HostKVCache):
                         num_layers=self.layer_num,
                     )
             elif self.layout == "page_first":
-                if self.can_use_write_back_jit:
+                if hasattr(device_pool, "_unified_buffer"):
+                    # Gather strided unified rows into a contiguous GPU staging
+                    # buffer, then use the existing async D2H page copy.
+                    jit_transfer_hicache_all_layer_staged_lf_pf(
+                        k_ptr_src=device_pool.k_data_ptrs,
+                        v_ptr_src=device_pool.v_data_ptrs,
+                        src_indices=device_indices,
+                        dst_indices=host_indices,
+                        staging_k=self.staging_k_buffer,
+                        staging_v=self.staging_v_buffer,
+                        dst_k=self.k_buffer,
+                        dst_v=self.v_buffer,
+                        page_size=self.page_size,
+                        src_stride_bytes=(
+                            device_pool.k_buffer[0].stride(0)
+                            * device_pool.k_buffer[0].dtype.itemsize
+                        ),
+                    )
+                elif self.can_use_write_back_jit:
                     jit_transfer_hicache_all_layer_staged_lf_pf(
                         k_ptr_src=device_pool.k_data_ptrs,
                         v_ptr_src=device_pool.v_data_ptrs,

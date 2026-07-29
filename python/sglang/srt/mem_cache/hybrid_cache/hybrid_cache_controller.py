@@ -404,8 +404,9 @@ class HybridCacheController(BaseHiCacheController):
             and getattr(self.mem_pool_host, "can_use_write_back_jit", False)
         ):
             host_indices = op.host_indices
-            device_indices = op.device_indices
-            resolved_pool_transfers = op.pool_transfers
+            device_indices, resolved_pool_transfers = (
+                self.translate_hybrid_device_indices(op)
+            )
         else:
             host_indices, device_indices, resolved_pool_transfers = (
                 self.move_hybrid_indices(op)
@@ -621,13 +622,16 @@ class HybridCacheController(BaseHiCacheController):
     def move_hybrid_indices(
         self, operation: CacheOperation
     ) -> tuple[torch.Tensor, torch.Tensor, Optional[list[PoolTransfer]]]:
+        device_indices, translated_pool_transfers = (
+            self.translate_hybrid_device_indices(operation)
+        )
         host_indices, device_indices = self.move_indices(
-            operation.host_indices, operation.device_indices
+            operation.host_indices, device_indices
         )
         resolved_pool_transfers = None
-        if operation.pool_transfers:
+        if translated_pool_transfers:
             resolved_pool_transfers = []
-            for transfer in operation.pool_transfers:
+            for transfer in translated_pool_transfers:
                 transfer_host_indices, transfer_device_indices = self.move_indices(
                     transfer.host_indices, transfer.device_indices
                 )
@@ -645,6 +649,64 @@ class HybridCacheController(BaseHiCacheController):
                     )
                 )
         return host_indices, device_indices, resolved_pool_transfers
+
+    def translate_hybrid_device_indices(
+        self, operation: CacheOperation
+    ) -> tuple[torch.Tensor, Optional[list[PoolTransfer]]]:
+        """Translate tree-owned virtual IDs for raw device-pool access.
+
+        Translation happens before ``move_indices`` because unified allocators
+        keep their V2P tables on the accelerator, while the direct-I/O path may
+        subsequently move execution indices to CPU.
+        """
+        device_indices = operation.device_indices
+        anchor_entry = self.mem_pool_host.anchor_entry
+        if anchor_entry.device_index_translate_fn is not None:
+            device_indices = anchor_entry.device_index_translate_fn(device_indices).to(
+                dtype=operation.device_indices.dtype
+            )
+            self._validate_translated_indices(anchor_entry, device_indices)
+
+        translated_pool_transfers = None
+        if operation.pool_transfers:
+            translated_pool_transfers = []
+            for transfer in operation.pool_transfers:
+                transfer_device_indices = transfer.device_indices
+                entry = self.mem_pool_host.entry_map.get(transfer.name)
+                if (
+                    entry is not None
+                    and entry.device_index_translate_fn is not None
+                    and transfer_device_indices is not None
+                ):
+                    transfer_device_indices = entry.device_index_translate_fn(
+                        transfer_device_indices
+                    ).to(dtype=transfer.device_indices.dtype)
+                    self._validate_translated_indices(entry, transfer_device_indices)
+                translated_pool_transfers.append(
+                    PoolTransfer(
+                        name=transfer.name,
+                        host_indices=transfer.host_indices,
+                        device_indices=transfer_device_indices,
+                        keys=transfer.keys,
+                        hit_policy=transfer.hit_policy,
+                        indices_from_pool=transfer.indices_from_pool,
+                    )
+                )
+        return device_indices, translated_pool_transfers
+
+    @staticmethod
+    def _validate_translated_indices(entry, indices: torch.Tensor) -> None:
+        if indices.numel() == 0:
+            return
+        min_index, max_index = torch.aminmax(indices)
+        pool_size = getattr(entry.device_pool, "size", None)
+        min_value, max_value = min_index.item(), max_index.item()
+        if min_value < 0 or (isinstance(pool_size, int) and max_value > pool_size):
+            raise RuntimeError(
+                f"Translated {entry.name} HiCache indices are outside the "
+                f"physical device pool: min={min_value}, max={max_value}, "
+                f"pool_size={pool_size}."
+            )
 
     def _page_transfer(self, operation):
         # KV pools first — determines actual completed page count

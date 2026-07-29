@@ -196,7 +196,8 @@ struct HiCacheStagedWriteBackKernel {
       const tvm::ffi::TensorView page_indices_src,
       const tvm::ffi::TensorView k_ptr_src,
       const tvm::ffi::TensorView v_ptr_src,
-      const int64_t page_size) {
+      const int64_t page_size,
+      const int64_t src_stride_bytes) {
     using namespace host;
 
     auto T = SymbolicSize{"num_tokens"};
@@ -263,6 +264,7 @@ struct HiCacheStagedWriteBackKernel {
         .num_pages = static_cast<uint32_t>(P.unwrap()),
         .num_layers = static_cast<uint32_t>(N.unwrap()),
         .page_size = static_cast<uint32_t>(page_size),
+        .src_stride_bytes = src_stride_bytes,
     };
     const auto device = device_.unwrap();
     const auto use_int32 = indices_dtype.unwrap().bits == 32;
@@ -300,7 +302,8 @@ struct HiCacheStagedWriteBackKernel {
       const tvm::ffi::TensorView page_indices_src,
       const tvm::ffi::TensorView k_ptr_src,
       const tvm::ffi::TensorView v_ptr_src,
-      const int64_t page_size) {
+      const int64_t page_size,
+      const int64_t src_stride_bytes) {
     run_staged_impl<false>(
         k_cache_dst,
         v_cache_dst,
@@ -310,7 +313,8 @@ struct HiCacheStagedWriteBackKernel {
         page_indices_src,
         k_ptr_src,
         v_ptr_src,
-        page_size);
+        page_size,
+        src_stride_bytes);
   }
 
   static void run_all_mla_lf_pf_staged(
@@ -319,9 +323,19 @@ struct HiCacheStagedWriteBackKernel {
       const tvm::ffi::TensorView staging,
       const tvm::ffi::TensorView page_indices_src,
       const tvm::ffi::TensorView ptr_src,
-      const int64_t page_size) {
+      const int64_t page_size,
+      const int64_t src_stride_bytes) {
     run_staged_impl<true>(
-        cache_dst, cache_dst, dst_indices_cpu, staging, staging, page_indices_src, ptr_src, ptr_src, page_size);
+        cache_dst,
+        cache_dst,
+        dst_indices_cpu,
+        staging,
+        staging,
+        page_indices_src,
+        ptr_src,
+        ptr_src,
+        page_size,
+        src_stride_bytes);
   }
 };
 
