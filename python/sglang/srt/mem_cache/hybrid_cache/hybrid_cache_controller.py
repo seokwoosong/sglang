@@ -195,6 +195,13 @@ class HybridCacheController(BaseHiCacheController):
             storage_backend_extra_config=storage_backend_extra_config,
             enable_storage_metrics=enable_storage_metrics,
         )
+        # Unified pools may relocate physical rows during compaction. Until
+        # transfer-aware allocator pinning is available, finish each unified
+        # D<->H operation before returning control to the scheduler so a
+        # compaction cannot invalidate the translated physical indices.
+        self.synchronize_unified_transfers = hasattr(
+            self.mem_pool_device, "_unified_buffer"
+        )
         # Override layer_num: hybrid models transfer all layers (For example, Linear Model (KV + Mamba)),
         # not just the full attention layers reported by full_kv_pool.
         if transfer_layer_num is not None and transfer_layer_num != self.layer_num:
@@ -213,6 +220,10 @@ class HybridCacheController(BaseHiCacheController):
     def _start_storage_threads(self):
         super()._start_storage_threads()
         self._init_extra_host_mem_release_queues()
+
+    def _finish_transfer_before_scheduler(self, finish_event) -> None:
+        if self.synchronize_unified_transfers:
+            finish_event.synchronize()
 
     def attach_storage_backend(
         self,
@@ -438,6 +449,7 @@ class HybridCacheController(BaseHiCacheController):
                 device_indices,
                 resolved_pool_transfers,
             )
+        self._finish_transfer_before_scheduler(finish_event)
         self.ack_write_queue.append(HiCacheAck(start_event, finish_event, op.node_ids))
 
     def load(
@@ -529,6 +541,7 @@ class HybridCacheController(BaseHiCacheController):
                 device_indices,
                 resolved_pool_transfers,
             )
+        self._finish_transfer_before_scheduler(ack_finish_event)
         self.ack_load_queue.append(
             HiCacheAck(
                 ack_start_event,

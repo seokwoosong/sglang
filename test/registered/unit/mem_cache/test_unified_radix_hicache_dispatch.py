@@ -242,6 +242,19 @@ class TestApplyStackResult(unittest.TestCase):
 
 
 class TestHybridTransferIndexTranslation(unittest.TestCase):
+    def test_unified_transfer_is_finished_before_scheduler_resumes(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        event = MagicMock()
+
+        controller.synchronize_unified_transfers = True
+        controller._finish_transfer_before_scheduler(event)
+        event.synchronize.assert_called_once_with()
+
+        event.reset_mock()
+        controller.synchronize_unified_transfers = False
+        controller._finish_transfer_before_scheduler(event)
+        event.synchronize.assert_not_called()
+
     def test_translates_execution_indices_without_mutating_virtual_ids(self):
         controller = HybridCacheController.__new__(HybridCacheController)
         controller.move_indices = lambda host, device: (host, device)

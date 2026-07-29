@@ -7618,16 +7618,6 @@ class ServerArgs:
                 "--enable-unified-memory currently supports HiCache only with "
                 "--page-size 1."
             )
-            assert self.disable_overlap_schedule, (
-                "--enable-unified-memory currently supports HiCache only with "
-                "--disable-overlap-schedule while transfer/compaction pinning is "
-                "being implemented."
-            )
-            assert envs.SGLANG_DISABLE_LAZY_COMPACTION.get(), (
-                "--enable-unified-memory currently supports HiCache only with "
-                "SGLANG_DISABLE_LAZY_COMPACTION=1 while transfer pinning is being "
-                "implemented."
-            )
         assert self.dcp_size == 1, (
             "--enable-unified-memory is not yet compatible with decode context "
             "parallelism (--dcp-size > 1): the pool has no DCP-aware masked write "
