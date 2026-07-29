@@ -417,6 +417,21 @@ class TestUnifiedHiCacheServerArgs(unittest.TestCase):
 
         args._handle_unified_memory_pool()
 
+    def test_l3_storage_backend_is_accepted(self):
+        from sglang.srt.server_args import ServerArgs
+
+        args = ServerArgs(
+            model_path="dummy",
+            enable_unified_memory=True,
+            enable_hierarchical_cache=True,
+            hicache_io_backend="kernel",
+            hicache_write_policy="write_through",
+            hicache_storage_backend="file",
+            page_size=1,
+        )
+
+        args._handle_unified_memory_pool()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7610,10 +7610,6 @@ class ServerArgs:
                 "--enable-unified-memory currently supports HiCache with "
                 "--hicache-write-policy write_through or write_back."
             )
-            assert self.hicache_storage_backend is None, (
-                "--enable-unified-memory currently supports only the L2 host tier; "
-                "an L3 --hicache-storage-backend is not yet supported."
-            )
             assert self.page_size == 1, (
                 "--enable-unified-memory currently supports HiCache only with "
                 "--page-size 1."
