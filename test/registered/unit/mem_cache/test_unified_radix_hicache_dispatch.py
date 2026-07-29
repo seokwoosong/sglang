@@ -402,5 +402,21 @@ class TestUnifiedMHAHostLoad(unittest.TestCase):
         torch.testing.assert_close(dst[3], src[0, 1, 0])
 
 
+class TestUnifiedHiCacheServerArgs(unittest.TestCase):
+    def test_write_back_is_accepted(self):
+        from sglang.srt.server_args import ServerArgs
+
+        args = ServerArgs(
+            model_path="dummy",
+            enable_unified_memory=True,
+            enable_hierarchical_cache=True,
+            hicache_io_backend="kernel",
+            hicache_write_policy="write_back",
+            page_size=1,
+        )
+
+        args._handle_unified_memory_pool()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7606,9 +7606,9 @@ class ServerArgs:
                 "--hicache-io-backend kernel because direct I/O assumes "
                 "contiguous device-pool rows."
             )
-            assert self.hicache_write_policy == "write_through", (
-                "--enable-unified-memory currently supports HiCache only with "
-                "--hicache-write-policy write_through."
+            assert self.hicache_write_policy in ("write_through", "write_back"), (
+                "--enable-unified-memory currently supports HiCache with "
+                "--hicache-write-policy write_through or write_back."
             )
             assert self.hicache_storage_backend is None, (
                 "--enable-unified-memory currently supports only the L2 host tier; "
