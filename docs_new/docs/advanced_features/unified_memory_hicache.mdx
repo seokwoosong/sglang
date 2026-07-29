@@ -249,13 +249,62 @@ The test:
 8. bounds bf16 output-logprob drift to `0.1`; and
 9. checks the health endpoint after restoration.
 
-On an NVIDIA GeForce RTX 5090:
+Run the overlap and repeated-churn stress test with:
+
+```bash
+PYTHONPATH=python \
+python test/registered/hicache/test_unified_memory_hicache_overlap_stress.py
+```
+
+This test explicitly selects `--mamba-radix-cache-strategy extra_buffer` and
+leaves overlap scheduling enabled. It establishes sequential references for
+60 prompts, then uses eight client workers for three rounds of concurrent
+replay. Alternating traversal orders repeatedly move entries through L1, L2,
+and L3. After each concurrent churn round, sequential probes verify exact
+output-token and logprob-token IDs with bf16 logprob drift bounded to `0.1`.
+Separating concurrent pressure from sequential correctness probes avoids using
+batch-shape-dependent greedy output as the cache-integrity oracle.
+
+On an NVIDIA GeForce RTX 5090, the integrity test completed in 125 seconds and
+the stress test completed in 304 seconds. The stress run observed:
 
 ```text
-Ran 1 test in 153.059s
+L1 evicted tokens:       756541
+L2 load-back tokens:     438032
+L3 prefetched tokens:    284956
+Concurrent replays:      180
+Verified probes:         36
+Maximum logprob drift:   0.048746705055236816
+Final health status:     200
 
 OK
 ```
+
+### Preserve structured evidence
+
+Tests do not create permanent artifacts by default. Set
+`SGLANG_UNIFIED_HICACHE_TEST_ARTIFACT_DIR` to preserve evidence for a local or
+CI run:
+
+```bash
+SGLANG_UNIFIED_HICACHE_TEST_ARTIFACT_DIR=/path/to/test-results \
+PYTHONPATH=python \
+python test/registered/hicache/test_unified_memory_hicache_overlap_stress.py
+```
+
+Each run creates a timestamped, commit-qualified directory containing:
+
+- `result.json`, with PASS/FAIL, resolved test configuration, tier counters,
+  request counts, health status, and traceback on failure;
+- `environment.json`, with commit, Python, platform, and NVIDIA GPU details;
+- `server.log`, with the child server's stdout and stderr;
+- `metrics/*.prom`, with raw Prometheus snapshots at phase boundaries; and
+- `storage_manifest.json` for the integrity test, with aggregate L3 file
+  counts, sizes, Mamba sidecar counts, and at most 100 representative entries.
+
+The tests still remove the temporary L3 cache payload after completion. The
+manifest records metadata rather than copying the potentially large cache into
+the artifact directory.
 
 Focused CPU tests:
 
@@ -265,4 +314,7 @@ python test/registered/unit/mem_cache/test_unified_memory_pool.py
 
 PYTHONPATH=python \
 python test/registered/unit/mem_cache/test_unified_radix_hicache_dispatch.py
+
+PYTHONPATH=python \
+python test/registered/unit/mem_cache/test_unified_hicache_artifacts.py
 ```
