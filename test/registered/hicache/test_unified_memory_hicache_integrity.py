@@ -7,11 +7,11 @@ greedy output token IDs and log probabilities before and after restoration.
 
 import hashlib
 import math
-import os
 import shutil
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 import requests
 
@@ -23,6 +23,7 @@ from sglang.test.test_utils import (
     CustomTestCase,
     popen_launch_server,
 )
+from sglang.test.unified_hicache_artifacts import UnifiedHiCacheArtifactRecorder
 
 register_cuda_ci(est_time=180, stage="extra-a", runner_config="1-gpu-large")
 
@@ -34,44 +35,66 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
     @classmethod
     def setUpClass(cls):
         cls.base_url = DEFAULT_URL_FOR_TEST
+        cls.artifacts = UnifiedHiCacheArtifactRecorder()
         cls.storage_dir = tempfile.mkdtemp(prefix="unified-hicache-integrity-")
-        cls.process = popen_launch_server(
-            cls.model,
-            cls.base_url,
-            timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
-            env={"SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR": cls.storage_dir},
-            other_args=[
-                "--enable-unified-memory",
-                "--enable-hierarchical-cache",
-                "--hicache-size",
-                "1",
-                "--hicache-write-policy",
-                "write_through",
-                "--hicache-io-backend",
-                "kernel",
-                "--hicache-storage-backend",
-                "file",
-                "--page-size",
-                "1",
-                "--attention-backend",
-                "triton",
-                "--linear-attn-backend",
-                "triton",
-                "--mamba-backend",
-                "triton",
-                "--mem-fraction-static",
-                "0.075",
-                "--disable-cuda-graph",
-                "--enable-metrics",
-                "--log-level",
-                "error",
-            ],
+        cls.server_args = [
+            "--enable-unified-memory",
+            "--enable-hierarchical-cache",
+            "--hicache-size",
+            "1",
+            "--hicache-write-policy",
+            "write_through",
+            "--hicache-io-backend",
+            "kernel",
+            "--hicache-storage-backend",
+            "file",
+            "--page-size",
+            "1",
+            "--attention-backend",
+            "triton",
+            "--linear-attn-backend",
+            "triton",
+            "--mamba-backend",
+            "triton",
+            "--mamba-radix-cache-strategy",
+            "extra_buffer",
+            "--mem-fraction-static",
+            "0.075",
+            "--disable-cuda-graph",
+            "--enable-metrics",
+            "--log-level",
+            "error",
+        ]
+        cls.artifacts.update(
+            model=cls.model,
+            configuration={
+                "server_args": cls.server_args,
+                "overlap_schedule": True,
+                "mamba_radix_cache_strategy": "extra_buffer",
+                "pressure_requests": cls.pressure_requests,
+            },
         )
+        try:
+            cls.process = popen_launch_server(
+                cls.model,
+                cls.base_url,
+                timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
+                env={"SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR": cls.storage_dir},
+                other_args=cls.server_args,
+                return_stdout_stderr=cls.artifacts.subprocess_output,
+            )
+        except BaseException as error:
+            cls.artifacts.fail_test(error)
+            cls.artifacts.close()
+            shutil.rmtree(cls.storage_dir, ignore_errors=True)
+            raise
 
     @classmethod
     def tearDownClass(cls):
-        kill_process_tree(cls.process.pid)
+        if hasattr(cls, "process"):
+            kill_process_tree(cls.process.pid)
         shutil.rmtree(cls.storage_dir, ignore_errors=True)
+        cls.artifacts.close()
 
     @staticmethod
     def _prompt(index):
@@ -98,14 +121,34 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
             "logprob_token_ids": [int(x[1]) for x in logprobs],
         }
 
-    def _metric(self, name):
+    def _metrics_text(self):
         response = requests.get(f"{self.base_url}/metrics", timeout=10)
         response.raise_for_status()
+        return response.text
+
+    @staticmethod
+    def _metric_from_text(text, name):
         total = 0.0
-        for line in response.text.splitlines():
+        for line in text.splitlines():
             if line.startswith(name + "{") or line.startswith(name + " "):
                 total += float(line.rsplit(" ", 1)[1])
         return total
+
+    def _metric(self, name):
+        return self._metric_from_text(self._metrics_text(), name)
+
+    def _snapshot_metrics(self, stage):
+        text = self._metrics_text()
+        self.artifacts.save_metrics(stage, text)
+        return {
+            name: self._metric_from_text(text, name)
+            for name in (
+                "sglang:evicted_tokens_total",
+                "sglang:backuped_tokens_total",
+                "sglang:load_back_tokens_total",
+                "sglang:prefetched_tokens_total",
+            )
+        }
 
     def _drain_scheduler(self):
         response = requests.post(
@@ -122,62 +165,133 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
         self.assertEqual(actual["output_ids"], expected["output_ids"])
         self.assertEqual(actual["logprob_token_ids"], expected["logprob_token_ids"])
         self.assertEqual(len(actual["logprobs"]), len(expected["logprobs"]))
+        max_difference = 0.0
         for lhs, rhs in zip(actual["logprobs"], expected["logprobs"]):
             self.assertTrue(math.isfinite(lhs) and math.isfinite(rhs))
             self.assertAlmostEqual(lhs, rhs, delta=logprob_tolerance)
+            max_difference = max(max_difference, abs(lhs - rhs))
+        return max_difference
+
+    def _storage_manifest(self):
+        entries = []
+        for path in sorted(Path(self.storage_dir).iterdir()):
+            if path.is_file():
+                entries.append(
+                    {
+                        "name": path.name,
+                        "size_bytes": path.stat().st_size,
+                        "is_mamba_sidecar": ".mamba" in path.name.lower(),
+                    }
+                )
+        self.artifacts.write_json("storage_manifest.json", entries)
+        return entries
 
     def test_l2_and_l3_restore_integrity(self):
-        results = {}
-        for index in range(self.pressure_requests):
-            results[index] = self._generate(self._prompt(index))
+        try:
+            initial = self._snapshot_metrics("00_server_ready")
+            results = {}
+            for index in range(self.pressure_requests):
+                results[index] = self._generate(self._prompt(index))
 
-        self.assertGreater(
-            self._metric("sglang:evicted_tokens_total"),
-            0,
-            "pressure did not evict any L1 tokens",
-        )
-        self.assertGreater(
-            self._metric("sglang:backuped_tokens_total"),
-            0,
-            "pressure did not back up any tokens to L3",
-        )
-        filenames = os.listdir(self.storage_dir)
-        self.assertTrue(filenames, "file backend did not create L3 pages")
-        self.assertTrue(
-            any(".mamba" in name.lower() for name in filenames),
-            "file backend did not create Mamba sidecar pages",
-        )
+            pressure = self._snapshot_metrics("01_after_pressure")
+            for name, value in pressure.items():
+                self.assertGreaterEqual(value, initial[name], f"{name} decreased")
+            self.assertGreater(
+                pressure["sglang:evicted_tokens_total"],
+                initial["sglang:evicted_tokens_total"],
+                "pressure did not evict any L1 tokens",
+            )
+            self.assertGreater(
+                pressure["sglang:backuped_tokens_total"],
+                initial["sglang:backuped_tokens_total"],
+                "pressure did not back up any tokens to L3",
+            )
 
-        # Discover an L2-only entry from observed counters rather than assuming
-        # a fixed split in the dynamically shared unified pool.
-        l2_hit = None
-        for index in reversed(range(self.pressure_requests)):
-            load_before = self._metric("sglang:load_back_tokens_total")
-            prefetch_before = self._metric("sglang:prefetched_tokens_total")
-            replay = self._generate(self._prompt(index))
-            self._drain_scheduler()
-            load_after = self._metric("sglang:load_back_tokens_total")
-            prefetch_after = self._metric("sglang:prefetched_tokens_total")
-            if load_after > load_before and prefetch_after == prefetch_before:
-                l2_hit = (index, replay)
-                break
-        self.assertIsNotNone(l2_hit, "could not identify an observed L2-only hit")
-        self._assert_same_result(results[l2_hit[0]], l2_hit[1], logprob_tolerance=1e-1)
+            manifest = self._storage_manifest()
+            self.assertTrue(manifest, "file backend did not create L3 pages")
+            self.assertTrue(
+                all(entry["size_bytes"] > 0 for entry in manifest),
+                "file backend created an empty L3 page",
+            )
+            mamba_sidecars = sum(entry["is_mamba_sidecar"] for entry in manifest)
+            self.assertGreater(mamba_sidecars, 0, "no Mamba sidecar pages were created")
 
-        # Discover an L3 entry by requiring the storage-prefetch counter itself
-        # to increase.
-        l3_hit = None
-        for index in range(self.pressure_requests):
-            prefetch_before = self._metric("sglang:prefetched_tokens_total")
-            replay = self._generate(self._prompt(index))
-            self._drain_scheduler()
-            prefetch_after = self._metric("sglang:prefetched_tokens_total")
-            if prefetch_after > prefetch_before:
-                l3_hit = (index, replay)
-                break
-        self.assertIsNotNone(l3_hit, "could not identify an observed L3 hit")
-        self._assert_same_result(results[l3_hit[0]], l3_hit[1], logprob_tolerance=1e-1)
-        self.assertEqual(requests.get(f"{self.base_url}/health").status_code, 200)
+            # Discover an L2-only entry from observed counters rather than assuming
+            # a fixed split in the dynamically shared unified pool.
+            l2_hit = None
+            for index in reversed(range(self.pressure_requests)):
+                before = self._snapshot_metrics("02_before_l2_candidate")
+                replay = self._generate(self._prompt(index))
+                self._drain_scheduler()
+                after = self._snapshot_metrics("03_after_l2_candidate")
+                if (
+                    after["sglang:load_back_tokens_total"]
+                    > before["sglang:load_back_tokens_total"]
+                    and after["sglang:prefetched_tokens_total"]
+                    == before["sglang:prefetched_tokens_total"]
+                ):
+                    l2_hit = (index, replay, before, after)
+                    break
+            self.assertIsNotNone(l2_hit, "could not identify an observed L2-only hit")
+            l2_logprob_difference = self._assert_same_result(
+                results[l2_hit[0]], l2_hit[1], logprob_tolerance=1e-1
+            )
+
+            # Discover an L3 entry by requiring the storage-prefetch counter itself
+            # to increase.
+            l3_hit = None
+            for index in range(self.pressure_requests):
+                before = self._snapshot_metrics("04_before_l3_candidate")
+                replay = self._generate(self._prompt(index))
+                self._drain_scheduler()
+                after = self._snapshot_metrics("05_after_l3_candidate")
+                if (
+                    after["sglang:prefetched_tokens_total"]
+                    > before["sglang:prefetched_tokens_total"]
+                ):
+                    l3_hit = (index, replay, before, after)
+                    break
+            self.assertIsNotNone(l3_hit, "could not identify an observed L3 hit")
+            l3_logprob_difference = self._assert_same_result(
+                results[l3_hit[0]], l3_hit[1], logprob_tolerance=1e-1
+            )
+            health_status = requests.get(f"{self.base_url}/health").status_code
+            self.assertEqual(health_status, 200)
+
+            self.artifacts.update(
+                pressure_metrics=pressure,
+                storage={
+                    "file_count": len(manifest),
+                    "mamba_sidecar_count": mamba_sidecars,
+                },
+                l2_restore={
+                    "request_index": l2_hit[0],
+                    "load_back_tokens_delta": (
+                        l2_hit[3]["sglang:load_back_tokens_total"]
+                        - l2_hit[2]["sglang:load_back_tokens_total"]
+                    ),
+                    "prefetched_tokens_delta": (
+                        l2_hit[3]["sglang:prefetched_tokens_total"]
+                        - l2_hit[2]["sglang:prefetched_tokens_total"]
+                    ),
+                    "output_token_ids_match": True,
+                    "max_logprob_difference": l2_logprob_difference,
+                },
+                l3_restore={
+                    "request_index": l3_hit[0],
+                    "prefetched_tokens_delta": (
+                        l3_hit[3]["sglang:prefetched_tokens_total"]
+                        - l3_hit[2]["sglang:prefetched_tokens_total"]
+                    ),
+                    "output_token_ids_match": True,
+                    "max_logprob_difference": l3_logprob_difference,
+                },
+                health_status=health_status,
+            )
+            self.artifacts.pass_test()
+        except BaseException as error:
+            self.artifacts.fail_test(error)
+            raise
 
 
 if __name__ == "__main__":
