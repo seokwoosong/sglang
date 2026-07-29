@@ -1,0 +1,268 @@
+---
+title: "Unified Memory with HiCache"
+metatags:
+    description: "Implementation and validation guide for using SGLang's dynamic hybrid Mamba/GDN memory pool with L1/L2/L3 HiCache."
+---
+
+This document describes how `--enable-unified-memory` is integrated with
+HiCache for hybrid full-attention and Mamba/GDN models. It focuses on
+implementation contracts, data movement, allocator safety, supported
+configuration, and end-to-end validation.
+
+## Motivation
+
+A hybrid model keeps two different kinds of reusable state:
+
+- full-attention KV entries, which are token-granular; and
+- Mamba/GDN convolution and SSM states, which are request-checkpoint-granular.
+
+Without unified memory, these states use statically partitioned GPU pools.
+Unified memory instead allocates one byte buffer and lets the Full-KV and Mamba
+sub-pools grow from opposite ends. This allows the runtime split to follow the
+workload.
+
+HiCache adds L1 in the unified GPU byte buffer, L2 in pinned host Full-KV and
+Mamba state pools, and an optional L3 storage backend. The integration must
+preserve the unified allocator's virtual IDs while using physical IDs only for
+data transfer.
+
+## Supported configuration
+
+The implemented and GPU-validated configuration is:
+
+| Setting | Supported value |
+| --- | --- |
+| Model type | Hybrid full-attention + Mamba/GDN |
+| HiCache I/O | `kernel` |
+| Page size | `1` |
+| Write policy | `write_through`, `write_back` |
+| Scheduling | overlap scheduling enabled or disabled |
+| Compaction | eager or lazy compaction |
+| L3 | HiCache storage interface; file backend validated end-to-end |
+| Attention backend | Triton |
+| Linear-attention backend | Triton |
+| Mamba backend | Triton |
+
+The unified pool itself still does not support PD disaggregation, speculative
+decoding, LMCache, or decode context parallelism. Direct HiCache I/O is also
+not supported because it assumes contiguous device rows.
+
+`--page-size > 1` remains disabled. Full-KV pages and Mamba state slots do not
+currently share a compatible physical addressing unit, so larger pages require
+an allocator-level design rather than an I/O-only change.
+
+## Launch examples
+
+### Prerequisites
+
+The examples below use one NVIDIA CUDA GPU and the Hugging Face model ID
+`Qwen/Qwen3.5-0.8B`. Configure `HF_TOKEN` if your environment requires
+authenticated Hugging Face downloads. The examples use `tp=1`, `dp=1`, and
+`pp=1`.
+
+The minimal validated L1/L2 write-through configuration is:
+
+```bash
+sglang serve \
+  --model-path Qwen/Qwen3.5-0.8B \
+  --enable-unified-memory \
+  --enable-hierarchical-cache \
+  --hicache-write-policy write_through \
+  --hicache-io-backend kernel \
+  --page-size 1 \
+  --attention-backend triton \
+  --linear-attn-backend triton \
+  --mamba-backend triton
+```
+
+To add the file-backed L3 tier:
+
+```bash
+export SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR=/path/to/hicache
+
+sglang serve \
+  --model-path Qwen/Qwen3.5-0.8B \
+  --enable-unified-memory \
+  --enable-hierarchical-cache \
+  --hicache-size 1 \
+  --hicache-write-policy write_through \
+  --hicache-io-backend kernel \
+  --hicache-storage-backend file \
+  --page-size 1 \
+  --attention-backend triton \
+  --linear-attn-backend triton \
+  --mamba-backend triton \
+  --enable-metrics
+```
+
+## Architecture
+
+### Virtual and physical IDs
+
+The radix tree and request mappings own stable virtual IDs. The two
+`MultiEndedAllocator` instances own virtual-to-physical tables and may change
+physical locations during compaction.
+
+HiCache operations follow this rule:
+
+1. Tree metadata and queued operations retain virtual IDs.
+2. The cache controller translates IDs immediately before a device/host
+   transfer.
+3. Translated physical IDs are temporary execution values and are never
+   written back into tree state.
+
+`PoolEntry.device_index_translate_fn` provides this contract for the Full-KV
+anchor and Mamba sidecar independently.
+
+Relevant implementation:
+
+- `python/sglang/srt/mem_cache/hicache_storage.py`
+- `python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py`
+- `python/sglang/srt/mem_cache/unified_memory_pool.py`
+
+### Host-pool assembly
+
+The hybrid HiCache assembler creates a Full-KV host pool as the primary index
+anchor and a Mamba host pool as a `PoolName.MAMBA` sidecar. Unified radix
+components attach both pools to the same tree nodes. Backup, load-back, L3
+query, and L3 prefetch operations consequently carry a primary KV transfer and
+the corresponding Mamba transfer.
+
+Relevant implementation:
+
+- `python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py`
+- `python/sglang/srt/mem_cache/unified_cache/components/full_component.py`
+- `python/sglang/srt/mem_cache/unified_cache/components/mamba_component.py`
+- `python/sglang/srt/mem_cache/unified_radix_cache.py`
+
+## L1 and L2 transfers
+
+### Full-attention KV
+
+Each unified Full-KV layer is a strided view into the shared byte buffer. The
+distance between adjacent token rows is the complete shared sub-pool entry,
+not only the K or V row size. The regular one-layer HiCache kernel assumes
+tightly packed destination rows, so the unified path uses stride-aware
+staging:
+
+- **L1 to L2** gathers strided device rows into contiguous GPU staging buffers
+  before copying them to the pinned page-first host pool.
+- **L2 to L1** selects host rows and uses `index_copy_` into the actual strided
+  destination view.
+
+Relevant implementation:
+
+- `python/sglang/srt/mem_cache/pool_host/mha.py`
+- `python/sglang/kernels/ops/kvcache/hicache.py`
+- `python/sglang/kernels/jit/csrc/kvcacheio/hicache.cuh`
+
+### Mamba/GDN state
+
+A Mamba entry contains convolution and temporal SSM states for one checkpoint.
+Unified Mamba rows are separated by the complete per-slot state envelope. The
+transfer path therefore:
+
+- accepts a runtime source or destination stride in the JIT interface;
+- stages L1 state on the GPU before copying it to the pinned host pool; and
+- selects the requested host layer before using `index_copy_` into the
+  strided unified destination.
+
+This avoids direct custom-kernel access to very large pinned-host rows, which
+can otherwise produce an illegal memory access.
+
+Relevant implementation:
+
+- `python/sglang/srt/mem_cache/memory_pool_host.py`
+- `python/sglang/kernels/ops/mamba/transfer_mamba.py`
+- `python/sglang/kernels/jit/csrc/kvcacheio/transfer_mamba.cuh`
+
+## Cross-pool eviction
+
+Allocating one Mamba state advances the Mamba frontier by an amount equivalent
+to multiple Full-KV tokens. Evicting only one Mamba entry is insufficient when
+Full-KV entries occupy the required byte range.
+
+`MambaComponent` asks the unified allocator for
+`mamba_slot_full_token_cost()` and constructs a combined eviction request for
+one Mamba checkpoint plus the Full-KV token equivalent of one Mamba slot. The
+non-unified allocator retains the original Mamba-only behavior.
+
+Relevant implementation:
+
+- `python/sglang/srt/mem_cache/unified_cache/components/mamba_component.py`
+- `python/sglang/srt/mem_cache/multi_ended_allocator.py`
+
+## Transfer and compaction safety
+
+Compaction can relocate live physical rows without changing virtual IDs. If a
+HiCache transfer retained a translated physical ID while compaction ran, the
+transfer could access the old location.
+
+The current implementation synchronizes unified device/host transfers before
+returning control to the scheduler. This permits overlap scheduling and lazy
+compaction to remain enabled, but it does not overlap unified HiCache
+transfers with subsequent scheduler work. Allocator-level physical-page
+pinning can replace this synchronization in a future optimization.
+
+Relevant implementation:
+
+- `HybridCacheController.synchronize_unified_transfers`
+- `HybridCacheController._finish_transfer_before_scheduler`
+
+## Write policies and L3
+
+Both supported policies reuse the same hybrid transfer description:
+
+- `write_through` backs a new cache node into L2 immediately.
+- `write_back` backs it up when device eviction requires it.
+
+When L3 is attached, the KV anchor and Mamba sidecar are registered with the
+backend. Storage existence queries, backup, and prefetch use multi-pool APIs,
+so a hybrid prefix is not reported as complete when required Mamba state is
+missing.
+
+The file backend was validated with KV pages and `.mamba` sidecar pages. Other
+L3 backends use the same interface but require backend-specific qualification.
+
+## Validation
+
+Run the registered GPU integrity test with:
+
+```bash
+PYTHONPATH=python \
+python test/registered/hicache/test_unified_memory_hicache_integrity.py
+```
+
+The test:
+
+1. launches `Qwen/Qwen3.5-0.8B` with unified memory, L2, and file-backed L3;
+2. submits 60 unique long prompts to exceed both L1 and L2;
+3. requires `sglang:evicted_tokens_total` to prove L1 eviction;
+4. requires `sglang:backuped_tokens_total` and Mamba sidecar files to prove L3
+   backup;
+5. dynamically discovers an L2-only replay by observing an increase in
+   `sglang:load_back_tokens_total` without an L3 prefetch;
+6. dynamically discovers an L3 replay by observing an increase in
+   `sglang:prefetched_tokens_total`;
+7. requires exact output-token and logprob-token ID equality before and after
+   restoration;
+8. bounds bf16 output-logprob drift to `0.1`; and
+9. checks the health endpoint after restoration.
+
+On an NVIDIA GeForce RTX 5090:
+
+```text
+Ran 1 test in 153.059s
+
+OK
+```
+
+Focused CPU tests:
+
+```bash
+PYTHONPATH=python \
+python test/registered/unit/mem_cache/test_unified_memory_pool.py
+
+PYTHONPATH=python \
+python test/registered/unit/mem_cache/test_unified_radix_hicache_dispatch.py
+```
