@@ -701,7 +701,7 @@ class UnifiedRadixCache(BasePrefixCache):
                     req, effective_cache_len - 1, insert_params
                 )
 
-        if effective_cache_len <= 0:
+        if insert_params.skip_radix_insert or effective_cache_len <= 0:
             req.prefix_indices = kv_indices_orig.to(dtype=torch.int64, copy=True)
             for comp in self._components_tuple:
                 comp.cleanup_after_caching_req(

@@ -20,6 +20,11 @@ from sglang.srt.mem_cache.hicache_storage import (
     PoolTransfer,
     PoolTransferResult,
 )
+from sglang.srt.mem_cache.mamba_admission_policy import (
+    MambaAdmissionStatsTracker,
+    MambaCheckpointKind,
+    decide_mamba_state_admission,
+)
 from sglang.srt.mem_cache.unified_cache.cache_action import (
     FreeComponentDeviceSlot,
     FreeComponentHostSlot,
@@ -65,8 +70,15 @@ class MambaComponent(TreeComponent):
                 params.page_size == 1
             ), f"MambaComponent requires page_size=1 when mamba_extra_buffer is disabled, got {params.page_size}"
         super().__init__(cache, params)
-        self.mamba_cache_chunk_size = get_server_args().mamba_cache_chunk_size
-        self.mamba_max_states_per_path = get_server_args().mamba_max_states_per_path
+        server_args = get_server_args()
+        self.mamba_cache_chunk_size = server_args.mamba_cache_chunk_size
+        self.mamba_max_states_per_path = server_args.mamba_max_states_per_path
+        self.mamba_state_admission_policy = (
+            server_args.mamba_state_admission_policy
+        )
+        self.mamba_admission_stats = MambaAdmissionStatsTracker(
+            self.mamba_state_admission_policy
+        )
         # HiCache state
         self._mamba_pool_host = None  # set to host mamba pool when HiCache enabled
 
@@ -480,6 +492,23 @@ class MambaComponent(TreeComponent):
                     cache_len -= int(write_pos_buf[req.mamba_pool_idx].item())
                     write_pos_buf[req.mamba_pool_idx] = 0
 
+        admission = decide_mamba_state_admission(
+            policy=self.mamba_state_admission_policy,
+            is_finished=is_finished,
+            checkpoint_seqlen=cache_len,
+            branching_seqlen=req.mamba_branching_seqlen,
+        )
+        insert_params.mamba_admission_kind = admission.kind.value
+        self.mamba_admission_stats.note_candidate(req.rid, admission)
+
+        if not admission.persist:
+            # Keep the ping-pong snapshot owned by the running request.  Returning
+            # the tracked length keeps component bookkeeping meaningful, while
+            # skip_radix_insert retains the request's KV indices without donating
+            # a recurrent slot or publishing an incomplete hybrid checkpoint.
+            insert_params.skip_radix_insert = True
+            return cache_len
+
         if is_finished:
             if cache_len is None:
                 cache_len = 0
@@ -541,6 +570,30 @@ class MambaComponent(TreeComponent):
         insert_result: Optional[InsertResult] = None,
         insert_params: Optional[InsertParams] = None,
     ) -> None:
+        admission_kind = (
+            MambaCheckpointKind(insert_params.mamba_admission_kind)
+            if insert_params is not None
+            and insert_params.mamba_admission_kind is not None
+            else None
+        )
+        if admission_kind is not None and insert_result is not None:
+            self.mamba_admission_stats.note_result(
+                req.rid,
+                admission_kind,
+                inserted=not insert_result.mamba_exist,
+                duplicate=insert_result.mamba_exist,
+            )
+
+        if (
+            self.mamba_state_admission_policy == "marconi"
+            and admission_kind is MambaCheckpointKind.BRANCH
+            and insert_result is not None
+        ):
+            # The branch candidate has been consumed (inserted or deduplicated).
+            # Clearing it prevents a later unfinished-cache handoff from being
+            # misclassified as another branch admission.
+            req.mamba_branching_seqlen = None
+
         if is_finished:
             mamba_value_inserted = (
                 insert_result is not None and not insert_result.mamba_exist
@@ -556,6 +609,7 @@ class MambaComponent(TreeComponent):
                 if insert_value_unused:
                     self._free_mamba_value(insert_params.mamba_value)
                 pool.free_mamba_cache(req)
+                self.mamba_admission_stats.finish(req.rid)
                 return
 
             if self.cache.enable_mamba_extra_buffer:
@@ -567,16 +621,25 @@ class MambaComponent(TreeComponent):
                 pool.free_mamba_cache(
                     req, mamba_ping_pong_track_buffer_to_keep=keep_idx
                 )
+                self.mamba_admission_stats.finish(req.rid)
                 return
 
             if not mamba_value_inserted:
                 pool.free_mamba_cache(req)
+            self.mamba_admission_stats.finish(req.rid)
         else:
             if insert_params.mamba_value is not None and (
                 insert_result is None or insert_result.mamba_exist
             ):
                 self._free_mamba_value(insert_params.mamba_value)
-            req.mamba_last_track_seqlen = None
+            # In Marconi mode an unadmitted intermediate snapshot remains the
+            # final-checkpoint fallback for requests that finish before crossing
+            # another decode tracking interval.
+            if not (
+                self.mamba_state_admission_policy == "marconi"
+                and admission_kind is MambaCheckpointKind.INTERMEDIATE
+            ):
+                req.mamba_last_track_seqlen = None
 
     # ---- HiCache Hooks ----
 

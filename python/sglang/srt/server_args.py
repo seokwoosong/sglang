@@ -2445,6 +2445,17 @@ class ServerArgs:
         "Tail, fork, and locked nodes are preserved. Must be -1 or a positive integer.",
         NS("exec.mamba"),
     ] = -1
+    mamba_state_admission_policy: A[
+        str,
+        Arg(
+            help="Admission policy for recurrent states in the unified Mamba radix "
+            "cache. 'default' preserves existing checkpoint admission. 'marconi' "
+            "persists only an aligned branch checkpoint (when discovered) and the "
+            "latest safe checkpoint at request completion.",
+            choices=["default", "marconi"],
+        ),
+        NS("exec.mamba"),
+    ] = "default"
     enable_mamba_cache_stochastic_rounding: A[
         bool,
         "Enable stochastic rounding when writing FP16 Mamba SSM cache states. Requires --mamba-ssm-dtype float16 and CUDA. With --mamba-backend triton, requires SM100.",
@@ -7569,6 +7580,14 @@ class ServerArgs:
                     )
 
     def _handle_unified_memory_pool(self):
+        if (
+            self.mamba_state_admission_policy != "default"
+            and not self.enable_unified_memory
+        ):
+            raise ValueError(
+                "--mamba-state-admission-policy marconi currently requires "
+                "--enable-unified-memory."
+            )
         if not self.enable_unified_memory:
             return
         assert self.disaggregation_mode == "null", (

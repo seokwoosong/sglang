@@ -64,6 +64,9 @@ class InsertParams:
 
     # Mamba specific
     mamba_value: Optional[torch.Tensor] = None
+    # Set by the unified Mamba component for admission observability and cleanup.
+    # Kept as a string to avoid coupling the shared cache API to a policy enum.
+    mamba_admission_kind: Optional[str] = None
 
     # SWA specific
     prev_prefix_len: int = 0
@@ -72,6 +75,9 @@ class InsertParams:
     # General
     chunked: bool = False
     priority: int = 0
+    # A component may retain request-owned working state while declining to
+    # publish the current multi-component checkpoint to the shared radix tree.
+    skip_radix_insert: bool = False
 
 
 @dataclasses.dataclass
