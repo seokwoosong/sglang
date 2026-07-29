@@ -12,6 +12,9 @@ from sglang.srt.mem_cache.mamba_admission_policy import (
 from sglang.srt.mem_cache.unified_cache.components.mamba_component import (
     MambaComponent,
 )
+from sglang.test.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=5, suite="base-a-test-cpu")
 
 
 class TestMambaAdmissionPolicy(unittest.TestCase):
@@ -85,9 +88,7 @@ class TestMambaAdmissionPolicy(unittest.TestCase):
             mamba_last_track_seqlen=128,
             mamba_branching_seqlen=128,
         )
-        params = InsertParams(
-            mamba_admission_kind=MambaCheckpointKind.BRANCH.value
-        )
+        params = InsertParams(mamba_admission_kind=MambaCheckpointKind.BRANCH.value)
 
         component.cleanup_after_caching_req(
             req,
@@ -108,9 +109,7 @@ class TestMambaAdmissionPolicy(unittest.TestCase):
             mamba_last_track_seqlen=128,
             mamba_branching_seqlen=128,
         )
-        params = InsertParams(
-            mamba_admission_kind=MambaCheckpointKind.BRANCH.value
-        )
+        params = InsertParams(mamba_admission_kind=MambaCheckpointKind.BRANCH.value)
 
         component.cleanup_after_caching_req(
             req,
@@ -121,6 +120,7 @@ class TestMambaAdmissionPolicy(unittest.TestCase):
 
         self.assertEqual(req.mamba_branching_seqlen, 128)
         self.assertIsNone(req.mamba_last_track_seqlen)
+
 
 if __name__ == "__main__":
     unittest.main()
