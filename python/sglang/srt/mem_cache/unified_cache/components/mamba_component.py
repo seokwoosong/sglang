@@ -73,9 +73,7 @@ class MambaComponent(TreeComponent):
         server_args = get_server_args()
         self.mamba_cache_chunk_size = server_args.mamba_cache_chunk_size
         self.mamba_max_states_per_path = server_args.mamba_max_states_per_path
-        self.mamba_state_admission_policy = (
-            server_args.mamba_state_admission_policy
-        )
+        self.mamba_state_admission_policy = server_args.mamba_state_admission_policy
         self.mamba_admission_stats = MambaAdmissionStatsTracker(
             self.mamba_state_admission_policy
         )
@@ -169,7 +167,7 @@ class MambaComponent(TreeComponent):
                 # stops at this request's window boundary instead of walking to
                 # root and over-decrementing locks held by other requests.
                 lock_result = self.cache.inc_lock_ref(result.best_match_node)
-                self.cache.evict(EvictParams(num_tokens=0, mamba_num=1))
+                self.cache.evict(self._mamba_slot_eviction_params())
                 dst_index = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
                 self.cache.dec_lock_ref(
                     result.best_match_node, lock_result.to_dec_params()
@@ -435,10 +433,23 @@ class MambaComponent(TreeComponent):
         """Allocate one mamba pool slot, evicting if necessary."""
         slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
         if slot is None:
-            self.cache.evict(EvictParams(num_tokens=0, mamba_num=1))
+            self.cache.evict(self._mamba_slot_eviction_params())
             slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
             assert slot is not None, "Can not alloc mamba cache"
         return slot
+
+    def _mamba_slot_eviction_params(self) -> EvictParams:
+        """Request enough shared-buffer bytes for one Mamba state.
+
+        Static hybrid pools have independent Full/Mamba allocations and expose
+        no byte conversion.  A unified pool exposes the Full-token equivalent
+        of one Mamba slot; evicting that many Full tokens lets the Mamba
+        frontier grow when the shared gap is exhausted.
+        """
+        allocator = self.cache.token_to_kv_pool_allocator
+        full_token_cost_fn = getattr(allocator, "mamba_slot_full_token_cost", None)
+        full_token_cost = full_token_cost_fn() if full_token_cost_fn else 0
+        return EvictParams(num_tokens=full_token_cost, mamba_num=1)
 
     @property
     def int8_ckpt_pool(self):
@@ -659,7 +670,7 @@ class MambaComponent(TreeComponent):
             return PrepareLoadBackResult()
         dst = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
         if dst is None:
-            self.cache.evict(EvictParams(num_tokens=0, mamba_num=1))
+            self.cache.evict(self._mamba_slot_eviction_params())
             dst = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
             assert dst is not None, "Cannot alloc mamba for load_back"
         req.mamba_pool_idx = dst[0]

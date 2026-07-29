@@ -356,6 +356,23 @@ class MambaPoolHost(HostKVCache):
             return
         if io_backend == "kernel":
             item_size = MambaPoolHost._item_size_per_index(dst)
+            dst_stride = dst.stride(0) * dst.dtype.itemsize
+            if dst_stride != item_size:
+                # Unified Mamba state rows are strided by the complete shared
+                # slot envelope. Reading the large pinned-host rows directly
+                # from the custom CUDA kernel is not reliable on this path.
+                # Stage the selected layer through an ordinary H2D copy, then
+                # use index_copy_ so PyTorch honors the real destination
+                # stride. Unified-memory HiCache currently runs synchronously.
+                selected = src.index_select(
+                    0, src_indices.to(device="cpu", dtype=torch.long)
+                )[:, layer_id, 0]
+                dst.index_copy_(
+                    0,
+                    dst_indices.to(dtype=torch.long),
+                    selected.to(dst.device),
+                )
+                return
             # Mamba JIT kernel expects all index tensors on CUDA.
             # host_indices may be on CPU (kept there by start_writing when
             # can_use_write_back_jit is True on the HostPoolGroup).
@@ -369,7 +386,7 @@ class MambaPoolHost(HostKVCache):
                 layer_id=layer_id,
                 item_size=item_size,
                 src_layout_dim=item_size * num_layers,
-                dst_stride=dst.stride(0) * dst.dtype.itemsize,
+                dst_stride=dst_stride,
             )
         elif io_backend == "direct":
             transfer_kv_per_layer_direct_pf_lf(

@@ -23,7 +23,12 @@ from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
     _SwaStrategy,
     register_stack_strategy,
 )
+from sglang.srt.mem_cache.memory_pool_host import MambaPoolHost
+from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
 from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_cache.components.mamba_component import (
+    MambaComponent,
+)
 from sglang.test.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=2, suite="base-a-test-cpu")
@@ -303,6 +308,85 @@ class TestHybridTransferIndexTranslation(unittest.TestCase):
 
         self.assertIs(execution_indices, virtual)
         self.assertIsNone(transfers)
+
+
+class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
+    def test_requests_full_token_equivalent_for_unified_pool(self):
+        component = MambaComponent.__new__(MambaComponent)
+        component.cache = MagicMock()
+        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
+            1590
+        )
+
+        params = component._mamba_slot_eviction_params()
+
+        self.assertEqual(params.num_tokens, 1590)
+        self.assertEqual(params.mamba_num, 1)
+
+    def test_static_pool_does_not_evict_full_tokens(self):
+        component = MambaComponent.__new__(MambaComponent)
+        component.cache = MagicMock()
+        del component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost
+
+        params = component._mamba_slot_eviction_params()
+
+        self.assertEqual(params.num_tokens, 0)
+        self.assertEqual(params.mamba_num, 1)
+
+
+class TestUnifiedMHAHostLoad(unittest.TestCase):
+    def test_load_honors_strided_unified_destination(self):
+        host_pool = MHATokenToKVPoolHost.__new__(MHATokenToKVPoolHost)
+        host_pool.page_size = 1
+        host_pool.layout = "page_first"
+        host_pool.k_data_refs = [torch.arange(12).view(3, 2, 2)]
+        host_pool.v_data_refs = [torch.arange(12, 24).view(3, 2, 2)]
+
+        # Selecting one field from each shared entry models unified memory's
+        # non-contiguous token-row stride.
+        backing_k = torch.full((4, 3, 2, 2), -1, dtype=torch.long)
+        backing_v = torch.full((4, 3, 2, 2), -1, dtype=torch.long)
+        device_pool = MagicMock()
+        device_pool._unified_buffer = object()
+        device_pool.device = torch.device("cpu")
+        device_pool.k_buffer = [backing_k[:, 1]]
+        device_pool.v_buffer = [backing_v[:, 1]]
+
+        host_pool.load_to_device_per_layer(
+            device_pool=device_pool,
+            host_indices=torch.tensor([2, 0]),
+            device_indices=torch.tensor([1, 3]),
+            layer_id=0,
+            io_backend="kernel",
+        )
+
+        torch.testing.assert_close(
+            device_pool.k_buffer[0][1], host_pool.k_data_refs[0][2]
+        )
+        torch.testing.assert_close(
+            device_pool.k_buffer[0][3], host_pool.k_data_refs[0][0]
+        )
+        torch.testing.assert_close(
+            device_pool.v_buffer[0][1], host_pool.v_data_refs[0][2]
+        )
+
+    def test_mamba_load_honors_strided_unified_destination(self):
+        src = torch.arange(3 * 2 * 1 * 4).view(3, 2, 1, 4)
+        backing = torch.full((4, 3, 4), -1, dtype=torch.long)
+        dst = backing[:, 1]
+
+        MambaPoolHost._copy_tensor_pf_lf(
+            src=src,
+            dst=dst,
+            src_indices=torch.tensor([2, 0]),
+            dst_indices=torch.tensor([1, 3]),
+            layer_id=1,
+            num_layers=2,
+            io_backend="kernel",
+        )
+
+        torch.testing.assert_close(dst[1], src[2, 1, 0])
+        torch.testing.assert_close(dst[3], src[0, 1, 0])
 
 
 if __name__ == "__main__":
