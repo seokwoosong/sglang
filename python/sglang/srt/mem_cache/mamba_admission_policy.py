@@ -93,13 +93,9 @@ class MambaAdmissionStatsTracker:
 
     def __init__(self, policy: str):
         self.policy = policy
-        self._stats: dict[str, MambaAdmissionStats] = defaultdict(
-            MambaAdmissionStats
-        )
+        self._stats: dict[str, MambaAdmissionStats] = defaultdict(MambaAdmissionStats)
 
-    def note_candidate(
-        self, rid: str, decision: MambaAdmissionDecision
-    ) -> None:
+    def note_candidate(self, rid: str, decision: MambaAdmissionDecision) -> None:
         stats = self._stats[rid]
         field = f"{decision.kind.value}_candidates"
         setattr(stats, field, getattr(stats, field) + 1)

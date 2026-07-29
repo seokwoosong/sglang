@@ -66,9 +66,7 @@ def check_cuda() -> None:
         )
 
 
-def http_json(
-    url: str, payload: dict[str, Any] | None, timeout: int
-) -> dict[str, Any]:
+def http_json(url: str, payload: dict[str, Any] | None, timeout: int) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode()
     request = urllib.request.Request(
         url,
@@ -232,8 +230,7 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, int]:
         "intermediate_skipped",
     )
     return {
-        field: sum(int(record.get(field, 0)) for record in records)
-        for field in fields
+        field: sum(int(record.get(field, 0)) for record in records) for field in fields
     }
 
 
@@ -284,9 +281,7 @@ def main() -> int:
             output_dir = Path(args.output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / "comparison.json"
-            output_path.write_text(
-                json.dumps(skipped, indent=2, sort_keys=True) + "\n"
-            )
+            output_path.write_text(json.dumps(skipped, indent=2, sort_keys=True) + "\n")
             print(f"ERROR: {exc}", file=sys.stderr)
             print(f"Machine-readable result: {output_path}", file=sys.stderr)
             return 2
