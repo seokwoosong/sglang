@@ -173,18 +173,31 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
         return max_difference
 
     def _storage_manifest(self):
-        entries = []
+        summary = {
+            "file_count": 0,
+            "total_size_bytes": 0,
+            "empty_file_count": 0,
+            "mamba_sidecar_count": 0,
+            "samples": [],
+        }
         for path in sorted(Path(self.storage_dir).iterdir()):
             if path.is_file():
-                entries.append(
-                    {
-                        "name": path.name,
-                        "size_bytes": path.stat().st_size,
-                        "is_mamba_sidecar": ".mamba" in path.name.lower(),
-                    }
-                )
-        self.artifacts.write_json("storage_manifest.json", entries)
-        return entries
+                size_bytes = path.stat().st_size
+                is_mamba_sidecar = ".mamba" in path.name.lower()
+                summary["file_count"] += 1
+                summary["total_size_bytes"] += size_bytes
+                summary["empty_file_count"] += size_bytes == 0
+                summary["mamba_sidecar_count"] += is_mamba_sidecar
+                if len(summary["samples"]) < 100:
+                    summary["samples"].append(
+                        {
+                            "name": path.name,
+                            "size_bytes": size_bytes,
+                            "is_mamba_sidecar": is_mamba_sidecar,
+                        }
+                    )
+        self.artifacts.write_json("storage_manifest.json", summary)
+        return summary
 
     def test_l2_and_l3_restore_integrity(self):
         try:
@@ -208,12 +221,15 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
             )
 
             manifest = self._storage_manifest()
-            self.assertTrue(manifest, "file backend did not create L3 pages")
-            self.assertTrue(
-                all(entry["size_bytes"] > 0 for entry in manifest),
+            self.assertGreater(
+                manifest["file_count"], 0, "file backend did not create L3 pages"
+            )
+            self.assertEqual(
+                manifest["empty_file_count"],
+                0,
                 "file backend created an empty L3 page",
             )
-            mamba_sidecars = sum(entry["is_mamba_sidecar"] for entry in manifest)
+            mamba_sidecars = manifest["mamba_sidecar_count"]
             self.assertGreater(mamba_sidecars, 0, "no Mamba sidecar pages were created")
 
             # Discover an L2-only entry from observed counters rather than assuming
@@ -261,7 +277,8 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
             self.artifacts.update(
                 pressure_metrics=pressure,
                 storage={
-                    "file_count": len(manifest),
+                    "file_count": manifest["file_count"],
+                    "total_size_bytes": manifest["total_size_bytes"],
                     "mamba_sidecar_count": mamba_sidecars,
                 },
                 l2_restore={
