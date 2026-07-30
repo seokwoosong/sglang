@@ -60,6 +60,29 @@ The examples below use one NVIDIA CUDA GPU and the Hugging Face model ID
 authenticated Hugging Face downloads. The examples use `tp=1`, `dp=1`, and
 `pp=1`.
 
+### Work from a cloned repository
+
+Clone your fork and check out the feature branch before running the examples:
+
+```bash
+git clone https://github.com/<your_user_name>/sglang.git
+cd sglang
+git checkout feat/unified-memory-hicache
+```
+
+Follow [Install SGLang from Source](/get-started/install#method-2-from-source)
+to create the Python environment and build required kernels. Verify that the
+test process imports this checkout rather than another installed SGLang:
+
+```bash
+PYTHONPATH="$PWD/python" python -c \
+  "import sglang; print(list(sglang.__path__))"
+```
+
+The printed path must include `<clone>/python/sglang`. Keep
+`PYTHONPATH="$PWD/python"` on the test commands below. The launched server
+inherits it and uses the same checkout.
+
 The minimal validated L1/L2 write-through configuration is:
 
 ```bash
@@ -209,6 +232,34 @@ Relevant implementation:
 - `HybridCacheController.synchronize_unified_transfers`
 - `HybridCacheController._finish_transfer_before_scheduler`
 
+## Find the implementation in the repository
+
+Start with these files when reviewing or extending the integration:
+
+| Area | Source |
+| --- | --- |
+| CLI compatibility and backend guards | `python/sglang/srt/server_args.py` |
+| Shared byte buffer and unified request/token pools | `python/sglang/srt/mem_cache/unified_memory_pool.py` |
+| Two-ended virtual/physical allocation | `python/sglang/srt/mem_cache/multi_ended_allocator.py` |
+| Unified radix components | `python/sglang/srt/mem_cache/unified_cache/components/` |
+| Hybrid L1/L2 transfer coordination | `python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py` |
+| Full-KV host transfer | `python/sglang/srt/mem_cache/pool_host/mha.py` |
+| Mamba host transfer | `python/sglang/srt/mem_cache/memory_pool_host.py` |
+| L3 storage implementations | `python/sglang/srt/mem_cache/storage/` |
+| Focused CPU tests | `test/registered/unit/mem_cache/` |
+| Unified GPU tests | `test/registered/hicache/test_unified_memory_hicache_*.py` |
+
+Use `git log` and `git show` to review the implementation in dependency order:
+
+```bash
+git log --oneline --reverse 4c82bb325..HEAD
+git show d6a1585be   # L1/L2 write-through integration
+git show fd097666f   # host restore path
+git show 3b9c65fc8   # overlap and compaction safety
+git show 450c5280b   # write-back
+git show 636373f7d   # L3 storage
+```
+
 ## Write policies and L3
 
 Both supported policies reuse the same hybrid transfer description:
@@ -225,6 +276,65 @@ The file backend was validated with KV pages and `.mamba` sidecar pages. Other
 L3 backends use the same interface but require backend-specific qualification.
 
 ## Validation
+
+### Choose a test
+
+Use the integrity test as the entry point for a new model, parallelism mode,
+backend, or memory configuration. Run the stress test only after integrity
+passes.
+
+| Change under test | First test | Follow-up |
+| --- | --- | --- |
+| Different hybrid model | Unified integrity | Unified overlap stress |
+| `--tp-size 2` | Unified integrity with TP=2 | TP=2 overlap stress |
+| `write_back` | Unified integrity adapted for write-back timing | Churn stress |
+| Different `--hicache-size` or GPU memory fraction | Unified integrity | Unified overlap stress |
+| Different L3 backend | Existing backend-specific HiCache test | Adapted unified integrity |
+| CUDA graph setting | Unified integrity | Unified overlap stress |
+| Internal allocator or transfer change | Focused CPU tests | Both unified GPU tests |
+
+The surrounding `test/registered/hicache/` directory also contains
+backend-specific tests:
+
+- `test_hicache_storage_file_backend.py`
+- `test_hicache_storage_mooncake_backend.py`
+- `test_hicache_storage_3fs_backend.py`
+- `test_hicache_storage_runtime_attach_detach.py`
+- `test_hicache_variants.py`
+- `test_qwen35_hicache.py`
+
+These tests validate the backend or general HiCache path. They do not replace
+the unified integrity test because they do not exercise the shared Full-KV and
+Mamba byte buffer.
+
+### Adapt a test configuration
+
+Both unified GPU tests define `model` and `server_args` near the top of the
+test class. For a local TP=2 qualification, preserve the TP=1 tests and create
+a temporary or separately registered variant that adds:
+
+```python
+"--tp-size",
+"2",
+```
+
+A TP=2 result is evidence only for the tested model, GPU type, backend, page
+size, write policy, and node topology. Check all of the following before
+calling the configuration validated:
+
+1. every TP worker initializes without NCCL errors or hangs;
+2. L1 eviction, L2 load-back, and L3 prefetch counters increase;
+3. KV files and Mamba sidecars are non-empty;
+4. restored output-token and logprob-token IDs match;
+5. bf16 logprob drift remains within the configured tolerance;
+6. concurrent churn completes and `/health` returns HTTP 200; and
+7. the server log contains no traceback or CUDA illegal-memory-access error.
+
+When registering a permanent TP=2 test in CI, use an existing two-GPU runner
+configuration such as `runner_config="2-gpu-large"` and give it a distinct
+test file. Do not replace the one-GPU regression test.
+
+### Run the integrity and stress tests
 
 Run the registered GPU integrity test with:
 
@@ -318,3 +428,16 @@ python test/registered/unit/mem_cache/test_unified_radix_hicache_dispatch.py
 PYTHONPATH=python \
 python test/registered/unit/mem_cache/test_unified_hicache_artifacts.py
 ```
+
+### Interpret a result
+
+`OK` means the assertions passed, but preserved artifacts provide stronger
+evidence for a new environment. In `result.json`, require `result: "PASS"`,
+`health_status: 200`, positive tier movement counters, matching output IDs,
+and bounded logprob drift. Compare adjacent raw snapshots in `metrics/` to
+prove when each tier moved data. Use `server.log` to verify startup arguments,
+rank initialization, and the absence of asynchronous worker failures.
+
+Do not treat a server startup or a single successful generation as HiCache
+qualification. At minimum, the workload must exceed L1 and L2 capacity and
+demonstrate a successful L3 restore.
