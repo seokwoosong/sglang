@@ -116,6 +116,27 @@ class TestPrefillAdder(CustomTestCase):
         defaults.update(kwargs)
         return PrefillAdder(**defaults)
 
+    def test_unified_mamba_gap_budget_includes_tracking_and_hicache_state(self):
+        adder = object.__new__(PrefillAdder)
+        adder._mamba_slot_cost = 7
+        adder.tree_cache = SimpleNamespace(enable_mamba_extra_buffer_lazy=False)
+        req = SimpleNamespace(
+            req_pool_idx=None,
+            mamba_host_hit_length=0,
+        )
+
+        self.assertEqual(adder._mamba_gap_budget_for_req(req), 3 * 7)
+        req.mamba_host_hit_length = 128
+        self.assertEqual(adder._mamba_gap_budget_for_req(req), 4 * 7)
+
+        adder.tree_cache.enable_mamba_extra_buffer_lazy = True
+        self.assertEqual(adder._mamba_gap_budget_for_req(req), 3 * 7)
+        req.mamba_host_hit_length = 0
+        self.assertEqual(adder._mamba_gap_budget_for_req(req), 2 * 7)
+
+        req.req_pool_idx = 3
+        self.assertEqual(adder._mamba_gap_budget_for_req(req), 0)
+
     def test_preempt_success_high_priority_values_first(self):
         params = [
             ("run1", 0, 50),

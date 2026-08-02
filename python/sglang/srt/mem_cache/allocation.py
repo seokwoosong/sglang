@@ -280,7 +280,23 @@ def alloc_req_slots(
         if mamba_available_size < mamba_state_needed:
             if tree_cache is not None and tree_cache.supports_mamba():
                 mamba_num = max(0, mamba_state_needed - mamba_available_size)
-                tree_cache.evict(EvictParams(num_tokens=0, mamba_num=mamba_num))
+                # In a unified pool, Mamba and Full KV consume the same byte
+                # gap. Evicting only Mamba nodes cannot make room when the Full
+                # peer owns the frontier, even though the Mamba virtual-ID
+                # space still reports ample capacity. Request the equivalent
+                # Full-token bytes as well so peer compaction can release a
+                # realizable shared gap for the ping-pong allocation.
+                full_token_cost_fn = getattr(
+                    tree_cache.token_to_kv_pool_allocator,
+                    "mamba_slot_full_token_cost",
+                    None,
+                )
+                full_tokens = (
+                    mamba_num * full_token_cost_fn() if full_token_cost_fn else 0
+                )
+                tree_cache.evict(
+                    EvictParams(num_tokens=full_tokens, mamba_num=mamba_num)
+                )
     req_pool_indices = req_to_token_pool.alloc(reqs)
     if req_pool_indices is None:
         raise RuntimeError(

@@ -1383,7 +1383,9 @@ class HybridReqToTokenPool(ReqToTokenPool):
         slots = self.mamba_allocator.alloc(n)
         assert slots is not None, (
             "Not enough space for mamba ping pong idx, "
-            "try to increase --mamba-full-memory-ratio."
+            "try to increase --mamba-full-memory-ratio. "
+            f"needed={n}, available={self.mamba_allocator.available_size()}, "
+            f"allocator={self.mamba_allocator.allocator_state_str()}"
         )
         buf = torch.full(
             (self.mamba_ping_pong_track_buffer_size,),

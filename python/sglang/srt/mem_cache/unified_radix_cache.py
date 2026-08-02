@@ -155,6 +155,9 @@ class UnifiedRadixCache(BasePrefixCache):
         self.enable_mamba_extra_buffer = (
             params.enable_mamba_extra_buffer if self.is_mamba_enabled else False
         )
+        self.enable_mamba_extra_buffer_lazy = (
+            params.enable_mamba_extra_buffer_lazy if self.is_mamba_enabled else False
+        )
         # SWA window size (None when SWA is not enabled).
         self._sliding_window_size = (
             params.sliding_window_size if self.is_swa_enabled else None
@@ -1858,7 +1861,17 @@ class UnifiedRadixCache(BasePrefixCache):
     def ready_to_load_host_cache(self) -> int:
         """Notify the cache controller to start the KV cache loading."""
         if self.cache_controller is not None:
-            return self.cache_controller.start_loading()
+            producer_id = self.cache_controller.start_loading()
+            # Unified pools synchronize H2D before start_loading() returns so
+            # translated physical rows cannot move underneath the transfer.
+            # Reap that already-complete ack now: keeping its radix/component
+            # locks until the next scheduler tick can strand Mamba slots that
+            # prepare_for_extend() needs for the request's ping-pong buffers.
+            # Ordinary HiCache remains asynchronous and is reaped by the
+            # scheduler's periodic check_hicache_events() path.
+            if producer_id >= 0 and self.cache_controller.synchronize_unified_transfers:
+                self.loading_check()
+            return producer_id
         return 0
 
     # ---- Query / Inspection APIs ----

@@ -46,6 +46,49 @@ def make_device_pool(dtype, device=DEVICE):
     )
 
 
+def make_unified_device_pool(dtype, device=DEVICE):
+    """Build Mamba views whose slot rows are separated by a shared envelope."""
+    temporal_backing = torch.full(
+        (SIZE, NUM_LAYERS, 3) + TEMPORAL_SHAPE,
+        -77,
+        dtype=dtype,
+        device=device,
+    )
+    conv_backing = torch.full(
+        (SIZE, NUM_LAYERS, 3) + CONV_SHAPE,
+        -77,
+        dtype=dtype,
+        device=device,
+    )
+    temporal = temporal_backing[:, :, 1].transpose(0, 1)
+    conv = [conv_backing[:, :, 1].transpose(0, 1)]
+    return SimpleNamespace(
+        _unified_buffer=object(),
+        _temporal_backing=temporal_backing,
+        _conv_backing=[conv_backing],
+        mamba_cache=SimpleNamespace(temporal=temporal, conv=conv),
+        size=SIZE,
+        device=device,
+    )
+
+
+def bind_device_pool(host, device_pool):
+    host.device_pool = device_pool
+    host.temporal_device_ptrs = torch.tensor(
+        [device_pool.mamba_cache.temporal[i].data_ptr() for i in range(NUM_LAYERS)],
+        dtype=torch.uint64,
+        device=DEVICE,
+    )
+    host.conv_device_ptrs = [
+        torch.tensor(
+            [conv_state[i].data_ptr() for i in range(NUM_LAYERS)],
+            dtype=torch.uint64,
+            device=DEVICE,
+        )
+        for conv_state in device_pool.mamba_cache.conv
+    ]
+
+
 def make_host_pool(dtype, layout):
     """Create a MambaPoolHost bypassing __init__, manually setting attributes.
 
@@ -256,6 +299,63 @@ def test_mamba_kernel_backup_load_roundtrip(dtype, layout):
                     .max()
                     == 0
                 )
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_unified_mamba_strided_backup_load_roundtrip(dtype):
+    """Exercise D2H gather and H2D index_copy_ on unified envelope strides."""
+    host = make_host_pool(dtype, "page_first")
+    device_pool = make_unified_device_pool(dtype)
+    bind_device_pool(host, device_pool)
+    fill_device_data(device_pool, dtype)
+
+    source_indices = torch.tensor([1, 5, 10], dtype=torch.int64, device=DEVICE)
+    host_indices = torch.tensor([0, 3, 7], dtype=torch.int64)
+    restore_indices = torch.tensor([2, 8, 12], dtype=torch.int64, device=DEVICE)
+    expected_temporal = [
+        device_pool.mamba_cache.temporal[layer_id][source_indices].clone()
+        for layer_id in range(NUM_LAYERS)
+    ]
+    expected_conv = [
+        device_pool.mamba_cache.conv[0][layer_id][source_indices].clone()
+        for layer_id in range(NUM_LAYERS)
+    ]
+    untouched_temporal_envelope = device_pool._temporal_backing[:, :, [0, 2]].clone()
+    untouched_conv_envelope = device_pool._conv_backing[0][:, :, [0, 2]].clone()
+
+    host.backup_from_device_all_layer(
+        device_pool, host_indices, source_indices, io_backend="kernel"
+    )
+    torch.cuda.synchronize()
+    assert_host_matches_device(host, device_pool, host_indices, source_indices)
+
+    for layer_id in range(NUM_LAYERS):
+        device_pool.mamba_cache.temporal[layer_id][restore_indices] = -3
+        device_pool.mamba_cache.conv[0][layer_id][restore_indices] = -5
+        host.load_to_device_per_layer(
+            device_pool,
+            host_indices,
+            restore_indices,
+            layer_id,
+            io_backend="kernel",
+        )
+
+    torch.cuda.synchronize()
+    for layer_id in range(NUM_LAYERS):
+        torch.testing.assert_close(
+            device_pool.mamba_cache.temporal[layer_id][restore_indices],
+            expected_temporal[layer_id],
+        )
+        torch.testing.assert_close(
+            device_pool.mamba_cache.conv[0][layer_id][restore_indices],
+            expected_conv[layer_id],
+        )
+    torch.testing.assert_close(
+        device_pool._temporal_backing[:, :, [0, 2]], untouched_temporal_envelope
+    )
+    torch.testing.assert_close(
+        device_pool._conv_backing[0][:, :, [0, 2]], untouched_conv_envelope
+    )
 
 
 @pytest.mark.parametrize("dtype", DTYPES)

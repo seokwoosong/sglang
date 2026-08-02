@@ -29,6 +29,7 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
     prompt_count = 60
     churn_rounds = 3
     concurrent_workers = 8
+    max_running_requests = 8
 
     @classmethod
     def setUpClass(cls):
@@ -56,8 +57,17 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
             "triton",
             "--mamba-radix-cache-strategy",
             "extra_buffer",
+            # Keep eight clients contending while reserving transient shared-pool
+            # headroom. At mem_fraction_static=0.075 this model exposes only 24
+            # physical Mamba slots: eight requests consume all of them with active
+            # + two ping-pong states, leaving no slot for HiCache tree/load state.
+            # 0.10 remains small enough for the 60 prompts to force tier churn.
+            "--max-running-requests",
+            str(cls.max_running_requests),
+            "--mamba-full-memory-ratio",
+            "1.5",
             "--mem-fraction-static",
-            "0.075",
+            "0.10",
             "--disable-cuda-graph",
             "--enable-metrics",
             "--log-level",
@@ -73,6 +83,7 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
                 "prompt_count": cls.prompt_count,
                 "churn_rounds": cls.churn_rounds,
                 "concurrent_workers": cls.concurrent_workers,
+                "max_running_requests": cls.max_running_requests,
             },
         )
         try:
@@ -196,6 +207,7 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
             round_reports = []
             max_logprob_difference = 0.0
             verified_probe_requests = 0
+            concurrent_token_mismatches = 0
             previous_metrics = after_baseline
             for round_index in range(self.churn_rounds):
                 # Alternating traversal makes old and recent prefixes compete and
@@ -210,6 +222,18 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
                 self.assertTrue(
                     all(len(result["output_ids"]) == 1 for result in results.values())
                 )
+                # Concurrent batching can change a near-tied bf16 greedy token, so
+                # a sequential token ID is not a valid exact oracle here. Validate
+                # each live response internally and record batch-shape divergence;
+                # the sequential probes below remain the strict cache-integrity
+                # oracle after every churn round.
+                for index, result in results.items():
+                    self.assertEqual(result["logprob_token_ids"], result["output_ids"])
+                    self.assertEqual(len(result["logprobs"]), 1)
+                    self.assertTrue(math.isfinite(result["logprobs"][0]))
+                    concurrent_token_mismatches += int(
+                        result["output_ids"] != baselines[index]["output_ids"][:1]
+                    )
 
                 # Compare sequential probes after concurrent churn. This removes
                 # batch-shape numerical variation from the oracle while still
@@ -283,6 +307,7 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
                 churn_rounds=round_reports,
                 total_replay_requests=self.prompt_count * self.churn_rounds,
                 verified_probe_requests=verified_probe_requests,
+                concurrent_token_mismatches=concurrent_token_mismatches,
                 max_logprob_difference=max_logprob_difference,
                 health_status=200,
             )

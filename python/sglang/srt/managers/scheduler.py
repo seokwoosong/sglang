@@ -3091,6 +3091,13 @@ class Scheduler(
                     # metadata before add_one_req() rejects the request.
                     req.mamba_cow_src_index = None
                     req.mamba_needs_clear = False
+                    # add_one_req() can queue a HiCache load-back before a
+                    # later input/chunk budget gate rejects this request.  Its
+                    # per-request Mamba destination is still referenced by the
+                    # queued operation, so flush synchronized unified loads
+                    # before returning that virtual slot to the allocator.
+                    if self.enable_hierarchical_cache and self.enable_unified_memory:
+                        self.tree_cache.ready_to_load_host_cache()
                     if req.mamba_pool_idx is not None and not getattr(
                         req, "session", None
                     ):
@@ -3099,6 +3106,20 @@ class Scheduler(
                         )
                         req.mamba_pool_idx = None
                 break
+
+        # Unified HiCache queues virtual IDs while add_one_req() restores host
+        # hits.  Flush the merged H2D operation before alloc_group_end(): the
+        # unified Mamba allocator otherwise returns unused group reservations,
+        # and the shared-pool compaction/free path can tombstone IDs still held
+        # by the queued operation.  Unified transfers are synchronized by the
+        # controller, so the returned producer is already safe to consume.
+        hicache_consumer_index = None
+        if (
+            self.enable_hierarchical_cache
+            and self.enable_unified_memory
+            and adder.can_run_list
+        ):
+            hicache_consumer_index = self.tree_cache.ready_to_load_host_cache()
 
         if mamba_allocator is not None:
             mamba_allocator.alloc_group_end()
@@ -3143,9 +3164,9 @@ class Scheduler(
         self.max_prefill_bs = max(self.max_prefill_bs, len(can_run_list))
         if self.enable_hierarchical_cache:
             # todo (zhiqiang): disable cuda graph execution if hicache loading triggered
-            new_batch.hicache_consumer_index = (
-                self.tree_cache.ready_to_load_host_cache()
-            )
+            if hicache_consumer_index is None:
+                hicache_consumer_index = self.tree_cache.ready_to_load_host_cache()
+            new_batch.hicache_consumer_index = hicache_consumer_index
 
         new_batch.prepare_for_extend()
 

@@ -52,6 +52,10 @@ from sglang.srt.mem_cache.base_prefix_cache import (
     MatchPrefixParams,
     zero_match_result,
 )
+from sglang.srt.mem_cache.common import (
+    MAMBA_STATE_PER_REQ_PREFIX_CACHE,
+    MAMBA_STATE_PER_REQ_PREFIX_CACHE_LAZY,
+)
 from sglang.srt.mem_cache.multi_ended_allocator import (
     UnifiedMambaTokenToKVPoolAllocator,
 )
@@ -698,18 +702,24 @@ class PrefillAdder:
         return cap // self.page_size * self.page_size
 
     def _mamba_gap_budget_for_req(self, req: Req) -> int:
-        """Shared-gap reservation (full-token-equivalents) for a request's new
-        mamba state. Charged only on the SHARED Mamba pool (`_mamba_slot_cost > 0`)
-        and only when the req has no state yet (`mamba_pool_idx is None`, mirroring
-        `HybridReqToTokenPool.alloc`); 0 keeps baseline / SWA / non-Mamba unchanged.
+        """Shared-gap reservation for a newly admitted unified-Mamba request.
 
-        Conservative by design (`_mamba_slot_cost` rounds UP). Does NOT reserve
-        radix COW headroom or locked-but-evictable bytes — that residual is
-        backstopped by the fail-loud RuntimeError in `alloc_req_slots`. FIXME: if
-        over-admission crashes under pressure, make this more conservative (e.g.
-        multiply by `MAMBA_STATE_PER_REQ_PREFIX_CACHE`)."""
-        if self._mamba_slot_cost and req.mamba_pool_idx is None:
-            return self._mamba_slot_cost
+        Prefix caching needs an active state plus its eager/lazy tracking
+        buffers. A HiCache Mamba hit additionally restores one tree-owned state;
+        the request immediately locks that node, so it is not evictable while
+        ``prepare_for_extend`` allocates the tracking buffers. Accounting for
+        all of these slots prevents a valid low-memory configuration from being
+        over-admitted into the fail-loud allocation path.
+        """
+        if self._mamba_slot_cost and req.req_pool_idx is None:
+            slots = (
+                MAMBA_STATE_PER_REQ_PREFIX_CACHE_LAZY
+                if self.tree_cache.enable_mamba_extra_buffer_lazy
+                else MAMBA_STATE_PER_REQ_PREFIX_CACHE
+            )
+            if req.mamba_host_hit_length > 0:
+                slots += 1
+            return self._mamba_slot_cost * slots
         return 0
 
     def ceil_paged_tokens(self, tokens: int) -> int:
@@ -764,7 +774,7 @@ class PrefillAdder:
         # The new mamba slot also consumes one mamba-recoverable slot (gated
         # separately so full_evictable can't cover it — see __init__).
         if mamba_gap_reserve and self.rem_mamba_slots is not None:
-            self.rem_mamba_slots -= 1
+            self.rem_mamba_slots -= mamba_gap_reserve // self._mamba_slot_cost
         self.rem_input_tokens -= extend_input_len
 
         if self.is_hybrid_swa:

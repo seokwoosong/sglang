@@ -25,12 +25,13 @@ from sglang.test.test_utils import (
 )
 from sglang.test.unified_hicache_artifacts import UnifiedHiCacheArtifactRecorder
 
-register_cuda_ci(est_time=180, stage="extra-a", runner_config="1-gpu-large")
+register_cuda_ci(est_time=360, stage="extra-a", runner_config="1-gpu-large")
 
 
 class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
     model = "Qwen/Qwen3.5-0.8B"
     pressure_requests = 60
+    write_policy = "write_through"
 
     @classmethod
     def setUpClass(cls):
@@ -43,7 +44,7 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
             "--hicache-size",
             "1",
             "--hicache-write-policy",
-            "write_through",
+            cls.write_policy,
             "--hicache-io-backend",
             "kernel",
             "--hicache-storage-backend",
@@ -70,6 +71,7 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
             configuration={
                 "server_args": cls.server_args,
                 "overlap_schedule": True,
+                "write_policy": cls.write_policy,
                 "mamba_radix_cache_strategy": "extra_buffer",
                 "pressure_requests": cls.pressure_requests,
             },
@@ -309,6 +311,12 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
         except BaseException as error:
             self.artifacts.fail_test(error)
             raise
+
+
+class TestUnifiedMemoryHiCacheWriteBack(TestUnifiedMemoryHiCacheIntegrity):
+    """Run the same tier and output-integrity proof through write-back."""
+
+    write_policy = "write_back"
 
 
 if __name__ == "__main__":
