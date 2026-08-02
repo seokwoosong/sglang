@@ -7,6 +7,7 @@ greedy output token IDs and log probabilities before and after restoration.
 
 import hashlib
 import math
+import os
 import shutil
 import tempfile
 import time
@@ -29,8 +30,17 @@ register_cuda_ci(est_time=360, stage="extra-a", runner_config="1-gpu-large")
 
 
 class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
-    model = "Qwen/Qwen3.5-0.8B"
-    pressure_requests = 60
+    # Keep the CI-sized default, while allowing the same integrity proof to be
+    # rerun against a larger local checkpoint without copying the test.
+    model = os.getenv(
+        "SGLANG_UNIFIED_HICACHE_TEST_MODEL", "Qwen/Qwen3.5-0.8B"
+    )
+    pressure_requests = int(
+        os.getenv("SGLANG_UNIFIED_HICACHE_PRESSURE_REQUESTS", "60")
+    )
+    mem_fraction_static = os.getenv(
+        "SGLANG_UNIFIED_HICACHE_MEM_FRACTION_STATIC", "0.075"
+    )
     write_policy = "write_through"
 
     @classmethod
@@ -60,7 +70,7 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
             "--mamba-radix-cache-strategy",
             "extra_buffer",
             "--mem-fraction-static",
-            "0.075",
+            cls.mem_fraction_static,
             "--disable-cuda-graph",
             "--enable-metrics",
             "--log-level",
@@ -74,6 +84,7 @@ class TestUnifiedMemoryHiCacheIntegrity(CustomTestCase):
                 "write_policy": cls.write_policy,
                 "mamba_radix_cache_strategy": "extra_buffer",
                 "pressure_requests": cls.pressure_requests,
+                "mem_fraction_static": cls.mem_fraction_static,
             },
         )
         try:

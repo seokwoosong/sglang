@@ -26,6 +26,7 @@ register_cpu_ci(est_time=8, suite="base-a-test-cpu")
 
 import random
 import unittest
+from unittest.mock import MagicMock, patch
 
 import torch
 
@@ -1948,6 +1949,94 @@ class TestLazyCompaction(unittest.TestCase):
         self.assertEqual(fa.watermark_physical, before_wm - 1)
         self.assertEqual(len(fa._free_phys_pages), 0)
         self.assertEqual(fa.live_page_count, 2)
+
+    def test_external_transfer_defers_opportunistic_compaction(self):
+        """A pending HiCache copy must preserve its physical-index snapshot
+        without blocking the scheduler's opportunistic maintenance tick.
+        """
+        _pool, fa, kv = self._make_full(lazy=True)
+        values = fa.alloc(4)
+        self._stamp_kv(kv, fa, values)
+        fa.free(values[:1])  # interior hole; last survivor would relocate here
+        watermark_before = fa.watermark_physical
+        v2p_before = fa.virtual_to_physical.clone()
+
+        transfer_done = MagicMock()
+        transfer_done.query.return_value = False
+        fa.register_external_transfer_event(transfer_done)
+
+        self.assertEqual(fa.flush_opportunistic(), 0)
+        self.assertEqual(fa.watermark_physical, watermark_before)
+        torch.testing.assert_close(fa.virtual_to_physical, v2p_before)
+        self.assertEqual(fa._external_transfer_events, [transfer_done])
+        transfer_done.synchronize.assert_not_called()
+
+        transfer_done.query.return_value = True
+        self.assertGreaterEqual(fa.flush_opportunistic(), 1)
+        self.assertEqual(fa._external_transfer_events, [])
+
+    def test_external_transfer_urgent_flush_uses_stream_wait(self):
+        """Allocation pressure may compact, but only after a stream-side wait;
+        the allocator must never host-synchronize the transfer event.
+        """
+        _pool, fa, kv = self._make_full(lazy=True)
+        values = fa.alloc(4)
+        self._stamp_kv(kv, fa, values)
+        fa.free(values[:1])
+
+        transfer_done = MagicMock()
+        transfer_done.query.return_value = False
+        fa.register_external_transfer_event(transfer_done)
+        schedule_stream = MagicMock()
+
+        with patch("torch.cuda.current_stream", return_value=schedule_stream):
+            self.assertGreaterEqual(fa._flush(urgent=True), 1)
+
+        schedule_stream.wait_event.assert_called_once_with(transfer_done)
+        transfer_done.synchronize.assert_not_called()
+        self.assertEqual(fa._external_transfer_events, [])
+
+    def test_external_transfer_fences_lazy_hole_reuse(self):
+        """A freed row cannot be rebound while HiCache still reads it."""
+        _pool, fa, _kv = self._make_full(lazy=True)
+        values = fa.alloc(4)
+        freed_physical = fa.virtual_to_physical[values[:1]].clone()
+        fa.free(values[:1])
+
+        transfer_done = MagicMock()
+        transfer_done.query.return_value = False
+        fa.register_external_transfer_event(transfer_done)
+        schedule_stream = MagicMock()
+
+        with patch("torch.cuda.current_stream", return_value=schedule_stream):
+            replacement = fa.alloc(1)
+
+        schedule_stream.wait_event.assert_called_once_with(transfer_done)
+        transfer_done.synchronize.assert_not_called()
+        torch.testing.assert_close(
+            fa.virtual_to_physical[replacement], freed_physical
+        )
+        self.assertEqual(fa._external_transfer_events, [])
+
+    def test_eager_compaction_waits_for_external_transfer(self):
+        """The eager-compaction rollback mode remains correct, although an
+        interior free can block at its existing V2P validation sync.
+        """
+        _pool, fa, kv = self._make_full(lazy=False)
+        values = fa.alloc(4)
+        self._stamp_kv(kv, fa, values)
+
+        transfer_done = MagicMock()
+        transfer_done.query.return_value = False
+        fa.register_external_transfer_event(transfer_done)
+        schedule_stream = MagicMock()
+
+        with patch("torch.cuda.current_stream", return_value=schedule_stream):
+            fa.free(values[:1])
+
+        schedule_stream.wait_event.assert_called_once_with(transfer_done)
+        transfer_done.synchronize.assert_not_called()
+        self.assertEqual(fa._external_transfer_events, [])
 
     def test_lazy_free_inward_walk(self):
         """The inward walk (multiple contiguous holes absorbed

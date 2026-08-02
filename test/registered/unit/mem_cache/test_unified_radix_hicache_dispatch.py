@@ -274,15 +274,38 @@ class TestHybridTransferIndexTranslation(unittest.TestCase):
     def test_unified_transfer_is_finished_before_scheduler_resumes(self):
         controller = HybridCacheController.__new__(HybridCacheController)
         event = MagicMock()
+        controller.mem_pool_device_allocator = MagicMock()
 
         controller.synchronize_unified_transfers = True
+        controller.is_unified_memory = True
         controller._finish_transfer_before_scheduler(event)
         event.synchronize.assert_called_once_with()
+        controller.mem_pool_device_allocator.register_external_transfer_event.assert_not_called()
 
         event.reset_mock()
         controller.synchronize_unified_transfers = False
         controller._finish_transfer_before_scheduler(event)
         event.synchronize.assert_not_called()
+        controller.mem_pool_device_allocator.register_external_transfer_event.assert_called_once_with(
+            event
+        )
+
+        controller.mem_pool_device_allocator.reset_mock()
+        controller.is_unified_memory = False
+        controller._finish_transfer_before_scheduler(event)
+        controller.mem_pool_device_allocator.register_external_transfer_event.assert_not_called()
+
+    def test_rejected_load_can_be_synchronized_before_destination_free(self):
+        cache = UnifiedRadixCache.__new__(UnifiedRadixCache)
+        first_ack, second_ack = MagicMock(), MagicMock()
+        cache.cache_controller = MagicMock(ack_load_queue=[first_ack, second_ack])
+        cache.loading_check = MagicMock()
+
+        cache.synchronize_pending_loads()
+
+        first_ack.finish_event.synchronize.assert_called_once_with()
+        second_ack.finish_event.synchronize.assert_called_once_with()
+        cache.loading_check.assert_called_once_with()
 
     def test_translates_execution_indices_without_mutating_virtual_ids(self):
         controller = HybridCacheController.__new__(HybridCacheController)

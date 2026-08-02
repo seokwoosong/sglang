@@ -2,6 +2,7 @@
 
 import hashlib
 import math
+import os
 import shutil
 import tempfile
 import time
@@ -25,11 +26,22 @@ register_cuda_ci(est_time=360, stage="extra-a", runner_config="1-gpu-large")
 
 
 class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
-    model = "Qwen/Qwen3.5-0.8B"
-    prompt_count = 60
-    churn_rounds = 3
-    concurrent_workers = 8
-    max_running_requests = 8
+    # Environment overrides make the exact same overlap oracle reusable for a
+    # larger checkpoint in manual qualification runs. CI keeps these defaults.
+    model = os.getenv(
+        "SGLANG_UNIFIED_HICACHE_TEST_MODEL", "Qwen/Qwen3.5-0.8B"
+    )
+    prompt_count = int(os.getenv("SGLANG_UNIFIED_HICACHE_PROMPT_COUNT", "60"))
+    churn_rounds = int(os.getenv("SGLANG_UNIFIED_HICACHE_CHURN_ROUNDS", "3"))
+    concurrent_workers = int(
+        os.getenv("SGLANG_UNIFIED_HICACHE_CONCURRENT_WORKERS", "8")
+    )
+    max_running_requests = int(
+        os.getenv("SGLANG_UNIFIED_HICACHE_MAX_RUNNING_REQUESTS", "8")
+    )
+    mem_fraction_static = os.getenv(
+        "SGLANG_UNIFIED_HICACHE_MEM_FRACTION_STATIC", "0.10"
+    )
 
     @classmethod
     def setUpClass(cls):
@@ -67,7 +79,7 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
             "--mamba-full-memory-ratio",
             "1.5",
             "--mem-fraction-static",
-            "0.10",
+            cls.mem_fraction_static,
             "--disable-cuda-graph",
             "--enable-metrics",
             "--log-level",
@@ -84,6 +96,7 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
                 "churn_rounds": cls.churn_rounds,
                 "concurrent_workers": cls.concurrent_workers,
                 "max_running_requests": cls.max_running_requests,
+                "mem_fraction_static": cls.mem_fraction_static,
             },
         )
         try:

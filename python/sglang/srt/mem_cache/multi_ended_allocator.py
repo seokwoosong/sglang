@@ -214,6 +214,14 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         # lazily, avoiding a launch-time sync.
         self._inflight_forward: Optional[Tuple[torch.cuda.Event, torch.Tensor]] = None
 
+        # HiCache translates virtual IDs to physical rows before launching copies
+        # on its dedicated D2H/H2D streams. Compaction must not relocate those rows
+        # until the copy's finish event has fired. Non-urgent lazy compaction
+        # defers while this list is non-empty; relocation and freed-row reuse
+        # insert a stream-side wait. This keeps the scheduler CPU asynchronous
+        # without weakening the translated physical-row lifetime.
+        self._external_transfer_events: List[torch.cuda.Event] = []
+
         # Per-call move cap on NON-urgent `_flush`: bounds work per `on_idle()` so a
         # large backlog doesn't block ZMQ IPC; the next flush picks up the rest.
         # Urgent (alloc-shortfall retry) is uncapped — must drain everything.
@@ -284,9 +292,56 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         self.live_page_count = 0
         self._inflight_forward = None
         self._latest_forward_done_event = None
+        self._external_transfer_events.clear()
 
     def clear_inverse_history(self) -> None:
         self._inverse_history.clear()
+
+    # -- external transfer hazards --
+
+    def register_external_transfer_event(self, event: torch.cuda.Event) -> None:
+        """Protect the current physical layout until an external copy completes.
+
+        HiCache records ``event`` after the last D2H/H2D operation that consumes
+        translated physical indices. Fresh frontier allocation and unrelated
+        frees may continue; operations that relocate or reuse physical rows
+        consult this fence.
+        """
+        if event is None:
+            return
+        self._external_transfer_events = [
+            pending
+            for pending in self._external_transfer_events
+            if not pending.query()
+        ]
+        self._external_transfer_events.append(event)
+
+    def _settle_external_transfers(self, *, urgent: bool) -> bool:
+        """Return whether physical relocation is safe on the current stream.
+
+        A non-urgent lazy flush is allowed to defer without adding work to the
+        scheduler stream. Urgent/eager paths insert CUDA event dependencies and
+        may then relocate; subsequent operations on this stream inherit the same
+        ordering. No host-side ``Event.synchronize`` is used here.
+        """
+        if not self._external_transfer_events:
+            return True
+        pending = [
+            event for event in self._external_transfer_events if not event.query()
+        ]
+        self._external_transfer_events = pending
+        if not pending:
+            return True
+        if not urgent:
+            return False
+        current_stream = torch.cuda.current_stream()
+        for event in pending:
+            current_stream.wait_event(event)
+        # The wait operations now own the dependency. Every allocator relocation
+        # is issued on this same scheduler stream, so the Python references need
+        # not remain in the polling list.
+        self._external_transfer_events.clear()
+        return True
 
     # -- size reporting --
 
@@ -424,6 +479,13 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             # per direction (greedy clustering). sort OFF: take from front.
             n_drain = min(num_pages, int(self._free_phys_pages.shape[0]))
             need_more = num_pages - n_drain
+
+            # A lazy free can expose a physical hole while a HiCache D2H copy is
+            # still reading that row. Rebinding the hole is just as hazardous as
+            # relocating it, so order reuse after the transfer on the scheduler
+            # stream. Fresh frontier allocation remains fully asynchronous.
+            if n_drain > 0:
+                self._settle_external_transfers(urgent=True)
 
             # Extend first (state untouched on failure), then drain holes.
             if need_more > 0:
@@ -901,6 +963,9 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
                 self._free_lazy(free_index)
                 return
             # --- EAGER path ---
+            # A HiCache copy may still use a translated physical row. Serialize
+            # relocation after it before reading or mutating V2P/P2V state.
+            self._settle_external_transfers(urgent=True)
             # Near-no-op in normal mode (sampling's CPU sync already drained
             # forward_stream); in overlap mode it serializes free+compaction with
             # the in-flight forward.
@@ -1361,6 +1426,11 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         loop is a corrupt-state bug and raises.
         """
         if not self.lazy_compaction:
+            return 0
+        # Preserve HiCache's physical-index snapshot. Opportunistic compaction
+        # simply leaves holes for a later tick; an allocation-pressure flush adds
+        # stream-side waits and proceeds once the transfers reach that point.
+        if not self._settle_external_transfers(urgent=urgent):
             return 0
         self._stats_n_flush_calls += 1
         with record_function("MultiEndedAlloc._flush"):
@@ -1877,6 +1947,11 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
             self.full_attn_allocator.set_latest_forward_done_event(event)
             self.mamba_allocator.set_latest_forward_done_event(event)
 
+    def register_external_transfer_event(self, event: torch.cuda.Event) -> None:
+        """Fence HiCache's translated rows in both shared sub-pools."""
+        self.full_attn_allocator.register_external_transfer_event(event)
+        self.mamba_allocator.register_external_transfer_event(event)
+
     def set_inflight_forward(
         self,
         forward_done: torch.cuda.Event,
@@ -2386,6 +2461,11 @@ class UnifiedSWATokenToKVPoolAllocator(SWATokenToKVPoolAllocator):
         with record_function("UnifiedSWAAlloc.set_latest_forward_done_event"):
             self.full_attn_allocator.set_latest_forward_done_event(event)
             self.swa_attn_allocator.set_latest_forward_done_event(event)
+
+    def register_external_transfer_event(self, event: torch.cuda.Event) -> None:
+        """Fence HiCache's translated rows in both shared sub-pools."""
+        self.full_attn_allocator.register_external_transfer_event(event)
+        self.swa_attn_allocator.register_external_transfer_event(event)
 
     def set_inflight_forward(
         self,

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
 import torch
 
+from sglang.srt.environ import envs
 from sglang.srt.managers.cache_controller import CacheOperation as BaseCacheOperation
 from sglang.srt.managers.cache_controller import (
     HiCacheAck,
@@ -195,13 +196,28 @@ class HybridCacheController(BaseHiCacheController):
             storage_backend_extra_config=storage_backend_extra_config,
             enable_storage_metrics=enable_storage_metrics,
         )
-        # Unified pools may relocate physical rows during compaction. Until
-        # transfer-aware allocator pinning is available, finish each unified
-        # D<->H operation before returning control to the scheduler so a
-        # compaction cannot invalidate the translated physical indices.
-        self.synchronize_unified_transfers = hasattr(
-            self.mem_pool_device, "_unified_buffer"
+        # Unified pools may relocate physical rows during compaction. Their
+        # allocator protects translated HiCache indices with transfer finish
+        # events, allowing the scheduler to resume without a host synchronization.
+        # Fall back to the old synchronous behavior for unsupported allocators or
+        # when explicitly requested for rollback / performance A/B.
+        self.is_unified_memory = hasattr(self.mem_pool_device, "_unified_buffer")
+        register_transfer = getattr(
+            self.mem_pool_device_allocator,
+            "register_external_transfer_event",
+            None,
         )
+        force_synchronous = envs.SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS.get()
+        self.synchronize_unified_transfers = self.is_unified_memory and (
+            force_synchronous or not callable(register_transfer)
+        )
+        if self.is_unified_memory:
+            logger.info(
+                "Unified HiCache transfers: %s",
+                "host-synchronous"
+                if self.synchronize_unified_transfers
+                else "asynchronous with allocator event fencing",
+            )
         # Override layer_num: hybrid models transfer all layers (For example, Linear Model (KV + Mamba)),
         # not just the full attention layers reported by full_kv_pool.
         if transfer_layer_num is not None and transfer_layer_num != self.layer_num:
@@ -222,8 +238,12 @@ class HybridCacheController(BaseHiCacheController):
         self._init_extra_host_mem_release_queues()
 
     def _finish_transfer_before_scheduler(self, finish_event) -> None:
-        if self.synchronize_unified_transfers:
+        if getattr(self, "synchronize_unified_transfers", False):
             finish_event.synchronize()
+        elif getattr(self, "is_unified_memory", False):
+            self.mem_pool_device_allocator.register_external_transfer_event(
+                finish_event
+            )
 
     def attach_storage_backend(
         self,

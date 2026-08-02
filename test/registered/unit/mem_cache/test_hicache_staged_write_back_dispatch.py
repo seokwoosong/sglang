@@ -678,6 +678,8 @@ class TestHiCacheStagedWriteBackDispatch(unittest.TestCase):
         class FakeHostGroup:
             layout = "page_first"
             can_use_write_back_jit = True
+            anchor_entry = SimpleNamespace(device_index_translate_fn=None)
+            entry_map = {}
 
             def backup_from_device_all_layer(
                 self,
