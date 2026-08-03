@@ -42,6 +42,7 @@ The implemented and GPU-validated configuration is:
 | Attention backend | Triton |
 | Linear-attention backend | Triton |
 | Mamba backend | Triton |
+| CUDA graph | Not covered by the current L2/L3 qualification; use graph-off for the validated configuration |
 
 The unified pool itself still does not support PD disaggregation, speculative
 decoding, LMCache, or decode context parallelism. Direct HiCache I/O is also
@@ -70,7 +71,7 @@ cd sglang
 git checkout feat/unified-memory-hicache
 ```
 
-Follow [Install SGLang from Source](/get-started/install#method-2-from-source)
+Follow [Install SGLang from Source](/docs/get-started/install#method-2-from-source)
 to create the Python environment and build required kernels. Verify that the
 test process imports this checkout rather than another installed SGLang:
 
@@ -95,7 +96,8 @@ sglang serve \
   --page-size 1 \
   --attention-backend triton \
   --linear-attn-backend triton \
-  --mamba-backend triton
+  --mamba-backend triton \
+  --disable-cuda-graph
 ```
 
 To add the file-backed L3 tier:
@@ -115,6 +117,7 @@ sglang serve \
   --attention-backend triton \
   --linear-attn-backend triton \
   --mamba-backend triton \
+  --disable-cuda-graph \
   --enable-metrics
 ```
 
@@ -221,16 +224,33 @@ Compaction can relocate live physical rows without changing virtual IDs. If a
 HiCache transfer retained a translated physical ID while compaction ran, the
 transfer could access the old location.
 
-The current implementation synchronizes unified device/host transfers before
-returning control to the scheduler. This permits overlap scheduling and lazy
-compaction to remain enabled, but it does not overlap unified HiCache
-transfers with subsequent scheduler work. Allocator-level physical-page
-pinning can replace this synchronization in a future optimization.
+The default implementation records the transfer finish event in the unified
+allocator instead of synchronizing the host thread. Fresh frontier allocation
+and unrelated scheduler work can continue. Non-urgent compaction defers while
+an event is pending; urgent relocation and freed-hole reuse insert a CUDA
+stream-side wait before changing the protected physical layout. The existing
+per-layer producer events separately prevent a forward layer from consuming an
+H2D destination before its load completes.
+
+This fence is deliberately conservative: the event protects both shared
+sub-pools rather than tracking individual rows. Set the following rollback
+knob to restore the previous host-synchronous behavior for debugging or an A/B
+comparison:
+
+```bash
+export SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS=1
+```
+
+The current end-to-end L2/L3 qualification disables CUDA graphs. CUDA graph
+replay has separate dynamic-mapping and producer-event requirements, so an
+accepted graph configuration must not be interpreted as qualified by the
+results on this page.
 
 Relevant implementation:
 
-- `HybridCacheController.synchronize_unified_transfers`
 - `HybridCacheController._finish_transfer_before_scheduler`
+- `MultiEndedAllocator.register_external_transfer_event`
+- `MultiEndedAllocator._settle_external_transfers`
 
 ## Find the implementation in the repository
 
@@ -375,16 +395,16 @@ output-token and logprob-token IDs with bf16 logprob drift bounded to `0.1`.
 Separating concurrent pressure from sequential correctness probes avoids using
 batch-shape-dependent greedy output as the cache-integrity oracle.
 
-On an NVIDIA GeForce RTX 5090, the integrity test completed in 125 seconds and
-the stress test completed in 304 seconds. The stress run observed:
+On an NVIDIA GeForce RTX 5090, a final Qwen3.5-0.8B asynchronous stress run
+observed:
 
 ```text
-L1 evicted tokens:       756541
-L2 load-back tokens:     438032
-L3 prefetched tokens:    284956
+L1 evicted tokens:       674555
+L2 load-back tokens:     160146
+L3 prefetched tokens:    10105
 Concurrent replays:      180
 Verified probes:         36
-Maximum logprob drift:   0.048746705055236816
+Maximum logprob drift:   0.09483468532562256
 Final health status:     200
 
 OK
