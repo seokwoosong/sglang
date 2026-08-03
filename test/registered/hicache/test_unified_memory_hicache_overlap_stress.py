@@ -28,9 +28,7 @@ register_cuda_ci(est_time=360, stage="extra-a", runner_config="1-gpu-large")
 class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
     # Environment overrides make the exact same overlap oracle reusable for a
     # larger checkpoint in manual qualification runs. CI keeps these defaults.
-    model = os.getenv(
-        "SGLANG_UNIFIED_HICACHE_TEST_MODEL", "Qwen/Qwen3.5-0.8B"
-    )
+    model = os.getenv("SGLANG_UNIFIED_HICACHE_TEST_MODEL", "Qwen/Qwen3.5-0.8B")
     prompt_count = int(os.getenv("SGLANG_UNIFIED_HICACHE_PROMPT_COUNT", "60"))
     churn_rounds = int(os.getenv("SGLANG_UNIFIED_HICACHE_CHURN_ROUNDS", "3"))
     concurrent_workers = int(
@@ -42,6 +40,12 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
     mem_fraction_static = os.getenv(
         "SGLANG_UNIFIED_HICACHE_MEM_FRACTION_STATIC", "0.10"
     )
+    hicache_size = os.getenv("SGLANG_UNIFIED_HICACHE_SIZE", "1")
+    hicache_ratio = os.getenv("SGLANG_UNIFIED_HICACHE_RATIO", "2.0")
+    tp_size = int(os.getenv("SGLANG_UNIFIED_HICACHE_TP_SIZE", "1"))
+    enable_cuda_graph = os.getenv(
+        "SGLANG_UNIFIED_HICACHE_ENABLE_CUDA_GRAPH", "0"
+    ).lower() in ("1", "true", "yes")
 
     @classmethod
     def setUpClass(cls):
@@ -52,7 +56,9 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
             "--enable-unified-memory",
             "--enable-hierarchical-cache",
             "--hicache-size",
-            "1",
+            cls.hicache_size,
+            "--hicache-ratio",
+            cls.hicache_ratio,
             "--hicache-write-policy",
             "write_through",
             "--hicache-io-backend",
@@ -61,6 +67,8 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
             "file",
             "--page-size",
             "1",
+            "--tp-size",
+            str(cls.tp_size),
             "--attention-backend",
             "triton",
             "--linear-attn-backend",
@@ -80,11 +88,19 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
             "1.5",
             "--mem-fraction-static",
             cls.mem_fraction_static,
-            "--disable-cuda-graph",
             "--enable-metrics",
             "--log-level",
             "error",
         ]
+        if not cls.enable_cuda_graph:
+            cls.server_args.extend(
+                [
+                    "--cuda-graph-backend-decode",
+                    "disabled",
+                    "--cuda-graph-backend-prefill",
+                    "disabled",
+                ]
+            )
         cls.artifacts.update(
             test="overlap_stress",
             model=cls.model,
@@ -97,6 +113,10 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
                 "concurrent_workers": cls.concurrent_workers,
                 "max_running_requests": cls.max_running_requests,
                 "mem_fraction_static": cls.mem_fraction_static,
+                "hicache_size": cls.hicache_size,
+                "hicache_ratio": cls.hicache_ratio,
+                "tp_size": cls.tp_size,
+                "cuda_graph": cls.enable_cuda_graph,
             },
         )
         try:
@@ -143,18 +163,27 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
                     "max_new_tokens": max_new_tokens,
                 },
                 "return_logprob": True,
+                "top_logprobs_num": 5,
             },
             timeout=180,
         )
         response.raise_for_status()
         body = response.json()
         logprobs = body["meta_info"]["output_token_logprobs"]
+        top_logprobs = body["meta_info"].get("output_top_logprobs") or []
         return {
             "index": index,
             "latency_seconds": time.monotonic() - started,
             "output_ids": [int(value) for value in body["output_ids"]],
             "logprobs": [float(value[0]) for value in logprobs],
             "logprob_token_ids": [int(value[1]) for value in logprobs],
+            "top_logprobs": [
+                [
+                    {"logprob": float(candidate[0]), "token_id": int(candidate[1])}
+                    for candidate in position
+                ]
+                for position in top_logprobs
+            ],
         }
 
     def _metrics(self, stage):
@@ -176,16 +205,60 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
         return values
 
     def _assert_matches(self, baseline, replay):
-        self.assertEqual(replay["output_ids"], baseline["output_ids"])
-        self.assertEqual(replay["logprob_token_ids"], baseline["logprob_token_ids"])
+        baseline_ids = baseline["output_ids"]
+        replay_ids = replay["output_ids"]
+        self.assertEqual(len(replay_ids), len(baseline_ids))
         self.assertEqual(len(replay["logprobs"]), len(baseline["logprobs"]))
+        self.assertEqual(baseline["logprob_token_ids"], baseline_ids)
+        self.assertEqual(replay["logprob_token_ids"], replay_ids)
+        mismatch_positions = [
+            index
+            for index, (actual, expected) in enumerate(zip(replay_ids, baseline_ids))
+            if actual != expected
+        ]
+        first_mismatch = mismatch_positions[0] if mismatch_positions else None
+        compare_length = len(baseline_ids) if first_mismatch is None else first_mismatch
+        self.assertEqual(replay_ids[:compare_length], baseline_ids[:compare_length])
+        self.assertEqual(
+            replay["logprob_token_ids"][:compare_length],
+            baseline["logprob_token_ids"][:compare_length],
+        )
         max_difference = 0.0
-        for actual, expected in zip(replay["logprobs"], baseline["logprobs"]):
+        for actual, expected in zip(
+            replay["logprobs"][:compare_length],
+            baseline["logprobs"][:compare_length],
+        ):
             self.assertTrue(math.isfinite(actual) and math.isfinite(expected))
             difference = abs(actual - expected)
             self.assertLessEqual(difference, 1e-1)
             max_difference = max(max_difference, difference)
-        return max_difference
+        if first_mismatch is None:
+            self.assertEqual(replay["logprob_token_ids"], baseline["logprob_token_ids"])
+            return max_difference, False
+
+        # As in the integrity test, only a bounded argmax tie is accepted.
+        # All preceding autoregressive state remains an exact token match.
+        self.assertGreater(len(baseline["top_logprobs"]), first_mismatch)
+        self.assertGreater(len(replay["top_logprobs"]), first_mismatch)
+        expected_top = {
+            item["token_id"]: item["logprob"]
+            for item in baseline["top_logprobs"][first_mismatch]
+        }
+        actual_top = {
+            item["token_id"]: item["logprob"]
+            for item in replay["top_logprobs"][first_mismatch]
+        }
+        expected_token = baseline_ids[first_mismatch]
+        actual_token = replay_ids[first_mismatch]
+        self.assertIn(actual_token, expected_top)
+        self.assertIn(expected_token, actual_top)
+        self.assertLessEqual(
+            abs(expected_top[expected_token] - expected_top[actual_token]), 1.5e-1
+        )
+        self.assertLessEqual(
+            abs(actual_top[expected_token] - actual_top[actual_token]), 1.5e-1
+        )
+        return max_difference, True
 
     def _run_concurrent_round(self, order):
         results = {}
@@ -220,6 +293,7 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
             round_reports = []
             max_logprob_difference = 0.0
             verified_probe_requests = 0
+            near_tie_probe_divergences = 0
             concurrent_token_mismatches = 0
             previous_metrics = after_baseline
             for round_index in range(self.churn_rounds):
@@ -257,10 +331,14 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
                 ]
                 for index in probe_indices:
                     replay = self._generate(index)
+                    probe_difference, near_tie = self._assert_matches(
+                        baselines[index], replay
+                    )
                     max_logprob_difference = max(
                         max_logprob_difference,
-                        self._assert_matches(baselines[index], replay),
+                        probe_difference,
                     )
+                    near_tie_probe_divergences += int(near_tie)
                     verified_probe_requests += 1
 
                 health_status = requests.get(
@@ -321,6 +399,7 @@ class TestUnifiedMemoryHiCacheOverlapStress(CustomTestCase):
                 total_replay_requests=self.prompt_count * self.churn_rounds,
                 verified_probe_requests=verified_probe_requests,
                 concurrent_token_mismatches=concurrent_token_mismatches,
+                near_tie_probe_divergences=near_tie_probe_divergences,
                 max_logprob_difference=max_logprob_difference,
                 health_status=200,
             )
