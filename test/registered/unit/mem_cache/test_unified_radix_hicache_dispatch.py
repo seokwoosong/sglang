@@ -596,10 +596,13 @@ class TestUnifiedMHAHostLoad(unittest.TestCase):
             layer_id=1,
             num_layers=2,
             io_backend="kernel",
+            staging=torch.empty((1, 2, 1, 4), dtype=torch.long),
         )
 
         torch.testing.assert_close(dst[1], src[2, 1, 0])
         torch.testing.assert_close(dst[3], src[0, 1, 0])
+        self.assertTrue(torch.all(backing[:, 0] == -1))
+        self.assertTrue(torch.all(backing[:, 2] == -1))
 
 
 class TestUnifiedHiCacheServerArgs(unittest.TestCase):

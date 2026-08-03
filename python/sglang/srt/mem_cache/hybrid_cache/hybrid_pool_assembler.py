@@ -545,6 +545,7 @@ def build_hybrid_mamba_stack(
     load_cache_event,
     storage_backend: Optional[str],
     use_mla: bool,
+    host_kv_evict_fn: Optional[Callable[[int], Any]] = None,
     host_mamba_evict_fn: Optional[Callable[[int], Any]] = None,
     device_mamba_evict_fn: Optional[Callable[[int], Any]] = None,
     prefetch_threshold: int = 256,
@@ -560,19 +561,45 @@ def build_hybrid_mamba_stack(
     mamba_index_translate_fn = getattr(
         params.req_to_token_pool, "translate_mamba_indices", None
     )
-    kv_host_pool = build_kv_host_pool(
-        kv_pool=kv_pool,
-        page_size=params.page_size,
-        server_args=server_args,
-        use_mla=use_mla,
-    )
-    mamba_host_pool = MambaPoolHost(
-        mamba_pool,
-        server_args.hicache_ratio,
-        server_args.hicache_size,
-        allocator_type=_get_allocator_type(server_args),
-        layout=server_args.hicache_mem_layout,
-    )
+    is_unified_mamba = hasattr(kv_pool, "_unified_buffer") and getattr(
+        mamba_pool, "_unified_buffer", None
+    ) is getattr(kv_pool, "_unified_buffer", None)
+    if is_unified_mamba:
+        if use_mla:
+            raise ValueError("unified typed-chunk HiCache does not support MLA")
+        if params.page_size != 1:
+            raise ValueError(
+                "unified typed-chunk HiCache currently requires --page-size 1"
+            )
+        if server_args.hicache_mem_layout != "page_first":
+            raise ValueError(
+                "unified typed-chunk HiCache requires --hicache-mem-layout page_first"
+            )
+        from sglang.srt.mem_cache.pool_host.unified_chunk import (
+            build_unified_chunk_host_pools,
+        )
+
+        kv_host_pool, mamba_host_pool = build_unified_chunk_host_pools(
+            kv_pool=kv_pool,
+            mamba_pool=mamba_pool,
+            hicache_ratio=server_args.hicache_ratio,
+            hicache_size_gb=server_args.hicache_size,
+            allocator_type=_get_allocator_type(server_args),
+        )
+    else:
+        kv_host_pool = build_kv_host_pool(
+            kv_pool=kv_pool,
+            page_size=params.page_size,
+            server_args=server_args,
+            use_mla=use_mla,
+        )
+        mamba_host_pool = MambaPoolHost(
+            mamba_pool,
+            server_args.hicache_ratio,
+            server_args.hicache_size,
+            allocator_type=_get_allocator_type(server_args),
+            layout=server_args.hicache_mem_layout,
+        )
     entries = [
         build_pool_entry(
             name=PoolName.KV,
@@ -581,6 +608,7 @@ def build_hybrid_mamba_stack(
             layer_mapping=full_layer_mapping,
             transfer_layer_num=transfer_layer_num,
             is_anchor=True,
+            host_evict_fn=host_kv_evict_fn,
             device_index_translate_fn=full_index_translate_fn,
         ),
         build_pool_entry(
@@ -943,6 +971,7 @@ class _MambaStrategy(StackStrategy):
             load_cache_event=load_cache_event,
             storage_backend=storage_backend,
             use_mla=kvcache.use_mla,
+            host_kv_evict_fn=lambda n: cache.evict_host(n, ComponentType.FULL),
             host_mamba_evict_fn=lambda n: cache.evict_host(n, ComponentType.MAMBA),
             device_mamba_evict_fn=lambda n: cache.evict(EvictParams(mamba_num=n)),
             prefetch_threshold=prefetch_threshold,
@@ -1632,6 +1661,7 @@ def attach_hybrid_pool_to_mamba_cache(
             load_cache_event=load_cache_event,
             storage_backend=server_args.hicache_storage_backend,
             use_mla=hybrid_kv.use_mla,
+            host_kv_evict_fn=mamba_cache.evict_host,
             host_mamba_evict_fn=mamba_cache.evict_mamba_host,
             device_mamba_evict_fn=mamba_cache.evict_mamba,
             prefetch_threshold=prefetch_threshold,
