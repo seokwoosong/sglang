@@ -87,6 +87,10 @@ def bind_device_pool(host, device_pool):
         )
         for conv_state in device_pool.mamba_cache.conv
     ]
+    # The production constructor creates bounded staging after binding the
+    # device pool. This fixture swaps in a strided unified pool later, so repeat
+    # that initialization instead of leaving the old contiguous-pool buffers.
+    host._init_write_back_staging_buffers()
 
 
 def make_host_pool(dtype, layout):
@@ -307,6 +311,8 @@ def test_unified_mamba_strided_backup_load_roundtrip(dtype):
     host = make_host_pool(dtype, "page_first")
     device_pool = make_unified_device_pool(dtype)
     bind_device_pool(host, device_pool)
+    assert host.temporal_staging_buffer.shape[0] == 1
+    assert host.conv_staging_buffers[0].shape[0] == 1
     fill_device_data(device_pool, dtype)
 
     source_indices = torch.tensor([1, 5, 10], dtype=torch.int64, device=DEVICE)
