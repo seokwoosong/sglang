@@ -1975,6 +1975,65 @@ class TestLazyCompaction(unittest.TestCase):
         self.assertGreaterEqual(fa.flush_opportunistic(), 1)
         self.assertEqual(fa._external_transfer_events, [])
 
+    def test_row_transfer_allows_unrelated_opportunistic_compaction(self):
+        """A physical row outside the planned src/dst footprint is not a
+        reason to block the allocator globally.
+        """
+        _pool, fa, kv = self._make_full(lazy=True)
+        values = fa.alloc(6)
+        self._stamp_kv(kv, fa, values)
+        protected_physical = fa.virtual_to_physical[values[2:3]].clone()
+        fa.free(values[:1])
+
+        transfer_done = MagicMock()
+        transfer_done.query.return_value = False
+        fa.register_external_transfer(transfer_done, protected_physical)
+
+        self.assertEqual(fa.flush_opportunistic(), 1)
+        self.assertEqual(len(fa._external_transfer_hazards), 1)
+        transfer_done.synchronize.assert_not_called()
+
+    def test_row_transfer_defers_overlapping_opportunistic_compaction(self):
+        _pool, fa, kv = self._make_full(lazy=True)
+        values = fa.alloc(6)
+        self._stamp_kv(kv, fa, values)
+        compaction_source = fa.virtual_to_physical[values[-1:]].clone()
+        fa.free(values[:1])
+        watermark_before = fa.watermark_physical
+
+        transfer_done = MagicMock()
+        transfer_done.query.return_value = False
+        fa.register_external_transfer(transfer_done, compaction_source)
+
+        self.assertEqual(fa.flush_opportunistic(), 0)
+        self.assertEqual(fa.watermark_physical, watermark_before)
+        self.assertEqual(len(fa._external_transfer_hazards), 1)
+
+    def test_row_transfer_urgent_waits_only_for_compaction_blocker(self):
+        _pool, fa, kv = self._make_full(lazy=True)
+        values = fa.alloc(6)
+        self._stamp_kv(kv, fa, values)
+        related_physical = fa.virtual_to_physical[values[-1:]].clone()
+        unrelated_physical = fa.virtual_to_physical[values[2:3]].clone()
+        fa.free(values[:1])
+
+        related_done = MagicMock()
+        unrelated_done = MagicMock()
+        related_done.query.return_value = False
+        unrelated_done.query.return_value = False
+        fa.register_external_transfer(related_done, related_physical)
+        fa.register_external_transfer(unrelated_done, unrelated_physical)
+        schedule_stream = MagicMock()
+
+        with patch("torch.cuda.current_stream", return_value=schedule_stream):
+            self.assertEqual(fa._flush(urgent=True), 1)
+
+        schedule_stream.wait_event.assert_called_once_with(related_done)
+        related_done.synchronize.assert_not_called()
+        unrelated_done.synchronize.assert_not_called()
+        self.assertEqual(len(fa._external_transfer_hazards), 1)
+        self.assertIs(fa._external_transfer_hazards[0].event, unrelated_done)
+
     def test_external_transfer_urgent_flush_uses_stream_wait(self):
         """Allocation pressure may compact, but only after a stream-side wait;
         the allocator must never host-synchronize the transfer event.
@@ -2013,9 +2072,7 @@ class TestLazyCompaction(unittest.TestCase):
 
         schedule_stream.wait_event.assert_called_once_with(transfer_done)
         transfer_done.synchronize.assert_not_called()
-        torch.testing.assert_close(
-            fa.virtual_to_physical[replacement], freed_physical
-        )
+        torch.testing.assert_close(fa.virtual_to_physical[replacement], freed_physical)
         self.assertEqual(fa._external_transfer_events, [])
 
     def test_eager_compaction_waits_for_external_transfer(self):

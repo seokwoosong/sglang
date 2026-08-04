@@ -224,18 +224,43 @@ Compaction can relocate live physical rows without changing virtual IDs. If a
 HiCache transfer retained a translated physical ID while compaction ran, the
 transfer could access the old location.
 
-The default implementation records the transfer finish event in the unified
-allocator instead of synchronizing the host thread. Fresh frontier allocation
-and unrelated scheduler work can continue. Non-urgent compaction defers while
-an event is pending; urgent relocation and freed-hole reuse insert a CUDA
-stream-side wait before changing the protected physical layout. The existing
-per-layer producer events separately prevent a forward layer from consuming an
-H2D destination before its load completes.
+The controller records each transfer's finish event and translated physical
+indices in the allocator instead of synchronizing the host thread. Full-KV and
+Mamba transfers register with their own `MultiEndedAllocator`, so a transfer
+in one sub-pool does not fence compaction in the other sub-pool. If any
+participating pool does not provide the row-aware callback, the controller
+falls back to the composite allocator's event-only global fence.
 
-This fence is deliberately conservative: the event protects both shared
-sub-pools rather than tracking individual rows. Set the following rollback
-knob to restore the previous host-synchronous behavior for debugging or an A/B
-comparison:
+Registration keeps the physical-index tensor on its producer device. It does
+not copy the indices to the CPU on the scheduler hot path. When lazy
+compaction already snapshots its free list on the CPU, it materializes the
+protected page IDs and previews the current compaction footprint:
+
+- boundary holes that would move the watermark;
+- source rows that would be relocated; and
+- destination holes that would be overwritten.
+
+An opportunistic flush proceeds when this footprint is disjoint from every
+active transfer. If it intersects a transfer, the flush defers without adding
+work to the scheduler stream. An urgent flush inserts stream-side waits for
+only the intersecting events and then compacts. The implementation does not
+call `Event.synchronize()` in the asynchronous path. Existing per-layer
+producer events separately prevent a forward layer from consuming an H2D
+destination before its load completes.
+
+The current row-aware scope is intentionally limited:
+
+- D2H reads and H2D writes both pin their rows against relocation, overwrite,
+  and watermark release.
+- Lazy compaction uses the exact preview. Freed-hole reuse and eager
+  free/rollback paths retain a pool-local conservative fence to avoid adding a
+  new device-to-host synchronization.
+- If any move in the current preview intersects a pinned row, that flush
+  defers as a unit. The planner does not skip pinned rows and compact a
+  disjoint subset.
+
+Set the following rollback knob to restore the host-synchronous behavior for
+debugging or an A/B comparison:
 
 ```bash
 export SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS=1
@@ -249,8 +274,11 @@ results on this page.
 Relevant implementation:
 
 - `HybridCacheController._finish_transfer_before_scheduler`
+- `PoolEntry.device_transfer_fence_fn`
+- `MultiEndedAllocator.register_external_transfer`
 - `MultiEndedAllocator.register_external_transfer_event`
 - `MultiEndedAllocator._settle_external_transfers`
+- `MultiEndedAllocator._preview_flush_touched_pages`
 
 ## Find the implementation in the repository
 
@@ -268,6 +296,7 @@ Start with these files when reviewing or extending the integration:
 | L3 storage implementations | `python/sglang/srt/mem_cache/storage/` |
 | Focused CPU tests | `test/registered/unit/mem_cache/` |
 | Unified GPU tests | `test/registered/hicache/test_unified_memory_hicache_*.py` |
+| Row-aware fence GPU test | `test/registered/kernels/ops/kvcache/test_unified_row_transfer_fence.py` |
 
 Use `git log` and `git show` to review the implementation in dependency order:
 
@@ -440,6 +469,10 @@ Focused CPU tests:
 
 ```bash
 PYTHONPATH=python \
+python -m pytest \
+  test/registered/unit/mem_cache/test_multi_ended_allocator.py -q
+
+PYTHONPATH=python \
 python test/registered/unit/mem_cache/test_unified_memory_pool.py
 
 PYTHONPATH=python \
@@ -448,6 +481,18 @@ python test/registered/unit/mem_cache/test_unified_radix_hicache_dispatch.py
 PYTHONPATH=python \
 python test/registered/unit/mem_cache/test_unified_hicache_artifacts.py
 ```
+
+Run the focused row-aware fence test on an NVIDIA CUDA GPU with:
+
+```bash
+PYTHONPATH=python \
+python -m pytest \
+  test/registered/kernels/ops/kvcache/test_unified_row_transfer_fence.py -q
+```
+
+The CUDA test delays a D2H copy on a separate stream. It verifies that an
+unrelated compaction can overlap the transfer without corrupting the snapshot,
+while an overlapping compaction defers until the transfer event completes.
 
 ### Interpret a result
 

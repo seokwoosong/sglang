@@ -6,8 +6,8 @@ import pytest
 import torch
 
 from sglang.srt.mem_cache.pool_host.unified_chunk import (
-    UnifiedChunkMHAPoolHost,
     UnifiedChunkMambaPoolHost,
+    UnifiedChunkMHAPoolHost,
 )
 from sglang.srt.mem_cache.typed_chunk_host import (
     HostChunkOwner,
@@ -16,7 +16,7 @@ from sglang.srt.mem_cache.typed_chunk_host import (
 )
 from sglang.test.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=20, suite="stage-b-test-1-gpu-large")
+register_cuda_ci(est_time=20, stage="stage-b", runner_config="1-gpu-large")
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="typed-chunk transfer test requires CUDA"

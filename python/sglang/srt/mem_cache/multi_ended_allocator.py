@@ -22,9 +22,14 @@ page math collapses to slot math byte-identically.
 
 from __future__ import annotations
 
+import atexit
 import inspect
 import logging
 import os
+import signal
+import time as _time_mod  # local alias so tests can patch
+import weakref
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
 import torch
@@ -44,14 +49,30 @@ from sglang.srt.utils.common import get_num_new_pages, next_power_of_2
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _ExternalTransferHazard:
+    """Physical pages protected by one asynchronous device transfer.
+
+    ``physical_indices`` stays on its producer device until compaction already
+    pays the free-list D2H synchronization.  Materializing it at registration
+    would put a new device synchronization on the scheduler hot path.
+    """
+
+    event: torch.cuda.Event
+    physical_indices: torch.Tensor
+    pages_cpu: Optional[Set[int]] = None
+
+    def materialize_pages(self, page_size: int) -> Set[int]:
+        if self.pages_cpu is None:
+            pages = torch.unique(
+                self.physical_indices.detach().to(torch.int64) // page_size
+            )
+            self.pages_cpu = set(int(page) for page in pages.tolist())
+        return self.pages_cpu
+
+
 # OFF (default): cat unsorted, `_flush` sorts once. ON: sort after each cat.
 _SORT_FREE_LIST_AFTER_MERGE = envs.SGLANG_SORT_FREE_LIST_AFTER_MERGE.get()
-
-
-import atexit
-import signal
-import time as _time_mod  # local alias so tests can patch
-import weakref
 
 _LAZY_COMPACTION_STATS_ENABLED = envs.SGLANG_LOG_LAZY_COMPACTION_STATS.get()
 _LAZY_COMPACTION_STATS_INTERVAL_SEC = float(
@@ -221,6 +242,10 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         # insert a stream-side wait. This keeps the scheduler CPU asynchronous
         # without weakening the translated physical-row lifetime.
         self._external_transfer_events: List[torch.cuda.Event] = []
+        # Row-aware transfers are checked against the concrete compaction
+        # footprint.  The event-only list above remains the conservative
+        # fallback for callers that cannot provide physical indices.
+        self._external_transfer_hazards: List[_ExternalTransferHazard] = []
 
         # Per-call move cap on NON-urgent `_flush`: bounds work per `on_idle()` so a
         # large backlog doesn't block ZMQ IPC; the next flush picks up the rest.
@@ -293,6 +318,7 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         self._inflight_forward = None
         self._latest_forward_done_event = None
         self._external_transfer_events.clear()
+        self._external_transfer_hazards.clear()
 
     def clear_inverse_history(self) -> None:
         self._inverse_history.clear()
@@ -310,37 +336,94 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         if event is None:
             return
         self._external_transfer_events = [
-            pending
-            for pending in self._external_transfer_events
-            if not pending.query()
+            pending for pending in self._external_transfer_events if not pending.query()
         ]
         self._external_transfer_events.append(event)
 
-    def _settle_external_transfers(self, *, urgent: bool) -> bool:
+    def register_external_transfer(
+        self,
+        event: torch.cuda.Event,
+        physical_indices: torch.Tensor,
+    ) -> None:
+        """Protect only the physical pages touched by an asynchronous copy.
+
+        The indices are token-granular and have already passed through V2P
+        translation.  This first row-aware implementation treats D2H reads and
+        H2D writes identically: a protected page may be neither relocated nor
+        released across the watermark until the event settles.
+        """
+        if event is None or physical_indices is None or physical_indices.numel() == 0:
+            return
+        self._external_transfer_hazards = [
+            hazard
+            for hazard in self._external_transfer_hazards
+            if not hazard.event.query()
+        ]
+        self._external_transfer_hazards.append(
+            _ExternalTransferHazard(event, physical_indices)
+        )
+
+    def _settle_external_transfers(
+        self,
+        *,
+        urgent: bool,
+        touched_pages: Optional[Set[int]] = None,
+    ) -> bool:
         """Return whether physical relocation is safe on the current stream.
 
         A non-urgent lazy flush is allowed to defer without adding work to the
         scheduler stream. Urgent/eager paths insert CUDA event dependencies and
         may then relocate; subsequent operations on this stream inherit the same
         ordering. No host-side ``Event.synchronize`` is used here.
+
+        Event-only registrations conservatively block every operation.  When
+        ``touched_pages`` is provided, row-aware registrations block only an
+        operation whose physical footprint intersects the transfer.
         """
-        if not self._external_transfer_events:
-            return True
-        pending = [
+        pending_events = [
             event for event in self._external_transfer_events if not event.query()
         ]
-        self._external_transfer_events = pending
-        if not pending:
+        self._external_transfer_events = pending_events
+
+        pending_hazards = []
+        blocking_hazards = []
+        for hazard in self._external_transfer_hazards:
+            if hazard.event.query():
+                continue
+            pending_hazards.append(hazard)
+            if touched_pages is None or (
+                touched_pages
+                and not touched_pages.isdisjoint(
+                    hazard.materialize_pages(self.page_size)
+                )
+            ):
+                blocking_hazards.append(hazard)
+        self._external_transfer_hazards = pending_hazards
+
+        if not pending_events and not blocking_hazards:
             return True
         if not urgent:
             return False
         current_stream = torch.cuda.current_stream()
-        for event in pending:
+        waited_event_ids = set()
+        for event in pending_events:
             current_stream.wait_event(event)
+            waited_event_ids.add(id(event))
+        for hazard in blocking_hazards:
+            if id(hazard.event) not in waited_event_ids:
+                current_stream.wait_event(hazard.event)
+                waited_event_ids.add(id(hazard.event))
         # The wait operations now own the dependency. Every allocator relocation
         # is issued on this same scheduler stream, so the Python references need
         # not remain in the polling list.
         self._external_transfer_events.clear()
+        if blocking_hazards:
+            blocking_ids = {id(hazard) for hazard in blocking_hazards}
+            self._external_transfer_hazards = [
+                hazard
+                for hazard in self._external_transfer_hazards
+                if id(hazard) not in blocking_ids
+            ]
         return True
 
     # -- size reporting --
@@ -1364,11 +1447,14 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
                 return p, j
             return None, j
 
-    def _absorb_boundary_holes(self, all_cpu: List[int]) -> Tuple[int, List[int]]:
-        """Retreat the watermark past free slots ALREADY contiguous with it, slice
-        them off `_free_phys_pages`, return ``(new_watermark, interior_holes_cpu)``.
-        `all_cpu` is the sorted-ascending snapshot; interior holes feed the survivor
-        walk.
+    def _partition_boundary_holes(
+        self, all_cpu: List[int]
+    ) -> Tuple[int, List[int], List[int]]:
+        """Split free pages into boundary-contiguous and interior holes.
+
+        This is deliberately side-effect free so transfer hazards can inspect
+        the exact watermark/compaction footprint before any allocator state is
+        mutated.
         """
         M = len(all_cpu)
         wm = self.watermark_physical
@@ -1376,14 +1462,71 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         if self.grow_direction == "up":
             while n < M and all_cpu[M - 1 - n] == wm - 1 - n:
                 n += 1
-            new_wm = wm - n
-            holes_cpu = all_cpu[: M - n]
-            self._free_phys_pages = self._free_phys_pages[: M - n]
+            return wm - n, all_cpu[M - n :], all_cpu[: M - n]
+
+        while n < M and all_cpu[n] == wm + 1 + n:
+            n += 1
+        return wm + n, all_cpu[:n], all_cpu[n:]
+
+    def _preview_flush_touched_pages(
+        self, all_cpu: List[int], *, urgent: bool
+    ) -> Set[int]:
+        """Conservative physical footprint of the current two-pointer pass.
+
+        The preview mirrors destination/source selection but does not inspect
+        forward write hazards.  It may therefore include a move that the real
+        non-urgent pass later declines, which is safe: false conflicts only
+        defer one opportunistic tick and never permit a conflicting move.
+        """
+        _, boundary_holes, holes_cpu = self._partition_boundary_holes(all_cpu)
+        touched = set(boundary_holes)
+        if not holes_cpu:
+            return touched
+
+        cursor: Optional[int] = None
+        j_cursor: Optional[int] = None
+        dst_cursor = 0 if self.grow_direction == "up" else len(holes_cpu) - 1
+        n_dst_consumed = 0
+        move_cap = None if urgent else self._lazy_max_moves_per_call
+
+        while n_dst_consumed < len(holes_cpu):
+            src, j_cursor = self._topmost_survivor(
+                start_hint=cursor,
+                holes_cpu=holes_cpu,
+                j_in=j_cursor,
+            )
+            if src is None:
+                break
+            dst = holes_cpu[dst_cursor]
+            if (self.grow_direction == "up" and src < dst) or (
+                self.grow_direction == "down" and src > dst
+            ):
+                break
+
+            touched.add(src)
+            touched.add(dst)
+            if self.grow_direction == "up":
+                dst_cursor += 1
+                cursor = src - 1
+            else:
+                dst_cursor -= 1
+                cursor = src + 1
+            n_dst_consumed += 1
+            if move_cap is not None and n_dst_consumed >= move_cap:
+                break
+        return touched
+
+    def _absorb_boundary_holes(self, all_cpu: List[int]) -> Tuple[int, List[int]]:
+        """Retreat the watermark past free slots ALREADY contiguous with it, slice
+        them off `_free_phys_pages`, return ``(new_watermark, interior_holes_cpu)``.
+        `all_cpu` is the sorted-ascending snapshot; interior holes feed the survivor
+        walk.
+        """
+        new_wm, boundary_holes, holes_cpu = self._partition_boundary_holes(all_cpu)
+        n = len(boundary_holes)
+        if self.grow_direction == "up":
+            self._free_phys_pages = self._free_phys_pages[: len(holes_cpu)]
         else:
-            while n < M and all_cpu[n] == wm + 1 + n:
-                n += 1
-            new_wm = wm + n
-            holes_cpu = all_cpu[n:]
             self._free_phys_pages = self._free_phys_pages[n:]
         self.watermark_physical = new_wm
         self._stats_n_pages_absorbed += n
@@ -1427,12 +1570,11 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         """
         if not self.lazy_compaction:
             return 0
-        # Preserve HiCache's physical-index snapshot. Opportunistic compaction
-        # simply leaves holes for a later tick; an allocation-pressure flush adds
-        # stream-side waits and proceeds once the transfers reach that point.
-        if not self._settle_external_transfers(urgent=urgent):
+        # Event-only callers retain the old global fence without paying the
+        # free-list D2H below. Row-aware hazards are checked after the exact
+        # boundary/src/dst footprint is available.
+        if not self._settle_external_transfers(urgent=urgent, touched_pages=set()):
             return 0
-        self._stats_n_flush_calls += 1
         with record_function("MultiEndedAlloc._flush"):
             self._drain_pending_reuse(urgent=urgent)
 
@@ -1441,6 +1583,13 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
                 self._free_phys_pages, _ = torch.sort(self._free_phys_pages)
 
             all_cpu = self._free_phys_pages.tolist()  # the ONE D2H sync per flush
+
+            touched_pages = self._preview_flush_touched_pages(all_cpu, urgent=urgent)
+            if not self._settle_external_transfers(
+                urgent=urgent, touched_pages=touched_pages
+            ):
+                return 0
+            self._stats_n_flush_calls += 1
 
             # `holes_cpu` = interior holes; `_free_phys_pages == holes_cpu` after.
             new_wm, holes_cpu = self._absorb_boundary_holes(all_cpu)

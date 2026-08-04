@@ -294,9 +294,9 @@ class MambaPoolHost(HostKVCache):
 
     @synchronized
     def alloc(self, need_size: int) -> Optional[torch.Tensor]:
-        assert need_size % self.page_size == 0, (
-            "The requested size should be a multiple of the page size."
-        )
+        assert (
+            need_size % self.page_size == 0
+        ), "The requested size should be a multiple of the page size."
         if need_size > self.available_size():
             return None
 
@@ -1612,6 +1612,9 @@ class PoolEntry:
     # D<->H transfer. Tree nodes and allocators continue to own virtual IDs;
     # only raw device-pool tensor accesses consume the translated IDs.
     device_index_translate_fn: Optional[Callable] = None
+    # Optional row-aware fence registration. Unified allocators use it to pin
+    # only the translated physical rows touched by an asynchronous D<->H copy.
+    device_transfer_fence_fn: Optional[Callable] = None
 
 
 class HostPoolGroup:

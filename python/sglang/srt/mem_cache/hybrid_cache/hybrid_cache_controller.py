@@ -214,9 +214,11 @@ class HybridCacheController(BaseHiCacheController):
         if self.is_unified_memory:
             logger.info(
                 "Unified HiCache transfers: %s",
-                "host-synchronous"
-                if self.synchronize_unified_transfers
-                else "asynchronous with allocator event fencing",
+                (
+                    "host-synchronous"
+                    if self.synchronize_unified_transfers
+                    else "asynchronous with allocator event fencing"
+                ),
             )
         # Override layer_num: hybrid models transfer all layers (For example, Linear Model (KV + Mamba)),
         # not just the full attention layers reported by full_kv_pool.
@@ -237,13 +239,49 @@ class HybridCacheController(BaseHiCacheController):
         super()._start_storage_threads()
         self._init_extra_host_mem_release_queues()
 
-    def _finish_transfer_before_scheduler(self, finish_event) -> None:
+    def _finish_transfer_before_scheduler(
+        self,
+        finish_event,
+        device_indices: Optional[torch.Tensor] = None,
+        pool_transfers: Optional[list[PoolTransfer]] = None,
+    ) -> None:
         if getattr(self, "synchronize_unified_transfers", False):
             finish_event.synchronize()
         elif getattr(self, "is_unified_memory", False):
-            self.mem_pool_device_allocator.register_external_transfer_event(
-                finish_event
-            )
+            accesses = []
+            if device_indices is not None and device_indices.numel() > 0:
+                accesses.append((self.mem_pool_host.anchor_entry, device_indices))
+            for transfer in pool_transfers or []:
+                if (
+                    transfer.device_indices is not None
+                    and transfer.device_indices.numel() > 0
+                ):
+                    accesses.append(
+                        (
+                            self.mem_pool_host.entry_map.get(transfer.name),
+                            transfer.device_indices,
+                        )
+                    )
+
+            # Use row-aware callbacks only when every participating pool can
+            # preserve its own physical-index lifetime. A partial registration
+            # would leave the unsupported pool unprotected, so fall back to the
+            # composite allocator's conservative global fence instead.
+            callbacks = [
+                (
+                    getattr(entry, "device_transfer_fence_fn", None)
+                    if entry is not None
+                    else None
+                )
+                for entry, _ in accesses
+            ]
+            if accesses and all(callable(callback) for callback in callbacks):
+                for callback, (_, indices) in zip(callbacks, accesses):
+                    callback(finish_event, indices)
+            else:
+                self.mem_pool_device_allocator.register_external_transfer_event(
+                    finish_event
+                )
 
     def attach_storage_backend(
         self,
@@ -506,7 +544,9 @@ class HybridCacheController(BaseHiCacheController):
             if callable(cancel_host_chunks):
                 cancel_host_chunks(host_chunk_guards)
             raise
-        self._finish_transfer_before_scheduler(finish_event)
+        self._finish_transfer_before_scheduler(
+            finish_event, device_indices, resolved_pool_transfers
+        )
         self.ack_write_queue.append(HiCacheAck(start_event, finish_event, op.node_ids))
 
     def load(
@@ -616,7 +656,9 @@ class HybridCacheController(BaseHiCacheController):
             if callable(cancel_host_chunks):
                 cancel_host_chunks(host_chunk_guards)
             raise
-        self._finish_transfer_before_scheduler(ack_finish_event)
+        self._finish_transfer_before_scheduler(
+            ack_finish_event, device_indices, resolved_pool_transfers
+        )
         self.ack_load_queue.append(
             HiCacheAck(
                 ack_start_event,

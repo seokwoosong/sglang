@@ -112,6 +112,7 @@ def build_pool_entry(
     device_alloc_fn: Optional[Callable[[int], Any]] = None,
     device_free_fn: Optional[Callable[[Any], Any]] = None,
     device_index_translate_fn: Optional[Callable[[Any], Any]] = None,
+    device_transfer_fence_fn: Optional[Callable[[Any, Any], Any]] = None,
 ) -> PoolEntry:
     return PoolEntry(
         name=name,
@@ -124,6 +125,7 @@ def build_pool_entry(
         device_alloc_fn=device_alloc_fn,
         device_free_fn=device_free_fn,
         device_index_translate_fn=device_index_translate_fn,
+        device_transfer_fence_fn=device_transfer_fence_fn,
     )
 
 
@@ -564,6 +566,8 @@ def build_hybrid_mamba_stack(
     is_unified_mamba = hasattr(kv_pool, "_unified_buffer") and getattr(
         mamba_pool, "_unified_buffer", None
     ) is getattr(kv_pool, "_unified_buffer", None)
+    full_transfer_fence_fn = None
+    mamba_transfer_fence_fn = None
     if is_unified_mamba:
         if use_mla:
             raise ValueError("unified typed-chunk HiCache does not support MLA")
@@ -585,6 +589,14 @@ def build_hybrid_mamba_stack(
             hicache_ratio=server_args.hicache_ratio,
             hicache_size_gb=server_args.hicache_size,
             allocator_type=_get_allocator_type(server_args),
+        )
+        full_allocator = params.token_to_kv_pool_allocator.full_attn_allocator
+        shared_mamba_allocator = params.token_to_kv_pool_allocator.mamba_allocator
+        full_transfer_fence_fn = getattr(
+            full_allocator, "register_external_transfer", None
+        )
+        mamba_transfer_fence_fn = getattr(
+            shared_mamba_allocator, "register_external_transfer", None
         )
     else:
         kv_host_pool = build_kv_host_pool(
@@ -610,6 +622,7 @@ def build_hybrid_mamba_stack(
             is_anchor=True,
             host_evict_fn=host_kv_evict_fn,
             device_index_translate_fn=full_index_translate_fn,
+            device_transfer_fence_fn=full_transfer_fence_fn,
         ),
         build_pool_entry(
             name=PoolName.MAMBA,
@@ -622,6 +635,7 @@ def build_hybrid_mamba_stack(
             device_alloc_fn=mamba_allocator.alloc,
             device_free_fn=mamba_allocator.free,
             device_index_translate_fn=mamba_index_translate_fn,
+            device_transfer_fence_fn=mamba_transfer_fence_fn,
         ),
     ]
     host_pool_group = HostPoolGroup(entries)
