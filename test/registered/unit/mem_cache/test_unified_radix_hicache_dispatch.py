@@ -274,15 +274,102 @@ class TestHybridTransferIndexTranslation(unittest.TestCase):
     def test_unified_transfer_is_finished_before_scheduler_resumes(self):
         controller = HybridCacheController.__new__(HybridCacheController)
         event = MagicMock()
+        controller.mem_pool_device_allocator = MagicMock()
 
         controller.synchronize_unified_transfers = True
+        controller.is_unified_memory = True
         controller._finish_transfer_before_scheduler(event)
         event.synchronize.assert_called_once_with()
+        controller.mem_pool_device_allocator.register_external_transfer_event.assert_not_called()
 
         event.reset_mock()
         controller.synchronize_unified_transfers = False
         controller._finish_transfer_before_scheduler(event)
         event.synchronize.assert_not_called()
+        controller.mem_pool_device_allocator.register_external_transfer_event.assert_called_once_with(
+            event
+        )
+
+        controller.mem_pool_device_allocator.reset_mock()
+        controller.is_unified_memory = False
+        controller._finish_transfer_before_scheduler(event)
+        controller.mem_pool_device_allocator.register_external_transfer_event.assert_not_called()
+
+    def test_unified_transfer_fences_each_physical_pool_independently(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        controller.synchronize_unified_transfers = False
+        controller.is_unified_memory = True
+        controller.mem_pool_device_allocator = MagicMock()
+
+        full_fence = MagicMock()
+        mamba_fence = MagicMock()
+        full_entry = SimpleNamespace(device_transfer_fence_fn=full_fence)
+        mamba_entry = SimpleNamespace(device_transfer_fence_fn=mamba_fence)
+        controller.mem_pool_host = SimpleNamespace(
+            anchor_entry=full_entry,
+            entry_map={PoolName.KV: full_entry, PoolName.MAMBA: mamba_entry},
+        )
+        finish_event = MagicMock()
+        full_physical = torch.tensor([3, 7], dtype=torch.int64)
+        mamba_physical = torch.tensor([11], dtype=torch.int64)
+
+        controller._finish_transfer_before_scheduler(
+            finish_event,
+            full_physical,
+            [
+                PoolTransfer(
+                    name=PoolName.MAMBA,
+                    device_indices=mamba_physical,
+                )
+            ],
+        )
+
+        full_fence.assert_called_once_with(finish_event, full_physical)
+        mamba_fence.assert_called_once_with(finish_event, mamba_physical)
+        controller.mem_pool_device_allocator.register_external_transfer_event.assert_not_called()
+
+    def test_unified_transfer_uses_global_fence_if_one_pool_lacks_row_api(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        controller.synchronize_unified_transfers = False
+        controller.is_unified_memory = True
+        controller.mem_pool_device_allocator = MagicMock()
+
+        full_fence = MagicMock()
+        full_entry = SimpleNamespace(device_transfer_fence_fn=full_fence)
+        mamba_entry = SimpleNamespace(device_transfer_fence_fn=None)
+        controller.mem_pool_host = SimpleNamespace(
+            anchor_entry=full_entry,
+            entry_map={PoolName.KV: full_entry, PoolName.MAMBA: mamba_entry},
+        )
+        finish_event = MagicMock()
+
+        controller._finish_transfer_before_scheduler(
+            finish_event,
+            torch.tensor([3], dtype=torch.int64),
+            [
+                PoolTransfer(
+                    name=PoolName.MAMBA,
+                    device_indices=torch.tensor([11], dtype=torch.int64),
+                )
+            ],
+        )
+
+        full_fence.assert_not_called()
+        controller.mem_pool_device_allocator.register_external_transfer_event.assert_called_once_with(
+            finish_event
+        )
+
+    def test_rejected_load_can_be_synchronized_before_destination_free(self):
+        cache = UnifiedRadixCache.__new__(UnifiedRadixCache)
+        first_ack, second_ack = MagicMock(), MagicMock()
+        cache.cache_controller = MagicMock(ack_load_queue=[first_ack, second_ack])
+        cache.loading_check = MagicMock()
+
+        cache.synchronize_pending_loads()
+
+        first_ack.finish_event.synchronize.assert_called_once_with()
+        second_ack.finish_event.synchronize.assert_called_once_with()
+        cache.loading_check.assert_called_once_with()
 
     def test_translates_execution_indices_without_mutating_virtual_ids(self):
         controller = HybridCacheController.__new__(HybridCacheController)
@@ -426,7 +513,7 @@ class TestHybridTransferIndexTranslation(unittest.TestCase):
             "kernel",
             pool_transfers=None,
         )
-        calls.wait_for_finish.assert_called_once_with(finish_event)
+        calls.wait_for_finish.assert_called_once_with(finish_event, physical, None)
         self.assertEqual(len(controller.ack_write_queue), 1)
 
     def test_start_loading_translates_before_load_and_waits_before_ack(self):
@@ -487,7 +574,7 @@ class TestHybridTransferIndexTranslation(unittest.TestCase):
                 calls.load_layer.call_args_list[layer_id].args[1:5],
                 (host_indices, physical, layer_id, "kernel"),
             )
-        calls.wait_for_finish.assert_called_once_with(ack_finish_event)
+        calls.wait_for_finish.assert_called_once_with(ack_finish_event, physical, None)
         self.assertEqual(len(controller.ack_load_queue), 1)
 
 
@@ -572,6 +659,50 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
 
         self.assertEqual(params.num_tokens, 1590)
         self.assertEqual(params.mamba_num, 0)
+
+    def test_transfer_fenced_mamba_eviction_falls_back_to_full_gap(self):
+        component = MambaComponent.__new__(MambaComponent)
+        component.cache = MagicMock()
+        component.cache.mamba_evictable_size.return_value = 1
+        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
+            1590
+        )
+        allocated = torch.tensor([9])
+        component.cache.req_to_token_pool.mamba_allocator.alloc.side_effect = [
+            None,
+            None,
+            None,
+            allocated,
+        ]
+
+        self.assertIs(component._alloc_mamba_slot(), allocated)
+
+        first, second = [call.args[0] for call in component.cache.evict.call_args_list]
+        self.assertEqual((first.num_tokens, first.mamba_num), (0, 1))
+        self.assertEqual((second.num_tokens, second.mamba_num), (1590, 0))
+        component.cache.writing_check.assert_called_once_with(write_back=True)
+
+    def test_full_id_exhaustion_retries_mamba_after_write_ack(self):
+        component = MambaComponent.__new__(MambaComponent)
+        component.cache = MagicMock()
+        component.cache.mamba_evictable_size.return_value = 0
+        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
+            1590
+        )
+        allocated = torch.tensor([9])
+        component.cache.req_to_token_pool.mamba_allocator.alloc.side_effect = [
+            None,
+            None,
+            None,
+            allocated,
+        ]
+
+        self.assertIs(component._alloc_mamba_slot(), allocated)
+
+        first, second = [call.args[0] for call in component.cache.evict.call_args_list]
+        self.assertEqual((first.num_tokens, first.mamba_num), (1590, 0))
+        self.assertEqual((second.num_tokens, second.mamba_num), (1590, 1))
+        component.cache.writing_check.assert_called_once_with(write_back=True)
 
     def test_static_pool_does_not_evict_full_tokens(self):
         component = MambaComponent.__new__(MambaComponent)
