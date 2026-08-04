@@ -730,13 +730,25 @@ class PrefillAdder:
             return 0
         return cap // self.page_size * self.page_size
 
-    def _mamba_gap_budget_for_req(self, req: Req) -> int:
-        """Shared-gap reservation for allocations and radix handoff peak."""
+    def _mamba_gap_budget_for_req(
+        self, req: Req, *, include_pending_host_load: bool = False
+    ) -> int:
+        """Shared-gap reservation for a newly admitted unified-Mamba request.
+
+        Count only the active/tracking slots that request allocation will add,
+        plus the transient radix handoff slot. A pending HiCache hit needs one
+        additional slot until its host state is materialized.
+        """
         if not self._mamba_slot_cost:
             return 0
 
         slots = self.tree_cache.req_to_token_pool.mamba_slots_needed_for_req(req)
         if self.is_hybrid_ssm_cache:
+            slots += 1
+        if include_pending_host_load and req.mamba_host_hit_length > 0:
+            # init_load_back materializes this tree-owned state after the first
+            # budget gate.  Once materialized, allocator availability already
+            # reflects it, so _update_prefill_budget intentionally omits it.
             slots += 1
         return self._mamba_slot_cost * slots
 
@@ -981,7 +993,9 @@ class PrefillAdder:
         paged_input = self.ceil_paged_tokens(cand_extend_input_len)
         # Shared Mamba pool: fold the new mamba state's shared-gap cost into the
         # budget gate so admission can't over-commit (0 for baseline / non-Mamba).
-        paged_input += self._mamba_gap_budget_for_req(req)
+        paged_input += self._mamba_gap_budget_for_req(
+            req, include_pending_host_load=True
+        )
         if paged_input > min(self.cur_rem_tokens, self.rem_total_tokens):
             return AddReqResult.NO_TOKEN
         if self.is_hybrid_swa:
@@ -1125,7 +1139,9 @@ class PrefillAdder:
         total_tokens = cand_extend_input_len + max_new + self.page_size
         # Shared Mamba pool: fold the new mamba state's shared-gap cost into
         # `total_tokens` so both `rem_total_tokens` gates reflect the joint budget.
-        total_tokens += self._mamba_gap_budget_for_req(req)
+        total_tokens += self._mamba_gap_budget_for_req(
+            req, include_pending_host_load=True
+        )
 
         # adjusting the input_tokens based on host_hit_length and page_size
         real_input_tokens = cand_extend_input_len - req.host_hit_length

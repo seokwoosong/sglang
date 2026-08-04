@@ -1,8 +1,20 @@
 import unittest
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from sglang.srt.mem_cache.hicache_storage import PoolName, SidecarPoolSpec
-from sglang.srt.mem_cache.hybrid_cache import hybrid_pool_assembler
+import torch
+
+from sglang.srt.mem_cache.allocation import alloc_req_slots
+from sglang.srt.mem_cache.hicache_storage import PoolName, PoolTransfer, SidecarPoolSpec
+from sglang.srt.mem_cache.hybrid_cache import (
+    hybrid_cache_controller,
+    hybrid_pool_assembler,
+)
+from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
+    CacheOperation,
+    HybridCacheController,
+)
 from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
     _STRATEGIES,
     StackBuildResult,
@@ -17,7 +29,14 @@ from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
     _SwaStrategy,
     register_stack_strategy,
 )
+from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
+from sglang.srt.mem_cache.memory_pool_host import MambaPoolHost
+from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
 from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_cache.components.mamba_component import (
+    MambaComponent,
+)
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.test.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=2, suite="base-a-test-cpu")
@@ -228,6 +247,451 @@ class TestApplyStackResult(unittest.TestCase):
         kvcache.register_layer_transfer_counter.assert_called_once()
         params.req_to_token_pool.register_layer_transfer_counter.assert_not_called()
         cache.register_sidecar_pool.assert_not_called()
+
+
+class TestHybridTransferIndexTranslation(unittest.TestCase):
+    def test_unified_ready_reaps_synchronized_load_immediately(self):
+        cache = UnifiedRadixCache.__new__(UnifiedRadixCache)
+        cache.cache_controller = MagicMock(
+            synchronize_unified_transfers=True,
+            start_loading=MagicMock(return_value=2),
+        )
+        cache.loading_check = MagicMock()
+
+        self.assertEqual(cache.ready_to_load_host_cache(), 2)
+        cache.loading_check.assert_called_once_with()
+
+        cache.loading_check.reset_mock()
+        cache.cache_controller.synchronize_unified_transfers = False
+        cache.ready_to_load_host_cache()
+        cache.loading_check.assert_not_called()
+
+        cache.cache_controller.synchronize_unified_transfers = True
+        cache.cache_controller.start_loading.return_value = -1
+        cache.ready_to_load_host_cache()
+        cache.loading_check.assert_not_called()
+
+    def test_unified_transfer_is_finished_before_scheduler_resumes(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        event = MagicMock()
+
+        controller.synchronize_unified_transfers = True
+        controller._finish_transfer_before_scheduler(event)
+        event.synchronize.assert_called_once_with()
+
+        event.reset_mock()
+        controller.synchronize_unified_transfers = False
+        controller._finish_transfer_before_scheduler(event)
+        event.synchronize.assert_not_called()
+
+    def test_translates_execution_indices_without_mutating_virtual_ids(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        controller.move_indices = lambda host, device: (host, device)
+
+        full_translate = MagicMock(side_effect=lambda x: x + 100)
+        mamba_translate = MagicMock(side_effect=lambda x: x + 200)
+        full_entry = MagicMock(
+            is_primary_index_anchor=True,
+            device_index_translate_fn=full_translate,
+        )
+        mamba_entry = MagicMock(device_index_translate_fn=mamba_translate)
+        controller.mem_pool_host = MagicMock(
+            anchor_entry=full_entry,
+            entry_map={
+                PoolName.KV: full_entry,
+                PoolName.MAMBA: mamba_entry,
+            },
+        )
+
+        full_virtual = torch.tensor([3, 7], dtype=torch.int64)
+        mamba_virtual = torch.tensor([11], dtype=torch.int64)
+        operation = CacheOperation(
+            host_indices=torch.tensor([0, 1], dtype=torch.int64),
+            device_indices=full_virtual,
+            node_id=1,
+            pool_transfers=[
+                PoolTransfer(
+                    name=PoolName.MAMBA,
+                    host_indices=torch.tensor([2], dtype=torch.int64),
+                    device_indices=mamba_virtual,
+                    nodes_to_load=[12],
+                )
+            ],
+        )
+
+        _, full_physical, transfers = controller.move_hybrid_indices(operation)
+
+        torch.testing.assert_close(full_physical, torch.tensor([103, 107]))
+        torch.testing.assert_close(transfers[0].device_indices, torch.tensor([211]))
+        self.assertEqual(transfers[0].nodes_to_load, [12])
+        # The operation remains tree/allocator-owned virtual state.
+        torch.testing.assert_close(operation.device_indices, full_virtual)
+        torch.testing.assert_close(
+            operation.pool_transfers[0].device_indices, mamba_virtual
+        )
+
+    def test_identity_when_pool_has_no_translator(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        controller.move_indices = lambda host, device: (host, device)
+        anchor_entry = MagicMock(
+            is_primary_index_anchor=True,
+            device_index_translate_fn=None,
+        )
+        controller.mem_pool_host = MagicMock(
+            anchor_entry=anchor_entry,
+            entry_map={PoolName.KV: anchor_entry},
+        )
+        virtual = torch.tensor([2, 4], dtype=torch.int64)
+        operation = CacheOperation(
+            host_indices=torch.tensor([0, 1], dtype=torch.int64),
+            device_indices=virtual,
+            node_id=1,
+        )
+
+        _, execution_indices, transfers = controller.move_hybrid_indices(operation)
+
+        self.assertIs(execution_indices, virtual)
+        self.assertIsNone(transfers)
+
+    def test_rejects_translated_indices_outside_physical_pool(self):
+        entry = SimpleNamespace(name=PoolName.KV, device_pool=SimpleNamespace(size=7))
+
+        HybridCacheController._validate_translated_indices(
+            entry, torch.tensor([0, 7], dtype=torch.int64)
+        )
+        for invalid in (
+            torch.tensor([-1], dtype=torch.int64),
+            torch.tensor([8], dtype=torch.int64),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "outside the physical device pool"
+            ):
+                HybridCacheController._validate_translated_indices(entry, invalid)
+
+    def test_start_writing_translates_before_backup_and_waits_before_ack(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        virtual = torch.tensor([3, 5], dtype=torch.int64)
+        physical = torch.tensor([103, 105], dtype=torch.int64)
+        host_indices = torch.tensor([0, 1], dtype=torch.int64)
+        operation = CacheOperation(host_indices, virtual, node_id=7)
+        controller.write_queue = [operation]
+        controller.io_backend = "kernel"
+        controller.mem_pool_host = MagicMock(
+            layout="page_first", can_use_write_back_jit=True
+        )
+        controller.mem_pool_device = MagicMock()
+        controller.has_draft = False
+        controller.write_stream = MagicMock()
+        controller.ack_write_queue = []
+        controller._record_transfer_indices_on_stream = MagicMock()
+
+        calls = MagicMock()
+        controller.translate_hybrid_device_indices = calls.translate
+        calls.translate.return_value = (physical, None)
+        controller.mem_pool_host.backup_from_device_all_layer = calls.backup
+        controller._finish_transfer_before_scheduler = calls.wait_for_finish
+        start_event, ack_start_event, finish_event = (
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        )
+        finish_event.record = calls.record_finish
+
+        with (
+            patch.object(
+                hybrid_cache_controller,
+                "make_timing_event_pair",
+                return_value=(ack_start_event, finish_event, False),
+            ),
+            patch.object(
+                hybrid_cache_controller.device_module, "Event", return_value=start_event
+            ),
+            patch.object(
+                hybrid_cache_controller.device_module,
+                "stream",
+                return_value=nullcontext(),
+            ),
+        ):
+            controller.start_writing()
+
+        self.assertEqual(
+            [call[0] for call in calls.mock_calls],
+            ["translate", "backup", "record_finish", "wait_for_finish"],
+        )
+        calls.translate.assert_called_once_with(operation)
+        calls.backup.assert_called_once_with(
+            controller.mem_pool_device,
+            host_indices,
+            physical,
+            "kernel",
+            pool_transfers=None,
+        )
+        calls.wait_for_finish.assert_called_once_with(finish_event)
+        self.assertEqual(len(controller.ack_write_queue), 1)
+
+    def test_start_loading_translates_before_load_and_waits_before_ack(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        virtual = torch.tensor([4], dtype=torch.int64)
+        physical = torch.tensor([204], dtype=torch.int64)
+        host_indices = torch.tensor([2], dtype=torch.int64)
+        operation = CacheOperation(host_indices, virtual, node_id=9)
+        controller.load_queue = [operation]
+        controller.mem_pool_device = MagicMock()
+        controller.mem_pool_host = MagicMock()
+        controller.io_backend = "kernel"
+        controller.has_draft = False
+        controller.load_stream = MagicMock()
+        controller.layer_num = 2
+        controller.ack_load_queue = []
+        controller._record_transfer_indices_on_stream = MagicMock()
+
+        producer_event = MagicMock()
+        controller.layer_done_counter = MagicMock(
+            events=[producer_event], update_producer=MagicMock(return_value=0)
+        )
+        calls = MagicMock()
+        controller.move_hybrid_indices = calls.translate
+        calls.translate.return_value = (host_indices, physical, None)
+        controller.mem_pool_host.load_to_device_per_layer = calls.load_layer
+        controller._finish_transfer_before_scheduler = calls.wait_for_finish
+        ack_start_event, ack_finish_event = MagicMock(), MagicMock()
+        ack_finish_event.record = calls.record_finish
+
+        with (
+            patch.object(
+                hybrid_cache_controller,
+                "make_timing_event_pair",
+                return_value=(ack_start_event, ack_finish_event, False),
+            ),
+            patch.object(
+                hybrid_cache_controller.device_module,
+                "stream",
+                return_value=nullcontext(),
+            ),
+        ):
+            producer_id = controller.start_loading()
+
+        self.assertEqual(producer_id, 0)
+        self.assertEqual(
+            [call[0] for call in calls.mock_calls],
+            [
+                "translate",
+                "load_layer",
+                "load_layer",
+                "record_finish",
+                "wait_for_finish",
+            ],
+        )
+        for layer_id in range(2):
+            self.assertEqual(
+                calls.load_layer.call_args_list[layer_id].args[1:5],
+                (host_indices, physical, layer_id, "kernel"),
+            )
+        calls.wait_for_finish.assert_called_once_with(ack_finish_event)
+        self.assertEqual(len(controller.ack_load_queue), 1)
+
+
+class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
+    @staticmethod
+    def _req(*, active=False, tracking=False):
+        return SimpleNamespace(
+            req_pool_idx=None,
+            mamba_pool_idx=object() if active else None,
+            mamba_ping_pong_track_buffer=object() if tracking else None,
+        )
+
+    def test_request_slot_preallocation_reuses_mamba_before_full(self):
+        req_pool = HybridReqToTokenPool.__new__(HybridReqToTokenPool)
+        req_pool.enable_mamba_extra_buffer = True
+        req_pool.enable_mamba_extra_buffer_lazy = False
+        req_pool.mamba_ping_pong_track_buffer_size = 2
+        req_pool.mamba_allocator = MagicMock()
+        req_pool.mamba_allocator.schedulable_available_size.return_value = 1
+        req_pool.alloc = MagicMock(return_value=[3, 4])
+
+        tree_cache = MagicMock()
+        tree_cache.supports_mamba.return_value = True
+        tree_cache.mamba_evictable_size.return_value = 3
+        tree_cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
+            7
+        )
+
+        self.assertEqual(
+            alloc_req_slots(req_pool, [self._req(), self._req()], tree_cache), [3, 4]
+        )
+        params = tree_cache.evict.call_args.args[0]
+        # Six states are missing and one fits in the gap. Reuse three cached
+        # Mamba states, then evict Full KV only for the remaining two slots.
+        self.assertEqual(params.mamba_num, 3)
+        self.assertEqual(params.num_tokens, 14)
+
+    def test_preallocated_active_states_are_not_charged_again(self):
+        req_pool = HybridReqToTokenPool.__new__(HybridReqToTokenPool)
+        req_pool.enable_mamba_extra_buffer = True
+        req_pool.enable_mamba_extra_buffer_lazy = False
+        req_pool.mamba_ping_pong_track_buffer_size = 2
+        req_pool.mamba_allocator = MagicMock()
+        req_pool.mamba_allocator.schedulable_available_size.return_value = 1
+        req_pool.alloc = MagicMock(return_value=[3, 4])
+        tree_cache = MagicMock()
+        tree_cache.supports_mamba.return_value = True
+        tree_cache.mamba_evictable_size.return_value = 3
+
+        alloc_req_slots(
+            req_pool,
+            [self._req(active=True), self._req(active=True)],
+            tree_cache,
+        )
+
+        params = tree_cache.evict.call_args.args[0]
+        self.assertEqual(params.mamba_num, 3)
+        self.assertEqual(params.num_tokens, 0)
+
+    def test_mamba_slot_reuses_evictable_mamba_state_first(self):
+        component = MambaComponent.__new__(MambaComponent)
+        component.cache = MagicMock()
+        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
+            1590
+        )
+        component.cache.mamba_evictable_size.return_value = 1
+
+        params = component._mamba_slot_eviction_params()
+
+        self.assertEqual(params.num_tokens, 0)
+        self.assertEqual(params.mamba_num, 1)
+
+    def test_mamba_slot_uses_full_bytes_when_no_mamba_is_evictable(self):
+        component = MambaComponent.__new__(MambaComponent)
+        component.cache = MagicMock()
+        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
+            1590
+        )
+        component.cache.mamba_evictable_size.return_value = 0
+
+        params = component._mamba_slot_eviction_params()
+
+        self.assertEqual(params.num_tokens, 1590)
+        self.assertEqual(params.mamba_num, 0)
+
+    def test_static_pool_does_not_evict_full_tokens(self):
+        component = MambaComponent.__new__(MambaComponent)
+        component.cache = MagicMock()
+        del component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost
+
+        params = component._mamba_slot_eviction_params()
+
+        self.assertEqual(params.num_tokens, 0)
+        self.assertEqual(params.mamba_num, 1)
+
+
+class TestUnifiedMHAHostLoad(unittest.TestCase):
+    def test_load_honors_strided_unified_destination(self):
+        host_pool = MHATokenToKVPoolHost.__new__(MHATokenToKVPoolHost)
+        host_pool.page_size = 1
+        host_pool.layout = "page_first"
+        host_pool.k_data_refs = [torch.arange(12).view(3, 2, 2)]
+        host_pool.v_data_refs = [torch.arange(12, 24).view(3, 2, 2)]
+
+        # Selecting one field from each shared entry models unified memory's
+        # non-contiguous token-row stride.
+        backing_k = torch.full((4, 3, 2, 2), -1, dtype=torch.long)
+        backing_v = torch.full((4, 3, 2, 2), -1, dtype=torch.long)
+        device_pool = MagicMock()
+        device_pool._unified_buffer = object()
+        device_pool.device = torch.device("cpu")
+        device_pool.k_buffer = [backing_k[:, 1]]
+        device_pool.v_buffer = [backing_v[:, 1]]
+
+        host_pool.load_to_device_per_layer(
+            device_pool=device_pool,
+            host_indices=torch.tensor([2, 0]),
+            device_indices=torch.tensor([1, 3]),
+            layer_id=0,
+            io_backend="kernel",
+        )
+
+        torch.testing.assert_close(
+            device_pool.k_buffer[0][1], host_pool.k_data_refs[0][2]
+        )
+        torch.testing.assert_close(
+            device_pool.k_buffer[0][3], host_pool.k_data_refs[0][0]
+        )
+        torch.testing.assert_close(
+            device_pool.v_buffer[0][1], host_pool.v_data_refs[0][2]
+        )
+
+    def test_mamba_load_honors_strided_unified_destination(self):
+        src = torch.arange(3 * 2 * 1 * 4).view(3, 2, 1, 4)
+        backing = torch.full((4, 3, 4), -1, dtype=torch.long)
+        dst = backing[:, 1]
+
+        MambaPoolHost._copy_tensor_pf_lf(
+            src=src,
+            dst=dst,
+            src_indices=torch.tensor([2, 0]),
+            dst_indices=torch.tensor([1, 3]),
+            layer_id=1,
+            num_layers=2,
+            io_backend="kernel",
+        )
+
+        torch.testing.assert_close(dst[1], src[2, 1, 0])
+        torch.testing.assert_close(dst[3], src[0, 1, 0])
+
+
+class TestUnifiedHiCacheServerArgs(unittest.TestCase):
+    def test_write_back_is_accepted(self):
+        from sglang.srt.server_args import ServerArgs
+
+        args = ServerArgs(
+            model_path="dummy",
+            enable_unified_memory=True,
+            enable_hierarchical_cache=True,
+            hicache_io_backend="kernel",
+            hicache_write_policy="write_back",
+            page_size=1,
+        )
+
+        args._handle_unified_memory_pool()
+
+    def test_l3_storage_backend_is_rejected(self):
+        from sglang.srt.server_args import ServerArgs
+
+        with self.assertRaisesRegex(AssertionError, "only the L2 host tier"):
+            ServerArgs(
+                model_path="dummy",
+                enable_unified_memory=True,
+                enable_hierarchical_cache=True,
+                hicache_io_backend="kernel",
+                hicache_write_policy="write_through",
+                hicache_storage_backend="file",
+                page_size=1,
+            )._handle_unified_memory_pool()
+
+    def test_unsupported_transfer_combinations_are_rejected(self):
+        from sglang.srt.server_args import ServerArgs
+
+        invalid_cases = (
+            ({"hicache_io_backend": "direct"}, "hicache-io-backend kernel"),
+            ({"page_size": 2}, "page-size 1"),
+            (
+                {"hicache_write_policy": "write_through_selective"},
+                "write_through or write_back",
+            ),
+        )
+        for overrides, message in invalid_cases:
+            kwargs = {
+                "model_path": "dummy",
+                "enable_unified_memory": True,
+                "enable_hierarchical_cache": True,
+                "hicache_io_backend": "kernel",
+                "hicache_write_policy": "write_through",
+                "page_size": 1,
+                **overrides,
+            }
+            with self.subTest(overrides=overrides):
+                with self.assertRaisesRegex(AssertionError, message):
+                    ServerArgs(**kwargs)._handle_unified_memory_pool()
 
 
 if __name__ == "__main__":
