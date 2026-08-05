@@ -334,6 +334,9 @@ class Envs:
     SGLANG_ENABLE_CUDA_GRAPH_CAPTURE_TRACE = EnvBool(False)
     SGLANG_FORCE_SHUTDOWN = EnvBool(False)
     SGLANG_DEBUG_MEMORY_POOL = EnvBool(False)
+    # Opt-in JSONL lifecycle/layout trace for unified-memory HiCache. The path
+    # may contain ``{pid}`` for multi-process runs. Empty keeps all hooks no-op.
+    SGLANG_HICACHE_TRACE_PATH = EnvStr("")
     SGLANG_DSPARK_DEBUG_CONFIDENCE_PREFIX_SCHEDULER = EnvBool(False)
     SGLANG_DSPARK_DEBUG_CONFIDENCE_METRICS = EnvBool(False)
     SGLANG_DSPARK_DEBUG_DUMP = EnvTuple(tuple())

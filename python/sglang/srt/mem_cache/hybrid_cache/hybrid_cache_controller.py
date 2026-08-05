@@ -34,6 +34,10 @@ from sglang.srt.mem_cache.hicache_storage import (
     PoolTransfer,
     PoolTransferResult,
 )
+from sglang.srt.mem_cache.hicache_trace import (
+    hicache_trace_object_id,
+    trace_hicache_event,
+)
 from sglang.srt.mem_cache.memory_pool_host import PoolEntry
 from sglang.srt.utils import get_device_module
 
@@ -42,6 +46,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 device_module = get_device_module()
+
+
+def _trace_transfer_pools(
+    anchor_count: int, pool_transfers: Optional[list[PoolTransfer]]
+) -> list[dict[str, Any]]:
+    pools = [{"pool": "KV", "count": int(anchor_count)}]
+    for transfer in pool_transfers or []:
+        count = 0
+        if transfer.device_indices is not None:
+            count = int(transfer.device_indices.numel())
+        elif transfer.host_indices is not None:
+            count = int(transfer.host_indices.numel())
+        pools.append({"pool": transfer.name.name, "count": count})
+    return pools
 
 
 class CacheOperation(BaseCacheOperation):
@@ -508,6 +526,17 @@ class HybridCacheController(BaseHiCacheController):
         self.write_queue.clear()
         start_event = device_module.Event()
         ack_start_event, ack_finish_event, timing_enabled = make_timing_event_pair()
+        transfer_id = hicache_trace_object_id(ack_finish_event)
+        trace_hicache_event(
+            "d2h_transfer_queued",
+            transfer_id=transfer_id,
+            cuda_event_id=transfer_id,
+            node_ids=op.node_ids,
+            pools=_trace_transfer_pools(
+                int(device_indices.numel()), resolved_pool_transfers
+            ),
+            stream_id=id(self.write_stream),
+        )
         pin_host_chunks = getattr(self.mem_pool_host, "pin_transfer_chunks", None)
         host_chunk_guards = (
             pin_host_chunks(host_indices, resolved_pool_transfers)
@@ -540,6 +569,12 @@ class HybridCacheController(BaseHiCacheController):
                     device_indices,
                     resolved_pool_transfers,
                 )
+            trace_hicache_event(
+                "d2h_transfer_enqueued",
+                transfer_id=transfer_id,
+                cuda_event_id=transfer_id,
+                node_ids=op.node_ids,
+            )
             release_host_chunks = getattr(
                 self.mem_pool_host, "release_transfer_chunks_after_event", None
             )
@@ -663,6 +698,17 @@ class HybridCacheController(BaseHiCacheController):
         producer_event.start_event.record()
 
         ack_start_event, ack_finish_event, timing_enabled = make_timing_event_pair()
+        transfer_id = hicache_trace_object_id(ack_finish_event)
+        trace_hicache_event(
+            "h2d_transfer_queued",
+            transfer_id=transfer_id,
+            cuda_event_id=transfer_id,
+            node_ids=op.node_ids,
+            pools=_trace_transfer_pools(
+                int(device_indices.numel()), resolved_pool_transfers
+            ),
+            stream_id=id(self.load_stream),
+        )
         pin_host_chunks = getattr(self.mem_pool_host, "pin_transfer_chunks", None)
         host_chunk_guards = (
             pin_host_chunks(host_indices, resolved_pool_transfers)
@@ -702,6 +748,12 @@ class HybridCacheController(BaseHiCacheController):
                     device_indices,
                     resolved_pool_transfers,
                 )
+            trace_hicache_event(
+                "h2d_transfer_enqueued",
+                transfer_id=transfer_id,
+                cuda_event_id=transfer_id,
+                node_ids=op.node_ids,
+            )
             release_host_chunks = getattr(
                 self.mem_pool_host, "release_transfer_chunks_after_event", None
             )

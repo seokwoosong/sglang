@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import atexit
 import inspect
+import itertools
 import logging
 import os
 import signal
@@ -43,10 +44,16 @@ from sglang.srt.mem_cache.allocator.paged import (
     alloc_extend_kernel,
 )
 from sglang.srt.mem_cache.allocator.swa import SWATokenToKVPoolAllocator
+from sglang.srt.mem_cache.hicache_trace import (
+    hicache_trace_object_id,
+    trace_enabled,
+    trace_hicache_event,
+)
 from sglang.srt.mem_cache.unified_memory_pool import UnifiedKVPool
 from sglang.srt.utils.common import get_num_new_pages, next_power_of_2
 
 logger = logging.getLogger(__name__)
+_EXTERNAL_TRANSFER_HAZARD_IDS = itertools.count(1)
 
 
 @dataclass
@@ -61,6 +68,7 @@ class _ExternalTransferHazard:
     event: torch.cuda.Event
     physical_indices: torch.Tensor
     pages_cpu: Optional[Set[int]] = None
+    trace_id: int = 0
 
     def materialize_pages(self, page_size: int) -> Set[int]:
         if self.pages_cpu is None:
@@ -280,6 +288,7 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             self.watermark_physical,
             self.num_pages - self.min_page_index,
         )
+        self._trace_l1_state("initialized", event="l1_allocator_initialized")
 
     # -- peer binding --
 
@@ -329,6 +338,31 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
     def clear_inverse_history(self) -> None:
         self._inverse_history.clear()
 
+    def _trace_l1_state(
+        self, reason: str, *, event: str = "l1_allocator_state", **fields
+    ) -> None:
+        if not trace_enabled():
+            return
+        trace_hicache_event(
+            event,
+            reason=reason,
+            pool=self.sub_pool_name,
+            grow_direction=self.grow_direction,
+            total_bytes=self.unified_buffer.total_bytes,
+            entry_bytes_per_page=self.entry_bytes_per_page,
+            page_size=self.page_size,
+            num_pages=self.num_pages,
+            min_page_index=self.min_page_index,
+            watermark_page=self.watermark_physical,
+            byte_low_frontier=self._byte_low_frontier(),
+            byte_high_frontier=self._byte_high_frontier(),
+            live_pages=self.live_page_count,
+            free_hole_pages=int(self._free_phys_pages.shape[0]),
+            pending_reuse_pages=len(self._pending_reuse_pages_cpu),
+            pending_transfer_hazards=len(self._external_transfer_hazards),
+            **fields,
+        )
+
     # -- external transfer hazards --
 
     def register_external_transfer_event(self, event: torch.cuda.Event) -> None:
@@ -365,8 +399,19 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             for hazard in self._external_transfer_hazards
             if not hazard.event.query()
         ]
-        self._external_transfer_hazards.append(
-            _ExternalTransferHazard(event, physical_indices)
+        hazard = _ExternalTransferHazard(
+            event,
+            physical_indices,
+            trace_id=next(_EXTERNAL_TRANSFER_HAZARD_IDS),
+        )
+        self._external_transfer_hazards.append(hazard)
+        trace_hicache_event(
+            "l1_transfer_fence_registered",
+            pool=self.sub_pool_name,
+            hazard_id=hazard.trace_id,
+            cuda_event_id=hicache_trace_object_id(event),
+            protected_token_count=int(physical_indices.numel()),
+            page_size=self.page_size,
         )
 
     def _settle_external_transfers(
@@ -395,20 +440,48 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         blocking_hazards = []
         for hazard in self._external_transfer_hazards:
             if hazard.event.query():
+                trace_hicache_event(
+                    "l1_transfer_fence_released",
+                    pool=self.sub_pool_name,
+                    hazard_id=hazard.trace_id,
+                    cuda_event_id=hicache_trace_object_id(hazard.event),
+                    reason="event_complete",
+                    protected_pages=hazard.pages_cpu,
+                )
                 continue
             pending_hazards.append(hazard)
-            if touched_pages is None or (
-                touched_pages
-                and not touched_pages.isdisjoint(
-                    hazard.materialize_pages(self.page_size)
+            protected_pages = None
+            intersection: Set[int] = set()
+            if touched_pages:
+                protected_pages = hazard.materialize_pages(self.page_size)
+                intersection = touched_pages.intersection(protected_pages)
+            is_blocking = touched_pages is None or bool(intersection)
+            if touched_pages is not None and touched_pages:
+                trace_hicache_event(
+                    "l1_transfer_fence_checked",
+                    pool=self.sub_pool_name,
+                    hazard_id=hazard.trace_id,
+                    cuda_event_id=hicache_trace_object_id(hazard.event),
+                    protected_pages=protected_pages,
+                    touched_pages=touched_pages,
+                    intersection_pages=intersection,
+                    blocking=is_blocking,
+                    urgent=urgent,
                 )
-            ):
+            if is_blocking:
                 blocking_hazards.append(hazard)
         self._external_transfer_hazards = pending_hazards
 
         if not pending_events and not blocking_hazards:
             return True
         if not urgent:
+            trace_hicache_event(
+                "l1_transfer_fence_deferred",
+                pool=self.sub_pool_name,
+                event_only_fences=len(pending_events),
+                blocking_hazard_ids=[hazard.trace_id for hazard in blocking_hazards],
+                touched_pages=touched_pages,
+            )
             return False
         current_stream = torch.cuda.current_stream()
         waited_event_ids = set()
@@ -419,6 +492,13 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             if id(hazard.event) not in waited_event_ids:
                 current_stream.wait_event(hazard.event)
                 waited_event_ids.add(id(hazard.event))
+        trace_hicache_event(
+            "l1_transfer_fence_wait_enqueued",
+            pool=self.sub_pool_name,
+            event_only_fences=len(pending_events),
+            blocking_hazard_ids=[hazard.trace_id for hazard in blocking_hazards],
+            touched_pages=touched_pages,
+        )
         # The wait operations now own the dependency. Every allocator relocation
         # is issued on this same scheduler stream, so the Python references need
         # not remain in the polling list.
@@ -660,26 +740,66 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         if self.grow_direction == "up":
             new_wm = self.watermark_physical + num_pages
             if new_wm > self.num_pages:
+                self._trace_l1_state(
+                    "index_space_exhausted",
+                    event="l1_watermark_pressure",
+                    requested_pages=num_pages,
+                    attempted_watermark_page=new_wm,
+                    current_gap_bytes=self._current_gap_bytes(),
+                )
                 return False
             # Peer (grow-down) sits ABOVE; don't extend past its low frontier.
             if self._peer is not None:
-                peer_low_pages = (
-                    self._peer._byte_low_frontier() // self.entry_bytes_per_page
-                )
+                peer_low_bytes = self._peer._byte_low_frontier()
+                peer_low_pages = peer_low_bytes // self.entry_bytes_per_page
                 if new_wm > peer_low_pages:
+                    attempted_frontier_bytes = new_wm * self.entry_bytes_per_page
+                    self._trace_l1_state(
+                        "peer_frontier_collision_prevented",
+                        event="l1_watermark_pressure",
+                        requested_pages=num_pages,
+                        attempted_watermark_page=new_wm,
+                        attempted_frontier_bytes=attempted_frontier_bytes,
+                        peer_pool=self._peer.sub_pool_name,
+                        peer_frontier_bytes=peer_low_bytes,
+                        would_cross_bytes=max(
+                            0, attempted_frontier_bytes - peer_low_bytes
+                        ),
+                        current_gap_bytes=self._current_gap_bytes(),
+                    )
                     return False
             self.watermark_physical = new_wm
         else:
             new_wm = self.watermark_physical - num_pages
             if new_wm < self.min_page_index - 1:
+                self._trace_l1_state(
+                    "index_space_exhausted",
+                    event="l1_watermark_pressure",
+                    requested_pages=num_pages,
+                    attempted_watermark_page=new_wm,
+                    current_gap_bytes=self._current_gap_bytes(),
+                )
                 return False
             # Peer (grow-up) sits BELOW; `new_wm + 1` (our new lowest live page)
             # must stay strictly above the peer's high frontier.
             if self._peer is not None:
-                peer_high_pages = (
-                    self._peer._byte_high_frontier() // self.entry_bytes_per_page
-                )
+                peer_high_bytes = self._peer._byte_high_frontier()
+                peer_high_pages = peer_high_bytes // self.entry_bytes_per_page
                 if new_wm + 1 < peer_high_pages:
+                    attempted_frontier_bytes = (new_wm + 1) * self.entry_bytes_per_page
+                    self._trace_l1_state(
+                        "peer_frontier_collision_prevented",
+                        event="l1_watermark_pressure",
+                        requested_pages=num_pages,
+                        attempted_watermark_page=new_wm,
+                        attempted_frontier_bytes=attempted_frontier_bytes,
+                        peer_pool=self._peer.sub_pool_name,
+                        peer_frontier_bytes=peer_high_bytes,
+                        would_cross_bytes=max(
+                            0, peer_high_bytes - attempted_frontier_bytes
+                        ),
+                        current_gap_bytes=self._current_gap_bytes(),
+                    )
                     return False
             self.watermark_physical = new_wm
         return True
@@ -730,6 +850,8 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         with record_function("MultiEndedAlloc._alloc_bind_fast_or_slow"):
             if N == 0:
                 return torch.empty(0, dtype=torch.int64, device=self.device)
+            watermark_before = self.watermark_physical
+            holes_before = int(self._free_phys_pages.shape[0])
 
             # FAST PATH: eager, or lazy with no current holes.
             if not self.lazy_compaction or self._free_phys_pages.numel() == 0:
@@ -768,6 +890,12 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
 
                 if self.lazy_compaction:  # live_page_count tracked only in lazy mode
                     self.live_page_count += N
+                self._trace_l1_state(
+                    "allocation",
+                    requested_pages=N,
+                    watermark_before=watermark_before,
+                    holes_before=holes_before,
+                )
                 return phys_pages
 
             # SLOW PATH: holes exist — drain them first, then bind.
@@ -775,6 +903,12 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             if phys_pages is None:
                 return None
             self.bind(v_pages, phys_pages)
+            self._trace_l1_state(
+                "allocation",
+                requested_pages=N,
+                watermark_before=watermark_before,
+                holes_before=holes_before,
+            )
             return phys_pages
 
     # -- translate (virtual TOKEN ids -> physical TOKEN ids) --
@@ -1107,8 +1241,18 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             if not self.is_not_in_free_group:
                 self.free_group.append(free_index)
                 return
+            watermark_before = self.watermark_physical
+            holes_before = int(self._free_phys_pages.shape[0])
+            freed_tokens = int(free_index.numel())
             if self.lazy_compaction:
-                self._free_lazy(free_index)
+                freed_physical_pages = self._free_lazy(free_index)
+                self._trace_l1_state(
+                    "lazy_free",
+                    freed_tokens=freed_tokens,
+                    freed_physical_pages=freed_physical_pages,
+                    watermark_before=watermark_before,
+                    holes_before=holes_before,
+                )
                 return
             # --- EAGER path ---
             # A HiCache copy may still use a translated physical row. Serialize
@@ -1135,8 +1279,14 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             if self.is_id_owner:
                 self.free_virtual_ids = torch.cat([self.free_virtual_ids, free_v_pages])
             self._compact_pending(freed_p_pages)
+            self._trace_l1_state(
+                "eager_free",
+                freed_tokens=freed_tokens,
+                watermark_before=watermark_before,
+                holes_before=holes_before,
+            )
 
-    def _free_lazy(self, free_index: torch.Tensor) -> None:
+    def _free_lazy(self, free_index: torch.Tensor) -> Optional[List[int]]:
         """Lazy free path: disjoint-element scatters + ONE `torch.cat` onto
         `_free_phys_pages`. No sort, no boundary absorb, no watermark mutation,
         no D2H sync. Boundary absorption is deferred to `_flush`.
@@ -1144,7 +1294,10 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         ps==1 skips `torch.unique` (token == page and `free_index` is already
         unique per caller contract); ps>1 needs it to dedup same-page tokens.
         Callers must not double-free: a tombstone (-1) here would be cat'd onto
-        the free list.
+        the free list. Opt-in lifecycle tracing is the deliberate exception to
+        the no-D2H rule: it materializes exact physical hole pages so the replay
+        can visualize allocator internals. Disabled tracing keeps the hot path
+        byte-for-byte asynchronous.
         """
         self._stats_n_free_lazy += 1
         with record_function("MultiEndedAlloc._free_lazy"):
@@ -1155,6 +1308,12 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
                 else:
                     free_v_pages = torch.unique(free_v_pages_raw // self.page_size)
                 freed_p_pages = self.virtual_to_physical[free_v_pages]
+            traced_freed_pages = None
+            if trace_enabled():
+                with record_function(
+                    "MultiEndedAlloc._free_lazy.trace_materialize_holes"
+                ):
+                    traced_freed_pages = [int(page) for page in freed_p_pages.tolist()]
             # Disjoint-element scatters — no barrier (a freed v has no live reader;
             # per-element scatter writes are atomic).
             self.virtual_to_physical[free_v_pages] = -1
@@ -1165,6 +1324,7 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             if _SORT_FREE_LIST_AFTER_MERGE:
                 self._free_phys_pages, _ = torch.sort(self._free_phys_pages)
             self.live_page_count -= int(freed_p_pages.shape[0])
+            return traced_freed_pages
 
     def _release_phys_pages_batch(self, pages: torch.Tensor) -> None:
         """Cat `pages` onto `_free_phys_pages` (+ optional sort). Called by `_flush`
@@ -1533,9 +1693,9 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             n += 1
         return wm + n, all_cpu[:n], all_cpu[n:]
 
-    def _preview_flush_touched_pages(
+    def _preview_flush_plan(
         self, all_cpu: List[int], *, urgent: bool
-    ) -> Set[int]:
+    ) -> Tuple[Set[int], List[int], List[int]]:
         """Conservative physical footprint of the current two-pointer pass.
 
         The preview mirrors destination/source selection but does not inspect
@@ -1547,8 +1707,10 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             all_cpu
         )
         touched = set(boundary_holes)
+        source_pages: List[int] = []
+        destination_pages: List[int] = []
         if not holes_cpu:
-            return touched
+            return touched, source_pages, destination_pages
 
         # The real pass absorbs boundary-contiguous holes before looking for a
         # survivor.  Seed the preview from that post-absorption watermark too;
@@ -1578,6 +1740,8 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
 
             touched.add(src)
             touched.add(dst)
+            source_pages.append(src)
+            destination_pages.append(dst)
             if self.grow_direction == "up":
                 dst_cursor += 1
                 cursor = src - 1
@@ -1587,7 +1751,14 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             n_dst_consumed += 1
             if move_cap is not None and n_dst_consumed >= move_cap:
                 break
-        return touched
+        return touched, source_pages, destination_pages
+
+    def _preview_flush_touched_pages(
+        self, all_cpu: List[int], *, urgent: bool
+    ) -> Set[int]:
+        """Compatibility helper for callers that only need the footprint."""
+
+        return self._preview_flush_plan(all_cpu, urgent=urgent)[0]
 
     def _absorb_boundary_holes(self, all_cpu: List[int]) -> Tuple[int, List[int]]:
         """Retreat the watermark past free slots ALREADY contiguous with it, slice
@@ -1647,6 +1818,13 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         # free-list D2H below. Row-aware hazards are checked after the exact
         # boundary/src/dst footprint is available.
         if not self._settle_external_transfers(urgent=urgent, touched_pages=set()):
+            trace_hicache_event(
+                "l1_compaction_decision",
+                pool=self.sub_pool_name,
+                urgent=urgent,
+                touched_pages=[],
+                decision="deferred_global_fence",
+            )
             return 0
         with record_function("MultiEndedAlloc._flush"):
             self._drain_pending_reuse(urgent=urgent)
@@ -1657,10 +1835,32 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
 
             all_cpu = self._free_phys_pages.tolist()  # the ONE D2H sync per flush
 
-            touched_pages = self._preview_flush_touched_pages(all_cpu, urgent=urgent)
-            if not self._settle_external_transfers(
+            watermark_before = self.watermark_physical
+            _, boundary_pages, _ = self._partition_boundary_holes(all_cpu)
+            touched_pages, preview_srcs, preview_dsts = self._preview_flush_plan(
+                all_cpu, urgent=urgent
+            )
+            transfers_settled = self._settle_external_transfers(
                 urgent=urgent, touched_pages=touched_pages
-            ):
+            )
+            trace_hicache_event(
+                "l1_compaction_decision",
+                pool=self.sub_pool_name,
+                urgent=urgent,
+                watermark_before=watermark_before,
+                free_pages=all_cpu,
+                boundary_pages=boundary_pages,
+                touched_pages=touched_pages,
+                source_pages=preview_srcs,
+                destination_pages=preview_dsts,
+                decision="allowed" if transfers_settled else "deferred_row_fence",
+            )
+            if not transfers_settled:
+                self._trace_l1_state(
+                    "compaction_deferred",
+                    urgent=urgent,
+                    touched_pages=touched_pages,
+                )
                 return 0
             self._stats_n_flush_calls += 1
 
@@ -1687,6 +1887,8 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             srcs: List[int] = []
             dsts: List[int] = []
             v_moveds: List[int] = []
+            trace_srcs: List[int] = []
+            trace_dsts: List[int] = []
 
             # Flush-scoped accumulator for event-FIRED srcs. `_commit_move_batch`
             # appends here instead of catting onto `_free_phys_pages`; the merge is
@@ -1783,6 +1985,8 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
                 srcs.append(src)
                 dsts.append(dst)
                 v_moveds.append(v_moved)
+                trace_srcs.append(src)
+                trace_dsts.append(dst)
 
                 # Advance cursor strictly past the picked src.
                 if self.grow_direction == "up":
@@ -1827,6 +2031,23 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             if n_moves > 0:
                 self._stats_n_flush_did_work += 1
                 self._stats_n_flush_moves += n_moves
+            trace_hicache_event(
+                "l1_compaction_completed",
+                pool=self.sub_pool_name,
+                urgent=urgent,
+                source_pages=trace_srcs,
+                destination_pages=trace_dsts,
+                moves=n_moves,
+                watermark_before=watermark_before,
+                watermark_after=self.watermark_physical,
+            )
+            self._trace_l1_state(
+                "compaction_completed",
+                urgent=urgent,
+                moves=n_moves,
+                source_pages=trace_srcs,
+                destination_pages=trace_dsts,
+            )
             self._maybe_emit_stats()
             return n_moves
 
