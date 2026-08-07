@@ -30,6 +30,13 @@ mkdir -p "$OUTPUT_DIR"
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
+# Auto-set PYTHONPATH to use local sglang source (not site-packages)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+export PYTHONPATH="$REPO_ROOT/python:${PYTHONPATH:-}"
+echo "[setup] PYTHONPATH=$PYTHONPATH"
+echo "[setup] Using sglang from: $(python -c 'import sglang; print(sglang.__file__)' 2>/dev/null || echo 'NOT FOUND')"
+
 echo "============================================"
 echo "HiCache Copy Optimization Benchmark"
 echo "============================================"
@@ -39,6 +46,7 @@ echo "Iters: $NUM_ITERS"
 echo "Output: $OUTPUT_DIR"
 echo "============================================"
 echo ""
+
 
 # =============================================================================
 # Experiment 1: Microbenchmark (per-transfer timing)
@@ -74,7 +82,7 @@ for VERSION in static unified_old unified_new; do
             SERVER_ARGS="--hicache-ratio 0.5"
             ;;
         unified_old|unified_new)
-            SERVER_ARGS="--enable-unified-memory --hicache-ratio 0.5"
+            SERVER_ARGS="--enable-unified-memory --hicache-ratio 0.5 --attention-backend triton"
             ;;
     esac
 
@@ -88,15 +96,25 @@ for VERSION in static unified_old unified_new; do
         > "$OUTPUT_DIR/server_${VERSION}_${TIMESTAMP}.log" 2>&1 &
     SERVER_PID=$!
 
-    # Wait for server to be ready
+    # Wait for server to be ready (up to 4 minutes)
     echo "Waiting for server to be ready..."
+    SERVER_READY=false
     for i in $(seq 1 120); do
         if curl -s "http://localhost:$PORT/health" > /dev/null 2>&1; then
             echo "Server is ready."
+            SERVER_READY=true
             break
         fi
         sleep 2
     done
+
+    if [ "$SERVER_READY" = false ]; then
+        echo "ERROR: Server failed to start for $VERSION. Check log:"
+        echo "  tail -50 $OUTPUT_DIR/server_${VERSION}_${TIMESTAMP}.log"
+        kill $SERVER_PID || true
+        wait $SERVER_PID 2>/dev/null || true
+        continue
+    fi
 
     # Run benchmark scenarios
     for SCENARIO in short_prefix long_prefix mixed; do
@@ -117,6 +135,7 @@ for VERSION in static unified_old unified_new; do
     echo ""
 done
 
+
 # =============================================================================
 # Experiment 3: nsys profiling
 # =============================================================================
@@ -131,11 +150,12 @@ for VERSION in static unified_old unified_new; do
             SERVER_ARGS="--hicache-ratio 0.5"
             ;;
         unified_old|unified_new)
-            SERVER_ARGS="--enable-unified-memory --hicache-ratio 0.5"
+            SERVER_ARGS="--enable-unified-memory --hicache-ratio 0.5 --attention-backend triton"
             ;;
     esac
 
     # Start server with nsys
+
     nsys profile \
         --output "$OUTPUT_DIR/nsys_${VERSION}_${TIMESTAMP}" \
         --force-overwrite true \
