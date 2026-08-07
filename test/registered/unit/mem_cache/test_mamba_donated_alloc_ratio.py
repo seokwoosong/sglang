@@ -12,16 +12,13 @@ eviction -- which is why the peak, not the decode steady state, sets the floor.
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import torch
 
-from sglang.srt.mem_cache.allocation import alloc_req_slots
 from sglang.srt.mem_cache.base_prefix_cache import (
     EvictParams,
     IncLockRefResult,
 )
-from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
 from sglang.srt.mem_cache.unified_cache.components.mamba_component import MambaComponent
 from sglang.srt.mem_cache.unified_cache.components.tree_component import ComponentType
 from sglang.srt.mem_cache.unified_cache.unified_tree_core import UnifiedTreeCore
@@ -47,15 +44,6 @@ class _BoundedMambaAllocator:
     def free(self, value: torch.Tensor):
         self.free_ids.extend(int(v) for v in value.tolist())
 
-    def available_size(self):
-        return len(self.free_ids)
-
-    def schedulable_available_size(self):
-        return len(self.free_ids)
-
-    def allocator_state_str(self):
-        return f"free={len(self.free_ids)}"
-
 
 class _RatioCache:
     tree_components = (ComponentType.FULL, ComponentType.MAMBA)
@@ -64,19 +52,9 @@ class _RatioCache:
         self.root_node = UnifiedTreeNode(self.tree_components)
         self.allocator = _BoundedMambaAllocator(pool_size)
         self.req_to_token_pool = SimpleNamespace(mamba_allocator=self.allocator)
-        self.token_to_kv_pool_allocator = SimpleNamespace()
         self.component_evictable_size_ = {ComponentType.MAMBA: 0}
         self.component_protected_size_ = {ComponentType.MAMBA: 0}
         self.prefix_nodes = []
-
-    def mamba_evictable_size(self):
-        return self.component_evictable_size_[ComponentType.MAMBA]
-
-    def mamba_protected_size(self):
-        return self.component_protected_size_[ComponentType.MAMBA]
-
-    def available_and_evictable_str(self):
-        return "ratio-cache"
 
     def evict(self, params: EvictParams):
         # Reclaim up to mamba_num evictable (unlocked) prefix snapshots, mirroring
@@ -254,69 +232,83 @@ class TestMambaDonatedAllocRatio(unittest.TestCase):
         self.assertEqual(len(cache.prefix_nodes), N - 1)
 
 
-class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
-    @staticmethod
-    def _req(*, active=False, tracking=False):
-        return SimpleNamespace(
-            req_pool_idx=None,
-            mamba_pool_idx=object() if active else None,
-            mamba_ping_pong_track_buffer=object() if tracking else None,
+class TestPPMambaPoolSizing(unittest.TestCase):
+    """A PP rank only allocates mamba state for its own [start_layer, end_layer)
+    slice, so charging it for the whole model's layers starves the pool. Sizing
+    uses the largest per-stage share, which also keeps every rank on the same
+    pool size (and hence the same max_running_requests / pp_max_micro_batch_size)
+    without a collective."""
+
+    # Kimi-K3 shaped: 93 layers, linear attention everywhere except every 4th and
+    # the last, so the 69 mamba layers split unevenly over 8 stages (9 or 8 each).
+    TOTAL_LAYERS = 93
+    MAMBA_LAYERS = [i for i in range(93) if (i + 1) % 4 != 0 and i <= 90]
+    BUDGET_GB = 8.0
+
+    @classmethod
+    def _pool_size(cls, pp_rank, pp_size):
+        from sglang.srt import runtime_context as rc
+        from sglang.srt.configs.mamba_utils import (
+            Mamba2CacheParams,
+            Mamba2StateDType,
+            Mamba2StateShape,
         )
+        from sglang.srt.distributed.utils import get_pp_indices
+        from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
+        from sglang.srt.runtime_context import get_schedule
 
-    @staticmethod
-    def _req_pool():
-        req_pool = HybridReqToTokenPool.__new__(HybridReqToTokenPool)
-        req_pool.enable_mamba_extra_buffer = True
-        req_pool.enable_mamba_extra_buffer_lazy = False
-        req_pool.mamba_ping_pong_track_buffer_size = 2
-        req_pool.mamba_allocator = MagicMock()
-        req_pool.mamba_allocator.schedulable_available_size.return_value = 1
-        req_pool.alloc = MagicMock(return_value=[3, 4])
-        return req_pool
-
-    def test_preallocated_active_states_are_not_charged_again(self):
-        req_pool = self._req_pool()
-        tree_cache = MagicMock()
-        tree_cache.supports_mamba.return_value = True
-        tree_cache.mamba_evictable_size.return_value = 3
-
-        self.assertEqual(
-            alloc_req_slots(
-                req_pool,
-                [self._req(active=True), self._req(active=True)],
-                tree_cache,
+        shape = Mamba2StateShape(
+            conv=[(4096, 3)],
+            temporal=(64, 128, 128),
+            intermediate_size=0,
+            conv_dim=0,
+            ssm_state_size=0,
+            num_heads=0,
+            head_dim=0,
+            state_size=0,
+            conv_kernel=0,
+            num_k_heads_per_tp=8,
+        )
+        params = Mamba2CacheParams(
+            shape=shape,
+            dtype=Mamba2StateDType(conv=torch.bfloat16, temporal=torch.float32),
+            layers=list(cls.MAMBA_LAYERS),
+        )
+        start, end = get_pp_indices(cls.TOTAL_LAYERS, pp_rank, pp_size)
+        fake = SimpleNamespace(
+            mambaish_config=SimpleNamespace(mamba2_cache_params=params),
+            server_args=SimpleNamespace(),
+            spec_algorithm=SimpleNamespace(is_none=lambda: True),
+            layer_info=SimpleNamespace(start_layer=start, end_layer=end),
+            ps=SimpleNamespace(attn_dp_size=1, pp_size=pp_size),
+            hybrid_gdn_config=None,
+            model_config=SimpleNamespace(
+                hf_config=SimpleNamespace(), num_hidden_layers=cls.TOTAL_LAYERS
             ),
-            [3, 4],
         )
-        params = tree_cache.evict.call_args.args[0]
-        self.assertEqual((params.num_tokens, params.mamba_num), (0, 3))
+        with rc.get_context().override_server_args(
+            disable_radix_cache=False,
+            max_mamba_cache_size=None,
+            max_running_requests=None,
+            mamba_full_memory_ratio=0.5,
+            enable_linear_replayssm_spec=False,
+        ):
+            KVCacheConfigurator._handle_max_mamba_cache(fake, cls.BUDGET_GB)
+            return get_schedule().max_mamba_cache_size
 
-    def test_request_slots_use_mamba_then_full_shared_bytes(self):
-        req_pool = self._req_pool()
-        tree_cache = MagicMock()
-        tree_cache.supports_mamba.return_value = True
-        tree_cache.mamba_evictable_size.return_value = 3
-        tree_cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = 7
+    def test_stage_is_not_charged_for_the_whole_model(self):
+        solo = self._pool_size(0, 1)
+        staged = self._pool_size(0, 8)
+        # The busiest stage holds 9 of the 69 mamba layers, so it should fit
+        # roughly 69/9 more slots than a rank holding all of them. pp_size=1 is
+        # unchanged: that rank does hold every layer.
+        self.assertGreater(staged, solo * 5)
 
-        alloc_req_slots(req_pool, [self._req(), self._req()], tree_cache)
-
-        params = tree_cache.evict.call_args.args[0]
-        # Six states are missing and one fits. Three cached Mamba states cover
-        # part of the shortfall; Full KV supplies only the remaining two rows.
-        self.assertEqual((params.num_tokens, params.mamba_num), (14, 3))
-
-    def test_single_slot_eviction_uses_the_available_side(self):
-        component = object.__new__(MambaComponent)
-        component.cache = MagicMock()
-        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = 1590
-
-        component.cache.mamba_evictable_size.return_value = 1
-        params = component._mamba_slot_eviction_params()
-        self.assertEqual((params.num_tokens, params.mamba_num), (0, 1))
-
-        component.cache.mamba_evictable_size.return_value = 0
-        params = component._mamba_slot_eviction_params()
-        self.assertEqual((params.num_tokens, params.mamba_num), (1590, 0))
+    def test_every_stage_agrees_on_the_pool_size(self):
+        sizes = {self._pool_size(r, 8) for r in range(8)}
+        self.assertEqual(
+            len(sizes), 1, f"per-rank pool sizes diverged: {sorted(sizes)}"
+        )
 
 
 if __name__ == "__main__":
