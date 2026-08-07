@@ -176,16 +176,21 @@ def bench_unified_new_d2h(k_buffer, v_buffer, host_k, host_v, indices, layer_num
 def bench_unified_old_h2d(k_buffer, v_buffer, host_k, host_v, indices, layer_num,
                           v2p_table, device):
     """Benchmark H2D for unified-old: index_select + index_copy_."""
+    n = len(indices)
     def h2d():
         phys = v2p_table[indices]
         for layer_id in range(layer_num):
-            k_rows = host_k[layer_id][:len(indices)].index_select(0, torch.arange(len(indices)))
-            v_rows = host_v[layer_id][:len(indices)].index_select(0, torch.arange(len(indices)))
-            k_buffer[layer_id].index_copy_(0, phys, k_rows.to(device).view(len(indices), 1, -1))
-            v_buffer[layer_id].index_copy_(0, phys, v_rows.to(device).view(len(indices), 1, -1))
+            # host_k shape: (num_slots, head_num, head_dim)
+            # k_buffer[layer_id] shape: (num_slots, 1, head_num, head_dim)
+            # Need to unsqueeze(1) to match destination dimensionality
+            k_rows = host_k[layer_id][:n].to(device, non_blocking=True).unsqueeze(1)
+            v_rows = host_v[layer_id][:n].to(device, non_blocking=True).unsqueeze(1)
+            k_buffer[layer_id].index_copy_(0, phys, k_rows)
+            v_buffer[layer_id].index_copy_(0, phys, v_rows)
         torch.cuda.synchronize()
 
     return h2d
+
 
 
 def bench_unified_new_h2d(k_buffer, v_buffer, host_k, host_v, indices, layer_num,
