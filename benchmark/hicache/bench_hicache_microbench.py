@@ -133,36 +133,44 @@ def bench_static_h2d(k_buffer, v_buffer, host_k, host_v, indices, layer_num, dev
 def bench_unified_old_d2h(k_buffer, v_buffer, host_k, host_v, indices, layer_num,
                            v2p_table, staging_k, staging_v, device):
     """Benchmark D2H for unified-old: V2P + staging relayout + DMA."""
+    n = len(indices)
     def d2h():
         # V2P
         phys = v2p_table[indices]
         # Staging relayout (gather strided -> contiguous)
         for layer_id in range(layer_num):
-            staging_k[:len(indices)] = k_buffer[layer_id][phys].view(len(indices), -1)
-            staging_v[:len(indices)] = v_buffer[layer_id][phys].view(len(indices), -1)
+            # k_buffer[layer_id] shape: (num_slots, 1, head_num, head_dim)
+            # After indexing: (n, 1, head_num, head_dim) -> squeeze(1) -> (n, head_num, head_dim)
+            staging_k[:n] = k_buffer[layer_id][phys].squeeze(1)
+            staging_v[:n] = v_buffer[layer_id][phys].squeeze(1)
         # DMA to host
         for layer_id in range(layer_num):
-            host_k[layer_id][:len(indices)] = staging_k[:len(indices)].to("cpu", non_blocking=True)
-            host_v[layer_id][:len(indices)] = staging_v[:len(indices)].to("cpu", non_blocking=True)
+            host_k[layer_id][:n] = staging_k[:n].to("cpu", non_blocking=True)
+            host_v[layer_id][:n] = staging_v[:n].to("cpu", non_blocking=True)
         torch.cuda.synchronize()
 
     return d2h
 
 
+
 def bench_unified_new_d2h(k_buffer, v_buffer, host_k, host_v, indices, layer_num, v2p_table):
     """Benchmark D2H for unified-new: V2P + direct gather (no staging)."""
+    n = len(indices)
     def d2h():
         # V2P
         phys = v2p_table[indices]
         # Direct gather per layer (no staging)
         for layer_id in range(layer_num):
-            k_cpu = k_buffer[layer_id][phys].to("cpu", non_blocking=True)
-            v_cpu = v_buffer[layer_id][phys].to("cpu", non_blocking=True)
-            host_k[layer_id][:len(indices)] = k_cpu.view(len(indices), -1)
-            host_v[layer_id][:len(indices)] = v_cpu.view(len(indices), -1)
+            # k_buffer[layer_id] shape: (num_slots, 1, head_num, head_dim)
+            # After indexing: (n, 1, head_num, head_dim) -> squeeze(1) -> (n, head_num, head_dim)
+            k_cpu = k_buffer[layer_id][phys].squeeze(1).to("cpu", non_blocking=True)
+            v_cpu = v_buffer[layer_id][phys].squeeze(1).to("cpu", non_blocking=True)
+            host_k[layer_id][:n] = k_cpu
+            host_v[layer_id][:n] = v_cpu
         torch.cuda.synchronize()
 
     return d2h
+
 
 
 def bench_unified_old_h2d(k_buffer, v_buffer, host_k, host_v, indices, layer_num,
