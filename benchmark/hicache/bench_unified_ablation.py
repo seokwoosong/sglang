@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Deterministic correctness and serving workloads for unified-memory HiCache.
 
 The benchmark deliberately distinguishes an enabled feature from an exercised
@@ -26,14 +25,23 @@ from typing import Any
 import aiohttp
 import requests
 
-
 COUNTERS = (
     "sglang:evicted_tokens_total",
     "sglang:load_back_tokens_total",
+    "sglang:load_back_bytes_total",
     "sglang:eviction_duration_seconds_sum",
     "sglang:eviction_duration_seconds_count",
     "sglang:load_back_duration_seconds_sum",
     "sglang:load_back_duration_seconds_count",
+    "sglang:hicache_backup_tokens_total",
+    "sglang:hicache_backup_bytes_total",
+    "sglang:hicache_backup_duration_seconds_sum",
+    "sglang:hicache_backup_duration_seconds_count",
+    "sglang:hicache_dropped_tokens_total",
+    "sglang:forward_execution_seconds_total",
+    "sglang:realtime_tokens_total",
+    "sglang:estimated_read_bytes_per_gpu_total",
+    "sglang:estimated_write_bytes_per_gpu_total",
 )
 
 GSM8K_URL = (
@@ -82,6 +90,194 @@ def metric_snapshot(base_url: str) -> dict[str, float]:
 
 def metric_delta(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
     return {name: after.get(name, 0.0) - before.get(name, 0.0) for name in COUNTERS}
+
+
+def memory_profile_snapshot(output_path: str) -> dict[str, Any]:
+    profile_dir = Path(output_path).parent / "memory_breakdown_profile"
+    profiles = []
+    for path in sorted(profile_dir.glob("memory_profile.*.json")):
+        try:
+            profiles.append((str(path), json.loads(path.read_text())))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+    def aggregate(field: str) -> list[dict[str, Any]]:
+        merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for _, profile in profiles:
+            for item in profile.get(field, []):
+                key = (item["category"], item["pool"], item["operation"])
+                target = merged.setdefault(
+                    key,
+                    {
+                        "category": key[0],
+                        "pool": key[1],
+                        "operation": key[2],
+                        "calls": 0,
+                        "errors": 0,
+                        "cpu_time_ns": 0,
+                        "rows": 0,
+                        "bytes": 0,
+                    },
+                )
+                for name in ("calls", "errors", "cpu_time_ns", "rows", "bytes"):
+                    target[name] += int(item.get(name, 0))
+        return [merged[key] for key in sorted(merged)]
+
+    sample_merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for _, profile in profiles:
+        for item in profile.get("samples", []):
+            key = (item["category"], item["pool"], item["operation"])
+            target = sample_merged.setdefault(
+                key,
+                {
+                    "category": key[0],
+                    "pool": key[1],
+                    "operation": key[2],
+                    "count": 0,
+                    "sum": 0,
+                    "min": None,
+                    "max": None,
+                    "histogram": {},
+                },
+            )
+            target["count"] += int(item.get("count", 0))
+            target["sum"] += int(item.get("sum", 0))
+            value_min = item.get("min")
+            value_max = item.get("max")
+            if value_min is not None:
+                target["min"] = (
+                    value_min
+                    if target["min"] is None
+                    else min(target["min"], value_min)
+                )
+            if value_max is not None:
+                target["max"] = (
+                    value_max
+                    if target["max"] is None
+                    else max(target["max"], value_max)
+                )
+            for bucket, count in item.get("histogram", {}).items():
+                target["histogram"][bucket] = target["histogram"].get(bucket, 0) + int(
+                    count
+                )
+
+    layouts: dict[tuple[str, str], dict[str, Any]] = {}
+    for _, profile in profiles:
+        for item in profile.get("layouts", []):
+            layouts[(item["pool"], item["layout_kind"])] = item
+    return {
+        "files": [path for path, _ in profiles],
+        "metrics": aggregate("metrics"),
+        "cuda_metrics": aggregate("cuda_metrics"),
+        "samples": [sample_merged[key] for key in sorted(sample_merged)],
+        "layouts": [layouts[key] for key in sorted(layouts)],
+    }
+
+
+def memory_profile_delta(
+    before: dict[str, Any], after: dict[str, Any]
+) -> dict[str, Any]:
+    def subtract(field: str) -> list[dict[str, Any]]:
+        before_map = {
+            (item["category"], item["pool"], item["operation"]): item
+            for item in before.get(field, [])
+        }
+        output = []
+        for item in after.get(field, []):
+            key = (item["category"], item["pool"], item["operation"])
+            prior = before_map.get(key, {})
+            result = {
+                name: value
+                for name, value in zip(("category", "pool", "operation"), key)
+            }
+            for name in ("calls", "errors", "cpu_time_ns", "rows", "bytes"):
+                result[name] = int(item.get(name, 0)) - int(prior.get(name, 0))
+            output.append(result)
+        return output
+
+    before_samples = {
+        (item["category"], item["pool"], item["operation"]): item
+        for item in before.get("samples", [])
+    }
+    sample_delta = []
+    for item in after.get("samples", []):
+        key = (item["category"], item["pool"], item["operation"])
+        prior = before_samples.get(key, {})
+        histogram = {}
+        for bucket in set(item.get("histogram", {})) | set(prior.get("histogram", {})):
+            count = int(item.get("histogram", {}).get(bucket, 0)) - int(
+                prior.get("histogram", {}).get(bucket, 0)
+            )
+            if count:
+                histogram[bucket] = count
+        sample_delta.append(
+            {
+                "category": key[0],
+                "pool": key[1],
+                "operation": key[2],
+                "count": int(item.get("count", 0)) - int(prior.get("count", 0)),
+                "sum": int(item.get("sum", 0)) - int(prior.get("sum", 0)),
+                "histogram": histogram,
+            }
+        )
+    return {
+        "metrics": subtract("metrics"),
+        "cuda_metrics": subtract("cuda_metrics"),
+        "samples": sample_delta,
+        "layouts": after.get("layouts", []),
+    }
+
+
+def start_torch_profile(args: argparse.Namespace, phase: str) -> dict[str, Any] | None:
+    if args.torch_profile_steps <= 0:
+        return None
+    if not args.torch_profile_output_dir:
+        raise ValueError(
+            "--torch-profile-output-dir is required when --torch-profile-steps > 0"
+        )
+    output_dir = Path(args.torch_profile_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    request = {
+        "output_dir": str(output_dir),
+        "num_steps": args.torch_profile_steps,
+        "activities": ["CPU", "GPU"],
+        "with_stack": False,
+        "record_shapes": False,
+        "profile_id": f"{args.variant}-{phase}",
+    }
+    response = requests.post(
+        f"{args.base_url}/start_profile", json=request, timeout=120
+    )
+    response.raise_for_status()
+    return {"request": request, "start_response": response.text.strip()}
+
+
+def stop_torch_profile(
+    args: argparse.Namespace, state: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if state is None:
+        return None
+    # num_steps normally stops and exports automatically. The explicit stop is
+    # a fallback for short workloads; a response saying that profiling already
+    # stopped is therefore informative rather than a benchmark failure.
+    output_dir = Path(args.torch_profile_output_dir)
+    files: list[Path] = []
+    for _ in range(10):
+        files = [path for path in sorted(output_dir.glob("**/*")) if path.is_file()]
+        if files:
+            state["auto_stopped"] = True
+            break
+        time.sleep(0.1)
+    if not files:
+        try:
+            response = requests.post(f"{args.base_url}/stop_profile", timeout=300)
+            state["stop_status"] = response.status_code
+            state["stop_response"] = response.text.strip()
+        except requests.RequestException as exc:
+            state["stop_error"] = repr(exc)
+        files = [path for path in sorted(output_dir.glob("**/*")) if path.is_file()]
+    state["trace_files"] = [str(path) for path in files]
+    return state
 
 
 def get_server_info(base_url: str) -> dict[str, Any]:
@@ -223,6 +419,7 @@ async def run_accuracy_async(args: argparse.Namespace) -> dict[str, Any]:
     server_info = get_server_info(args.base_url)
     model = str(server_info["served_model_name"])
     metrics_before = metric_snapshot(args.base_url)
+    memory_profile_before = memory_profile_snapshot(args.output)
     rows = load_gsm8k(args.dataset_path)
     if args.num_shots + args.num_questions > len(rows):
         raise ValueError("Requested more GSM8K rows than the dataset contains")
@@ -245,6 +442,9 @@ async def run_accuracy_async(args: argparse.Namespace) -> dict[str, Any]:
             return_logprob=False,
         )
     metrics_after_pressure = metric_snapshot(args.base_url)
+    time.sleep(0.35)
+    memory_profile_after_pressure = memory_profile_snapshot(args.output)
+    torch_profile = start_torch_profile(args, "measured")
     first_replay = sync_generate_text(args.base_url, model, prompts[0], args.output_len)
 
     semaphore = asyncio.Semaphore(args.max_concurrency)
@@ -314,6 +514,9 @@ async def run_accuracy_async(args: argparse.Namespace) -> dict[str, Any]:
         invalid += int(prediction is None)
 
     metrics_after = metric_snapshot(args.base_url)
+    time.sleep(0.35)
+    memory_profile_after = memory_profile_snapshot(args.output)
+    torch_profile = stop_torch_profile(args, torch_profile)
     total_delta = metric_delta(metrics_before, metrics_after)
     errors: list[str] = []
     failed = sum(not record["success"] for record in records)
@@ -338,6 +541,13 @@ async def run_accuracy_async(args: argparse.Namespace) -> dict[str, Any]:
         "metrics_after_pressure": metrics_after_pressure,
         "metrics_after": metrics_after,
         "total_metric_delta": total_delta,
+        "memory_profile_pressure_delta": memory_profile_delta(
+            memory_profile_before, memory_profile_after_pressure
+        ),
+        "memory_profile_total_delta": memory_profile_delta(
+            memory_profile_before, memory_profile_after
+        ),
+        "torch_profile": torch_profile,
         "eviction_replay": {
             "baseline": first_baseline,
             "replay": first_replay,
@@ -384,23 +594,48 @@ def run_parity(args: argparse.Namespace) -> dict[str, Any]:
     flush_cache(args.base_url)
     server_info = get_server_info(args.base_url)
     metrics_before = metric_snapshot(args.base_url)
+    memory_profile_before = memory_profile_snapshot(args.output)
 
     baselines: list[dict[str, Any]] = []
+    promotions: list[dict[str, Any]] = []
     for index in range(args.pressure_requests):
         input_ids = [1000 + index] * args.input_len
-        baselines.append(
-            sync_generate(
-                args.base_url,
-                input_ids,
-                args.output_len,
-                return_logprob=True,
-            )
+        baseline = sync_generate(
+            args.base_url,
+            input_ids,
+            args.output_len,
+            return_logprob=True,
+        )
+        # A write-through HiCache entry is promoted on a cache hit. Prime each
+        # prefix twice before later prefixes create L1 pressure; otherwise the
+        # first eviction may legitimately discard a never-reused cold entry
+        # without writing it to L2, making the parity workload test policy
+        # rather than transfer correctness.
+        promotion = sync_generate(
+            args.base_url,
+            input_ids,
+            args.output_len,
+            return_logprob=True,
+        )
+        baselines.append(baseline)
+        promotions.append(
+            {
+                "index": index,
+                "result": promotion,
+                "comparison": compare_outputs(baseline, promotion),
+            }
         )
 
     metrics_after_pressure = metric_snapshot(args.base_url)
+    time.sleep(0.35)
+    memory_profile_after_pressure = memory_profile_snapshot(args.output)
+    torch_profile = start_torch_profile(args, "measured")
     restored: dict[str, Any] | None = None
     replay_records: list[dict[str, Any]] = []
-    for index in range(args.pressure_requests):
+    # Priming above scans from oldest to newest. Replay newest entries first so
+    # an L2 working set larger than capacity does not cyclically evict every
+    # retained entry before the benchmark reaches it.
+    for index in reversed(range(args.pressure_requests)):
         loadback_before = metric_snapshot(args.base_url)[
             "sglang:load_back_tokens_total"
         ]
@@ -428,9 +663,27 @@ def run_parity(args: argparse.Namespace) -> dict[str, Any]:
             break
 
     metrics_after = metric_snapshot(args.base_url)
+    time.sleep(0.35)
+    memory_profile_after = memory_profile_snapshot(args.output)
+    torch_profile = stop_torch_profile(args, torch_profile)
     total_delta = metric_delta(metrics_before, metrics_after)
     pressure_delta = metric_delta(metrics_before, metrics_after_pressure)
     errors: list[str] = []
+    for promotion in promotions:
+        comparison = promotion["comparison"]
+        index = promotion["index"]
+        if not comparison["output_ids_equal"]:
+            errors.append(f"Output token IDs changed during promotion at {index}")
+        if not comparison["logprob_token_ids_equal"]:
+            errors.append(f"Logprob token IDs changed during promotion at {index}")
+        if not comparison["logprobs_finite"]:
+            errors.append(f"Non-finite promotion logprob observed at {index}")
+        if comparison["max_abs_logprob_diff"] > args.logprob_atol:
+            errors.append(
+                "Promotion logprob drift exceeded tolerance at "
+                f"{index}: {comparison['max_abs_logprob_diff']} > "
+                f"{args.logprob_atol}"
+            )
     if pressure_delta["sglang:evicted_tokens_total"] <= 0:
         errors.append("L1 eviction did not occur during pressure phase")
     if restored is None:
@@ -463,6 +716,14 @@ def run_parity(args: argparse.Namespace) -> dict[str, Any]:
         "metrics_after": metrics_after,
         "pressure_metric_delta": pressure_delta,
         "total_metric_delta": total_delta,
+        "memory_profile_pressure_delta": memory_profile_delta(
+            memory_profile_before, memory_profile_after_pressure
+        ),
+        "memory_profile_total_delta": memory_profile_delta(
+            memory_profile_before, memory_profile_after
+        ),
+        "torch_profile": torch_profile,
+        "promotions": promotions,
         "replays": replay_records,
         "restored": restored,
         "validation": {"passed": not errors, "errors": errors},
@@ -570,6 +831,7 @@ def make_workload(
     rounds: int,
     shared_ratio: float,
     group_order_start: int = 0,
+    reverse_group_order: bool = False,
 ) -> tuple[list[list[int]], list[tuple[int, int, list[int]]]]:
     if not 0 < shared_ratio < 1:
         raise ValueError("shared_ratio must be between zero and one")
@@ -587,6 +849,8 @@ def make_workload(
     group_order = list(range(group_order_start, groups)) + list(
         range(group_order_start)
     )
+    if reverse_group_order:
+        group_order.reverse()
     schedule: list[tuple[int, int, list[int]]] = []
     for round_id in range(rounds):
         for group_id in group_order:
@@ -600,6 +864,7 @@ async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
     flush_cache(args.base_url)
     server_info = get_server_info(args.base_url)
     metrics_before = metric_snapshot(args.base_url)
+    memory_profile_before = memory_profile_snapshot(args.output)
     prefixes, schedule = make_workload(
         seed=args.seed,
         input_len=args.input_len,
@@ -607,18 +872,23 @@ async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
         rounds=args.rounds,
         shared_ratio=args.shared_ratio,
         group_order_start=args.group_order_start,
+        reverse_group_order=args.reverse_group_order,
     )
 
     prime_started = time.perf_counter()
-    for prefix in prefixes:
-        sync_generate(
-            args.base_url,
-            prefix,
-            args.prime_output_len,
-            return_logprob=False,
-        )
+    for _ in range(args.prime_repeats):
+        for prefix in prefixes:
+            sync_generate(
+                args.base_url,
+                prefix,
+                args.prime_output_len,
+                return_logprob=False,
+            )
     prime_duration = time.perf_counter() - prime_started
     metrics_after_prime = metric_snapshot(args.base_url)
+    time.sleep(0.35)
+    memory_profile_after_prime = memory_profile_snapshot(args.output)
+    torch_profile = start_torch_profile(args, "measured")
 
     timeout = aiohttp.ClientTimeout(total=60 * 60)
     connector = aiohttp.TCPConnector(limit=max(args.max_concurrency * 2, 16))
@@ -650,6 +920,9 @@ async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
         measured_duration = time.perf_counter() - measured_started
 
     metrics_after = metric_snapshot(args.base_url)
+    time.sleep(0.35)
+    memory_profile_after = memory_profile_snapshot(args.output)
+    torch_profile = stop_torch_profile(args, torch_profile)
     total_delta = metric_delta(metrics_before, metrics_after)
     measured_delta = metric_delta(metrics_after_prime, metrics_after)
     successful = [record for record in records if record.success]
@@ -705,6 +978,11 @@ async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
     if args.expect_hicache and args.require_loadback:
         if total_delta["sglang:load_back_tokens_total"] <= 0:
             errors.append("Required L2 load-back did not occur")
+    if args.expect_hicache and args.require_backup:
+        if total_delta["sglang:hicache_backup_tokens_total"] <= 0:
+            errors.append("Required L2 backup did not occur")
+    if args.forbid_dropped and total_delta["sglang:hicache_dropped_tokens_total"] > 0:
+        errors.append("HiCache dropped tokens under host pressure")
     if args.expect_hicache and args.require_host_hit:
         host_evidence = (
             summary["cached_tokens_host"] > 0
@@ -726,6 +1004,13 @@ async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
         "metrics_after": metrics_after,
         "total_metric_delta": total_delta,
         "measured_metric_delta": measured_delta,
+        "memory_profile_total_delta": memory_profile_delta(
+            memory_profile_before, memory_profile_after
+        ),
+        "memory_profile_measured_delta": memory_profile_delta(
+            memory_profile_after_prime, memory_profile_after
+        ),
+        "torch_profile": torch_profile,
         "summary": summary,
         "requests": [asdict(record) for record in records],
         "validation": {"passed": not errors, "errors": errors},
@@ -741,6 +1026,8 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input-len", type=int, required=True)
     parser.add_argument("--output-len", type=int, default=2)
     parser.add_argument("--expect-hicache", action="store_true")
+    parser.add_argument("--torch-profile-steps", type=int, default=0)
+    parser.add_argument("--torch-profile-output-dir", default="")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -774,13 +1061,32 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Rotate measured group order while leaving priming order unchanged.",
     )
+    steady.add_argument(
+        "--reverse-group-order",
+        action="store_true",
+        help=(
+            "Replay the most recently primed prefixes first. This avoids a "
+            "cyclic scan evicting every retained L2 entry before it is reused."
+        ),
+    )
     steady.add_argument("--rounds", type=int, default=4)
     steady.add_argument("--shared-ratio", type=float, default=0.95)
     steady.add_argument("--prime-output-len", type=int, default=1)
+    steady.add_argument(
+        "--prime-repeats",
+        type=int,
+        default=1,
+        help=(
+            "Number of serial priming passes. Write-through needs two passes "
+            "so the second cache hit promotes each prefix to L2 before pressure."
+        ),
+    )
     steady.add_argument("--max-concurrency", type=int, default=4)
     steady.add_argument("--require-eviction", action="store_true")
     steady.add_argument("--require-loadback", action="store_true")
+    steady.add_argument("--require-backup", action="store_true")
     steady.add_argument("--require-host-hit", action="store_true")
+    steady.add_argument("--forbid-dropped", action="store_true")
     return parser
 
 

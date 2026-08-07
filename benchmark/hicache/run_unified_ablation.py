@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Launch one pinned unified-memory ablation server and run one workload.
 
 The launcher records the exact command, environment overrides, git revision,
@@ -19,9 +18,14 @@ from typing import Any
 
 import requests
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK = REPO_ROOT / "benchmark/hicache/bench_unified_ablation.py"
+EVAL_WORKTREE_ROOT = Path(
+    os.environ.get(
+        "SGLANG_ABLATION_WORKTREE_ROOT",
+        "/home/sukwoo24/sglang-eval-worktrees/ablation-v2",
+    )
+)
 DEFAULT_MODEL = Path(
     "/home/sukwoo24/.cache/huggingface/hub/"
     "models--Qwen--Qwen3.5-4B/snapshots/"
@@ -29,46 +33,88 @@ DEFAULT_MODEL = Path(
 )
 
 VARIANTS = {
+    # Direct-copy experiment: all three variants use the same production
+    # source. Only the GPU layout and scheduler-side transfer fence differ.
+    "direct-plain": {
+        "sha": "d173689debcd1b9c54159deb220fb0b60099474a",
+        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/direct-copy"),
+        "unified": False,
+        "hicache": False,
+        "sync_unified_transfers": None,
+    },
+    "direct-u0": {
+        "sha": "d173689debcd1b9c54159deb220fb0b60099474a",
+        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/direct-copy"),
+        "unified": True,
+        "hicache": False,
+        "sync_unified_transfers": None,
+    },
+    "direct-static": {
+        "sha": "d173689debcd1b9c54159deb220fb0b60099474a",
+        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/direct-copy"),
+        "unified": False,
+        "hicache": True,
+        "sync_unified_transfers": None,
+        # Qwen3.5's Mamba host pool supports page-first storage. "Static
+        # layer-first" refers to the non-unified GPU pool, not this L2 layout.
+        "hicache_mem_layout": "page_first",
+    },
+    "direct-u1": {
+        "sha": "d173689debcd1b9c54159deb220fb0b60099474a",
+        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/direct-copy"),
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "1",
+        "hicache_mem_layout": "page_first",
+    },
+    "direct-u2": {
+        "sha": "d173689debcd1b9c54159deb220fb0b60099474a",
+        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/direct-copy"),
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "hicache_mem_layout": "page_first",
+    },
     # Diagnostic control: the same historical source as U0, with the static
     # (non-unified) hybrid pools. It is not one of the four reported variants.
     "plain": {
         "sha": "8279702e0b8f159c29ed201d05503a0548fefef9",
-        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/u0"),
+        "worktree": EVAL_WORKTREE_ROOT / "plain",
         "unified": False,
         "hicache": False,
         "sync_unified_transfers": None,
     },
     "u0": {
         "sha": "b6c9c14037ccabf263f7cdae73c31a3ad1b609cc",
-        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/u0"),
+        "worktree": EVAL_WORKTREE_ROOT / "u0",
         "unified": True,
         "hicache": False,
         "sync_unified_transfers": None,
     },
     "u1": {
         "sha": "bf41c36e09375559cf25177df8038007db2611d0",
-        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/u1"),
+        "worktree": EVAL_WORKTREE_ROOT / "u1",
         "unified": True,
         "hicache": True,
         "sync_unified_transfers": None,
     },
     "u2": {
         "sha": "1ee4930f27d85c33a73baa1e0e6a9458381b06ec",
-        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/u2"),
+        "worktree": EVAL_WORKTREE_ROOT / "u2",
         "unified": True,
         "hicache": True,
         "sync_unified_transfers": "0",
     },
     "u2-sync-control": {
         "sha": "1ee4930f27d85c33a73baa1e0e6a9458381b06ec",
-        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/u2"),
+        "worktree": EVAL_WORKTREE_ROOT / "u2",
         "unified": True,
         "hicache": True,
         "sync_unified_transfers": "1",
     },
     "u3": {
         "sha": "0912b3824558982396cd2e18315867a81549a9cf",
-        "worktree": Path("/home/sukwoo24/sglang-eval-worktrees/u3"),
+        "worktree": EVAL_WORKTREE_ROOT / "u3",
         "unified": True,
         "hicache": True,
         "sync_unified_transfers": "0",
@@ -94,6 +140,34 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     temporary.replace(path)
+
+
+def collect_memory_profiles(profile_dir: Path) -> list[dict[str, Any]]:
+    profiles = []
+    if not profile_dir.is_dir():
+        return profiles
+    for path in sorted(profile_dir.glob("memory_profile.*.json")):
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            profiles.append({"path": str(path), "read_error": repr(exc)})
+            continue
+        profiles.append({"path": str(path), "profile": payload})
+    return profiles
+
+
+def attach_memory_profiles(
+    result_path: Path,
+    manifest: dict[str, Any],
+    profile_dir: Path,
+) -> None:
+    profiles = collect_memory_profiles(profile_dir)
+    manifest["memory_breakdown_profiles"] = profiles
+    if not result_path.is_file():
+        return
+    payload = json.loads(result_path.read_text())
+    payload["memory_breakdown_profiles"] = profiles
+    atomic_json(result_path, payload)
 
 
 def verify_variant(variant: dict[str, Any], *, allow_dirty: bool) -> str:
@@ -138,8 +212,6 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
         "extra_buffer",
         "--max-total-tokens",
         str(args.max_total_tokens),
-        "--max-mamba-cache-size",
-        str(args.max_mamba_cache_size),
         "--max-running-requests",
         str(args.max_running_requests),
         "--chunked-prefill-size",
@@ -154,6 +226,8 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
         "--log-level",
         args.log_level,
     ]
+    if args.max_mamba_cache_size is not None:
+        command.extend(["--max-mamba-cache-size", str(args.max_mamba_cache_size)])
     if variant["unified"]:
         command.append("--enable-unified-memory")
     if variant["hicache"]:
@@ -167,7 +241,7 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
                 "--hicache-io-backend",
                 "kernel",
                 "--hicache-mem-layout",
-                "page_first",
+                variant.get("hicache_mem_layout", "page_first"),
             ]
         )
     command.extend(args.server_extra_arg)
@@ -194,6 +268,15 @@ def benchmark_command(
     ]
     if variant["hicache"]:
         command.append("--expect-hicache")
+    if args.torch_profile_steps > 0:
+        command.extend(
+            [
+                "--torch-profile-steps",
+                str(args.torch_profile_steps),
+                "--torch-profile-output-dir",
+                str(output.parent / "torch_profile"),
+            ]
+        )
     if args.scenario == "parity":
         command.extend(
             [
@@ -233,16 +316,24 @@ def benchmark_command(
                 str(args.shared_ratio),
                 "--prime-output-len",
                 str(args.prime_output_len),
+                "--prime-repeats",
+                str(args.prime_repeats),
                 "--max-concurrency",
                 str(args.max_concurrency),
             ]
         )
+        if args.reverse_group_order:
+            command.append("--reverse-group-order")
         if args.require_eviction:
             command.append("--require-eviction")
         if args.require_loadback and variant["hicache"]:
             command.append("--require-loadback")
+        if args.require_backup and variant["hicache"]:
+            command.append("--require-backup")
         if args.require_host_hit and variant["hicache"]:
             command.append("--require-host-hit")
+        if args.forbid_dropped:
+            command.append("--forbid-dropped")
     return command
 
 
@@ -382,7 +473,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--client-timeout", type=int, default=1800)
     parser.add_argument("--monitor-interval", type=float, default=5.0)
     parser.add_argument("--max-total-tokens", type=int, required=True)
-    parser.add_argument("--max-mamba-cache-size", type=int, required=True)
+    parser.add_argument(
+        "--max-mamba-cache-size",
+        type=int,
+        default=None,
+        help=(
+            "Optional explicit Mamba slot cap. Omit it to exercise the server's "
+            "automatic unified-memory sizing."
+        ),
+    )
     parser.add_argument("--max-running-requests", type=int, default=8)
     parser.add_argument("--chunked-prefill-size", type=int, default=1024)
     parser.add_argument("--context-length", type=int, default=65536)
@@ -415,13 +514,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--groups", type=int, default=8)
     parser.add_argument("--group-order-start", type=int, default=0)
+    parser.add_argument("--reverse-group-order", action="store_true")
     parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--shared-ratio", type=float, default=0.95)
     parser.add_argument("--prime-output-len", type=int, default=1)
+    parser.add_argument("--prime-repeats", type=int, default=1)
     parser.add_argument("--max-concurrency", type=int, default=4)
     parser.add_argument("--require-eviction", action="store_true")
     parser.add_argument("--require-loadback", action="store_true")
+    parser.add_argument("--require-backup", action="store_true")
     parser.add_argument("--require-host-hit", action="store_true")
+    parser.add_argument("--forbid-dropped", action="store_true")
+    parser.add_argument(
+        "--profile-memory-breakdown",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Collect allocator/translation/compaction/fence and L1 layout "
+            "profiles into the run artifact (enabled by default)."
+        ),
+    )
+    parser.add_argument(
+        "--torch-profile-steps",
+        type=int,
+        default=0,
+        help=(
+            "Optionally capture the first N measured forward steps with the "
+            "built-in CPU/GPU torch profiler. This is diagnostic and affects "
+            "the profiled requests, so leave it at zero for clean performance runs."
+        ),
+    )
     return parser
 
 
@@ -437,6 +559,7 @@ def main() -> None:
     client_log_path = run_dir / "client.log"
     monitor_path = run_dir / "monitor.json"
     manifest_path = run_dir / "manifest.json"
+    memory_profile_dir = run_dir / "memory_breakdown_profile"
 
     command = server_command(args, variant)
     client_command = benchmark_command(args, variant, result_path)
@@ -444,6 +567,16 @@ def main() -> None:
     environment["PYTHONPATH"] = str(variant["worktree"] / "python")
     environment["TOKENIZERS_PARALLELISM"] = "false"
     environment.pop("SGLANG_HICACHE_TRACE_PATH", None)
+    if args.profile_memory_breakdown:
+        environment["SGLANG_MEMORY_BREAKDOWN_PROFILE_DIR"] = str(memory_profile_dir)
+        # SGLang's existing async CUDA-event timer exposes aggregate model
+        # forward GPU time without a device synchronize. It complements the
+        # allocator/layout profiler and makes the residual model-path cost
+        # visible in the same result JSON.
+        environment["SGLANG_ENABLE_METRICS_DEVICE_TIMER"] = "true"
+    else:
+        environment.pop("SGLANG_MEMORY_BREAKDOWN_PROFILE_DIR", None)
+        environment.pop("SGLANG_ENABLE_METRICS_DEVICE_TIMER", None)
     sync_value = variant["sync_unified_transfers"]
     if sync_value is None:
         environment.pop("SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS", None)
@@ -478,6 +611,12 @@ def main() -> None:
             "PYTHONPATH": environment["PYTHONPATH"],
             "TOKENIZERS_PARALLELISM": environment["TOKENIZERS_PARALLELISM"],
             "SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS": sync_value,
+            "SGLANG_MEMORY_BREAKDOWN_PROFILE_DIR": (
+                str(memory_profile_dir) if args.profile_memory_breakdown else None
+            ),
+            "SGLANG_ENABLE_METRICS_DEVICE_TIMER": (
+                "true" if args.profile_memory_breakdown else None
+            ),
             **explicit_environment,
         },
         "hardware_before": run_text(
@@ -525,6 +664,10 @@ def main() -> None:
             manifest["client_exit_code"] = exit_code
             manifest["client_timed_out"] = timed_out
             manifest["status"] = "completed" if exit_code == 0 else "failed"
+            if args.profile_memory_breakdown:
+                # Allow the aggregate writer's final periodic snapshot to include
+                # the last workload operations without synchronizing the server.
+                time.sleep(0.5)
     except Exception as exc:  # noqa: BLE001 - persist orchestration failure
         manifest["status"] = "failed"
         manifest["orchestration_error"] = repr(exc)
@@ -532,6 +675,8 @@ def main() -> None:
     finally:
         if process is not None:
             terminate_process_group(process)
+        if args.profile_memory_breakdown:
+            attach_memory_profiles(result_path, manifest, memory_profile_dir)
         manifest["finished_wall_time_ns"] = time.time_ns()
         manifest["hardware_after"] = run_text(
             [
