@@ -196,16 +196,21 @@ def bench_unified_old_h2d(k_buffer, v_buffer, host_k, host_v, indices, layer_num
 def bench_unified_new_h2d(k_buffer, v_buffer, host_k, host_v, indices, layer_num,
                           v2p_table, device):
     """Benchmark H2D for unified-new: direct .to(device) + scatter."""
+    n = len(indices)
     def h2d():
         phys = v2p_table[indices]
         for layer_id in range(layer_num):
-            k_chunk = host_k[layer_id][:len(indices)].to(device, non_blocking=True)
-            v_chunk = host_v[layer_id][:len(indices)].to(device, non_blocking=True)
-            k_buffer[layer_id][phys] = k_chunk.view(len(indices), 1, -1)
-            v_buffer[layer_id][phys] = v_chunk.view(len(indices), 1, -1)
+            # host_k shape: (num_slots, head_num, head_dim)
+            # k_buffer[layer_id] shape: (num_slots, 1, head_num, head_dim)
+            # Need unsqueeze(1) to match destination shape
+            k_chunk = host_k[layer_id][:n].to(device, non_blocking=True).unsqueeze(1)
+            v_chunk = host_v[layer_id][:n].to(device, non_blocking=True).unsqueeze(1)
+            k_buffer[layer_id][phys] = k_chunk
+            v_buffer[layer_id][phys] = v_chunk
         torch.cuda.synchronize()
 
     return h2d
+
 
 
 def main():
