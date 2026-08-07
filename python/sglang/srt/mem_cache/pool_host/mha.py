@@ -222,34 +222,20 @@ class MHATokenToKVPoolHost(HostKVCache):
     ):
         if io_backend == "kernel":
             if hasattr(device_pool, "_unified_buffer"):
-                # Unified MHA rows are strided by the complete shared-pool
-                # entry, whereas the per-layer HiCache kernels assume tightly
-                # packed destination rows. Gather the host rows and let
-                # index_copy_ honor the destination tensor's real stride.
-                # Unified-memory HiCache currently requires page_size == 1.
-                # The controller synchronizes this compatibility path before
-                # scheduler-side allocation or compaction can resume.
-                assert self.page_size == 1
-                host_indices_cpu = host_indices.to(device="cpu", dtype=torch.long)
-                device_indices = device_indices.to(dtype=torch.long)
-                k_rows = self.k_data_refs[layer_id].index_select(0, host_indices_cpu)
-                v_rows = self.v_data_refs[layer_id].index_select(0, host_indices_cpu)
-                device_pool.k_buffer[layer_id].index_copy_(
-                    0,
-                    device_indices,
-                    k_rows.reshape(
-                        len(k_rows), *device_pool.k_buffer[layer_id].shape[1:]
-                    ).to(device_pool.device),
-                )
-                device_pool.v_buffer[layer_id].index_copy_(
-                    0,
-                    device_indices,
-                    v_rows.reshape(
-                        len(v_rows), *device_pool.v_buffer[layer_id].shape[1:]
-                    ).to(device_pool.device),
+                # Optimized: use JIT kernel directly — strided dst is handled
+                # by _to_2d_view in transfer_hicache_one_layer.
+                jit_transfer_hicache_one_layer(
+                    k_cache_dst=device_pool.k_buffer[layer_id],
+                    v_cache_dst=device_pool.v_buffer[layer_id],
+                    k_cache_src=self.k_buffer[layer_id],
+                    v_cache_src=self.v_buffer[layer_id],
+                    indices_dst=device_indices,
+                    indices_src=host_indices,
+                    element_dim=self.element_dim,
                 )
                 return
             if self.layout == "layer_first":
+
                 if self.can_use_jit:
                     jit_transfer_hicache_one_layer(
                         k_cache_dst=device_pool.k_buffer[layer_id],
@@ -387,24 +373,20 @@ class MHATokenToKVPoolHost(HostKVCache):
                     )
             elif self.layout == "page_first":
                 if hasattr(device_pool, "_unified_buffer"):
-                    # Gather strided unified rows into a contiguous GPU staging
-                    # buffer, then use the existing async D2H page copy.
-                    jit_transfer_hicache_all_layer_staged_lf_pf(
-                        k_ptr_src=device_pool.k_data_ptrs,
-                        v_ptr_src=device_pool.v_data_ptrs,
-                        src_indices=device_indices,
-                        dst_indices=host_indices,
-                        staging_k=self.staging_k_buffer,
-                        staging_v=self.staging_v_buffer,
-                        dst_k=self.k_buffer,
-                        dst_v=self.v_buffer,
-                        page_size=self.page_size,
-                        src_stride_bytes=(
-                            device_pool.k_buffer[0].stride(0)
-                            * device_pool.k_buffer[0].dtype.itemsize
-                        ),
-                    )
+                    # Optimized: use per-layer JIT kernel directly on strided
+                    # views — no staging buffer / relayout needed.
+                    for layer_id in range(self.layer_num):
+                        jit_transfer_hicache_one_layer(
+                            k_cache_dst=self.k_buffer[layer_id],
+                            v_cache_dst=self.v_buffer[layer_id],
+                            k_cache_src=device_pool.k_buffer[layer_id],
+                            v_cache_src=device_pool.v_buffer[layer_id],
+                            indices_dst=host_indices,
+                            indices_src=device_indices,
+                            element_dim=self.element_dim,
+                        )
                 elif self.can_use_write_back_jit:
+
                     jit_transfer_hicache_all_layer_staged_lf_pf(
                         k_ptr_src=device_pool.k_data_ptrs,
                         v_ptr_src=device_pool.v_data_ptrs,

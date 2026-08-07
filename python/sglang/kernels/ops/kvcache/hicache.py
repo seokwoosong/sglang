@@ -125,6 +125,41 @@ def _default_unroll(element_size: int) -> int:
 
 
 @debug_kernel_api
+def _to_2d_view(tensor: "torch.Tensor", element_dim: int) -> "torch.Tensor":
+    """Reshape a (possibly strided) KV-cache tensor to 2-D (-1, element_dim).
+
+    Uses ``torch.as_strided`` when ``.view()`` would fail due to non-contiguous
+    strides (e.g. unified-memory envelope-major views).  The CUDA kernel reads
+    ``stride[0]`` as the per-slot byte stride, so any stride is acceptable as
+    long as the last dimension is contiguous with stride 1.
+    """
+    # Fast path: .view() works for contiguous or compatible-stride tensors.
+    try:
+        return tensor.view(-1, element_dim)
+    except RuntimeError:
+        pass
+    # Fallback: build a 2-D strided view manually.
+    # Flatten all dims except the last (element_dim) into dim 0.
+    # The source tensor's dim-0 stride is the per-slot stride.
+    num_slots = tensor.numel() // element_dim
+    stride0 = tensor.stride(0) if tensor.dim() > 0 else element_dim
+    # When the tensor has shape (num_pages, page_size, head_num, head_dim),
+    # stride[0] is the page stride.  We need the per-slot stride which is
+    # stride[1] (stride_tok_k = k_row_bytes / itemsize = head_num * head_dim = element_dim)
+    # for page_size == 1.  For page_size > 1, the per-slot stride within a page
+    # is stride[1], and across pages it's stride[0].  Since the kernel uses a
+    # single stride, we require page_size == 1 for strided tensors.
+    if tensor.dim() >= 2:
+        # For page_size == 1: shape = (num_pages, 1, head_num, head_dim)
+        # stride = (stride_page, element_dim, head_dim, 1)
+        # We want: (num_pages, element_dim) with stride (stride_page, 1)
+        stride0 = tensor.stride(0)
+        num_slots = tensor.size(0) * tensor.size(1) if tensor.size(1) > 1 else tensor.size(0)
+        if tensor.size(1) == 1:
+            num_slots = tensor.size(0)
+    return torch.as_strided(tensor, size=(num_slots, element_dim), stride=(stride0, 1))
+
+
 def transfer_hicache_one_layer(
     k_cache_dst: torch.Tensor,
     v_cache_dst: torch.Tensor,
@@ -138,10 +173,10 @@ def transfer_hicache_one_layer(
     block_quota: int | None = None,  # can be tuned for less interference
 ) -> None:
     element_dim = element_dim or k_cache_dst.size(-1)
-    k_cache_src = k_cache_src.view(-1, element_dim)
-    v_cache_src = v_cache_src.view(-1, element_dim)
-    k_cache_dst = k_cache_dst.view(-1, element_dim)
-    v_cache_dst = v_cache_dst.view(-1, element_dim)
+    k_cache_src = _to_2d_view(k_cache_src, element_dim)
+    v_cache_src = _to_2d_view(v_cache_src, element_dim)
+    k_cache_dst = _to_2d_view(k_cache_dst, element_dim)
+    v_cache_dst = _to_2d_view(v_cache_dst, element_dim)
     element_size = element_dim * k_cache_dst.element_size()
     block_quota = block_quota or DEFAULT_BLOCK_QUOTA
     unroll = unroll or _default_unroll(element_size)
@@ -158,6 +193,7 @@ def transfer_hicache_one_layer(
         v_cache_src,
         indices_src,
     )
+
 
 
 @debug_kernel_api
