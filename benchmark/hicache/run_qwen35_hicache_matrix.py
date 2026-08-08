@@ -162,9 +162,20 @@ def run_clean(args: argparse.Namespace) -> None:
     for page_size in args.pages:
         for variant, policy in iter_variant_policies(args):
             for workload in WORKLOADS:
+                concurrency = (
+                    args.long_concurrency
+                    if workload.label == "long-50k"
+                    else workload.concurrency
+                )
+                concurrency_suffix = (
+                    f"-c{concurrency}"
+                    if workload.label == "long-50k"
+                    and concurrency != workload.concurrency
+                    else ""
+                )
                 run_name = (
                     f"clean-r{args.repetition}-{args.model_size}-{workload.label}-"
-                    f"p{page_size}-{policy}"
+                    f"p{page_size}-{policy}{concurrency_suffix}"
                 )
                 command = common_command(
                     args,
@@ -191,7 +202,7 @@ def run_clean(args: argparse.Namespace) -> None:
                         "--prime-repeats",
                         "1",
                         "--max-concurrency",
-                        str(workload.concurrency),
+                        str(concurrency),
                         "--reverse-group-order",
                         "--require-eviction",
                     ]
@@ -294,6 +305,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-total-tokens", type=int, default=120000)
     parser.add_argument("--max-running-requests", type=int, default=8)
+    parser.add_argument(
+        "--long-concurrency",
+        type=int,
+        default=4,
+        help="Client concurrency for the 50k-token workload.",
+    )
     parser.add_argument("--hicache-size", type=int, default=12)
     parser.add_argument("--mem-fraction-static", type=float, default=0.27)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
