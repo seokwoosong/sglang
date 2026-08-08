@@ -34,6 +34,14 @@ from sglang.srt.mem_cache.hicache_storage import (
     PoolTransfer,
     PoolTransferResult,
 )
+from sglang.srt.mem_cache.hicache_trace import (
+    hicache_trace_object_id,
+    trace_hicache_event,
+)
+from sglang.srt.mem_cache.memory_breakdown_profiler import (
+    get_memory_breakdown_profiler,
+    profile_cpu_scope,
+)
 from sglang.srt.mem_cache.memory_pool_host import HostPoolGroup, PoolEntry
 from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
 from sglang.srt.utils import get_device_module
@@ -43,6 +51,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 device_module = get_device_module()
+
+
+def _trace_transfer_pools(
+    anchor_count: int, pool_transfers: Optional[list[PoolTransfer]]
+) -> list[dict[str, Any]]:
+    pools = [{"pool": "KV", "count": int(anchor_count)}]
+    for transfer in pool_transfers or []:
+        count = 0
+        if transfer.device_indices is not None:
+            count = int(transfer.device_indices.numel())
+        elif transfer.host_indices is not None:
+            count = int(transfer.host_indices.numel())
+        pools.append({"pool": transfer.name.name, "count": count})
+    return pools
 
 
 class CacheOperation(BaseCacheOperation):
@@ -180,6 +202,7 @@ class HybridCacheController(BaseHiCacheController):
     ):
         startup_storage_backend = storage_backend
         self.extra_host_mem_release_queues: dict[PoolName, Queue[torch.Tensor]] = {}
+        self._memory_profiler = get_memory_breakdown_profiler()
         super().__init__(
             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
             mem_pool_host=mem_pool_host,
@@ -246,9 +269,29 @@ class HybridCacheController(BaseHiCacheController):
         device_indices: Optional[torch.Tensor] = None,
         pool_transfers: Optional[list[PoolTransfer]] = None,
     ) -> None:
+        profiler = getattr(self, "_memory_profiler", None)
         if getattr(self, "synchronize_unified_transfers", False):
-            finish_event.synchronize()
+            with profile_cpu_scope(
+                profiler, "hicache_transfer_control", "all", "sync_wait"
+            ):
+                finish_event.synchronize()
         elif getattr(self, "is_unified_memory", False):
+            with profile_cpu_scope(
+                profiler, "hicache_transfer_control", "all", "register_fence"
+            ):
+                self._register_transfer_fence(
+                    finish_event, device_indices, pool_transfers
+                )
+
+    def _register_transfer_fence(
+        self,
+        finish_event,
+        device_indices: Optional[torch.Tensor],
+        pool_transfers: Optional[list[PoolTransfer]],
+    ) -> None:
+        """Register row-aware or conservative allocator protection."""
+
+        if getattr(self, "is_unified_memory", False):
             accesses = []
             if device_indices is not None and device_indices.numel() > 0:
                 accesses.append((self.mem_pool_host.anchor_entry, device_indices))
@@ -494,41 +537,68 @@ class HybridCacheController(BaseHiCacheController):
         if not self.write_queue:
             return
         op = CacheOperation.merge_ops(self.write_queue)
+        profiler = getattr(self, "_memory_profiler", None)
+        transfer_bytes = self._transfer_num_bytes(op)
         # Page-first staged write-back kernels need CPU destination host indices.
         # A HostPoolGroup may mix staged and non-staged child pools, so let it
         # normalize indices per child instead of moving the whole operation here.
-        if (
-            self.io_backend == "kernel"
-            and self.mem_pool_host.layout == "page_first"
-            and (
-                getattr(self.mem_pool_host, "can_use_write_back_jit", False)
-                or getattr(
-                    self.mem_pool_host, "supports_per_pool_backup_indices", False
-                )
-            )
+        with profile_cpu_scope(
+            profiler,
+            "hicache_transfer_control",
+            "all",
+            "d2h_prepare_indices",
+            rows=len(op.device_indices),
+            num_bytes=transfer_bytes,
         ):
-            host_indices = op.host_indices
-            device_indices, resolved_pool_transfers = (
-                self.translate_hybrid_device_indices(op)
-            )
-        else:
-            host_indices, device_indices, resolved_pool_transfers = (
-                self.move_hybrid_indices(op)
-            )
+            if (
+                self.io_backend == "kernel"
+                and self.mem_pool_host.layout == "page_first"
+                and (
+                    getattr(self.mem_pool_host, "can_use_write_back_jit", False)
+                    or getattr(
+                        self.mem_pool_host,
+                        "supports_per_pool_backup_indices",
+                        False,
+                    )
+                )
+            ):
+                host_indices = op.host_indices
+                device_indices, resolved_pool_transfers = (
+                    self.translate_hybrid_device_indices(op)
+                )
+            else:
+                host_indices, device_indices, resolved_pool_transfers = (
+                    self.move_hybrid_indices(op)
+                )
         self.write_queue.clear()
         start_event = device_module.Event()
         ack_start_event, ack_finish_event, timing_enabled = make_timing_event_pair()
+        transfer_id = hicache_trace_object_id(ack_finish_event)
+        trace_hicache_event(
+            "d2h_transfer_queued",
+            transfer_id=transfer_id,
+            cuda_event_id=transfer_id,
+            node_ids=op.node_ids,
+            pools=_trace_transfer_pools(
+                int(device_indices.numel()), resolved_pool_transfers
+            ),
+            stream_id=id(self.write_stream),
+        )
         pin_host_chunks = getattr(self.mem_pool_host, "pin_transfer_chunks", None)
         host_chunk_guards = (
             pin_host_chunks(host_indices, resolved_pool_transfers)
             if callable(pin_host_chunks)
             else []
         )
+        enqueue_started_ns = time.perf_counter_ns()
         try:
             start_event.record()
             with device_module.stream(self.write_stream):
                 start_event.wait(self.write_stream)
                 ack_start_event.record()
+                cuda_start = (
+                    profiler.start_cuda_interval() if profiler is not None else None
+                )
                 self.mem_pool_host.backup_from_device_all_layer(
                     self.mem_pool_device,
                     host_indices,
@@ -543,6 +613,15 @@ class HybridCacheController(BaseHiCacheController):
                         device_indices,
                         self.io_backend,
                     )
+                if profiler is not None:
+                    profiler.finish_cuda_interval(
+                        cuda_start,
+                        "hicache_transfer_gpu",
+                        "all",
+                        "d2h_total",
+                        rows=len(op.device_indices),
+                        num_bytes=transfer_bytes,
+                    )
                 ack_finish_event.record()
                 self._record_transfer_indices_on_stream(
                     self.write_stream,
@@ -550,6 +629,12 @@ class HybridCacheController(BaseHiCacheController):
                     device_indices,
                     resolved_pool_transfers,
                 )
+            trace_hicache_event(
+                "d2h_transfer_enqueued",
+                transfer_id=transfer_id,
+                cuda_event_id=transfer_id,
+                node_ids=op.node_ids,
+            )
             release_host_chunks = getattr(
                 self.mem_pool_host, "release_transfer_chunks_after_event", None
             )
@@ -566,6 +651,16 @@ class HybridCacheController(BaseHiCacheController):
             if callable(cancel_host_chunks):
                 cancel_host_chunks(host_chunk_guards)
             raise
+        finally:
+            if profiler is not None:
+                profiler.record_cpu(
+                    "hicache_transfer_control",
+                    "all",
+                    "d2h_enqueue",
+                    time.perf_counter_ns() - enqueue_started_ns,
+                    rows=len(op.device_indices),
+                    num_bytes=transfer_bytes,
+                )
         self._finish_transfer_before_scheduler(
             ack_finish_event, device_indices, resolved_pool_transfers
         )
@@ -665,25 +760,50 @@ class HybridCacheController(BaseHiCacheController):
             return -1
         producer_id = self.layer_done_counter.update_producer()
         op = CacheOperation.merge_ops(self.load_queue)
-        host_indices, device_indices, resolved_pool_transfers = (
-            self.move_hybrid_indices(op, keep_cpu_extra_host_indices=True)
-        )
+        profiler = getattr(self, "_memory_profiler", None)
+        transfer_bytes = self._transfer_num_bytes(op)
+        with profile_cpu_scope(
+            profiler,
+            "hicache_transfer_control",
+            "all",
+            "h2d_prepare_indices",
+            rows=len(op.device_indices),
+            num_bytes=transfer_bytes,
+        ):
+            host_indices, device_indices, resolved_pool_transfers = (
+                self.move_hybrid_indices(op, keep_cpu_extra_host_indices=True)
+            )
         self.load_queue.clear()
         producer_event = self.layer_done_counter.events[producer_id]
         producer_event.start_event.record()
 
         ack_start_event, ack_finish_event, timing_enabled = make_timing_event_pair()
+        transfer_id = hicache_trace_object_id(ack_finish_event)
+        trace_hicache_event(
+            "h2d_transfer_queued",
+            transfer_id=transfer_id,
+            cuda_event_id=transfer_id,
+            node_ids=op.node_ids,
+            pools=_trace_transfer_pools(
+                int(device_indices.numel()), resolved_pool_transfers
+            ),
+            stream_id=id(self.load_stream),
+        )
         pin_host_chunks = getattr(self.mem_pool_host, "pin_transfer_chunks", None)
         host_chunk_guards = (
             pin_host_chunks(host_indices, resolved_pool_transfers)
             if callable(pin_host_chunks)
             else []
         )
+        enqueue_started_ns = time.perf_counter_ns()
         try:
             with device_module.stream(self.load_stream):
                 producer_event.start_event.wait(self.load_stream)
                 ack_start_event.record()
                 target_device_pool = self.mem_pool_host.anchor_entry.device_pool
+                cuda_start = (
+                    profiler.start_cuda_interval() if profiler is not None else None
+                )
                 for i in range(self.layer_num):
                     self.mem_pool_host.load_to_device_per_layer(
                         target_device_pool,
@@ -720,6 +840,15 @@ class HybridCacheController(BaseHiCacheController):
                             is_draft=True,
                         )
                     producer_event.complete(i)
+                if profiler is not None:
+                    profiler.finish_cuda_interval(
+                        cuda_start,
+                        "hicache_transfer_gpu",
+                        "all",
+                        "h2d_total",
+                        rows=len(op.device_indices),
+                        num_bytes=transfer_bytes,
+                    )
                 ack_finish_event.record()
                 self._record_transfer_indices_on_stream(
                     self.load_stream,
@@ -727,6 +856,12 @@ class HybridCacheController(BaseHiCacheController):
                     device_indices,
                     resolved_pool_transfers,
                 )
+            trace_hicache_event(
+                "h2d_transfer_enqueued",
+                transfer_id=transfer_id,
+                cuda_event_id=transfer_id,
+                node_ids=op.node_ids,
+            )
             release_host_chunks = getattr(
                 self.mem_pool_host, "release_transfer_chunks_after_event", None
             )
@@ -742,6 +877,16 @@ class HybridCacheController(BaseHiCacheController):
             if callable(cancel_host_chunks):
                 cancel_host_chunks(host_chunk_guards)
             raise
+        finally:
+            if profiler is not None:
+                profiler.record_cpu(
+                    "hicache_transfer_control",
+                    "all",
+                    "h2d_enqueue",
+                    time.perf_counter_ns() - enqueue_started_ns,
+                    rows=len(op.device_indices),
+                    num_bytes=transfer_bytes,
+                )
         self._finish_transfer_before_scheduler(
             ack_finish_event, device_indices, resolved_pool_transfers
         )

@@ -41,6 +41,11 @@ from sglang.srt.mem_cache.layout.page_major import (
     build_page_major_mamba_views,
     build_page_major_mha_views,
 )
+from sglang.srt.mem_cache.memory_breakdown_profiler import (
+    get_memory_breakdown_profiler,
+    profile_cpu_scope,
+    record_mamba_layout,
+)
 from sglang.srt.mem_cache.memory_pool import (
     HybridLinearKVPool,
     HybridReqToTokenPool,
@@ -812,6 +817,14 @@ class UnifiedMambaPool(MambaPool):
             self.mamba_cache = self.State(conv=list(conv_views), temporal=temporal_view)
 
         self.mem_usage = unified_buffer.total_bytes / GB
+        self._memory_profiler = get_memory_breakdown_profiler()
+        record_mamba_layout(
+            self._memory_profiler,
+            pool=sub_pool_name,
+            layout_kind="page_first_envelope",
+            conv=list(self.mamba_cache.conv),
+            temporal=self.mamba_cache.temporal,
+        )
         logger.info(
             "[unified-memory-pool] UnifiedMambaPool(%s) wrapped unified buffer: max_slots=%d, "
             "num_mamba_layers=%d",
@@ -1056,7 +1069,20 @@ class UnifiedHybridReqToTokenPool(HybridReqToTokenPool):
 
     def translate_mamba_indices(self, virtual_ids: torch.Tensor) -> torch.Tensor:
         """Virtual mamba ids -> physical slot ids."""
-        return self.mamba_allocator.translate(virtual_ids).to(torch.int32)
+        profiler = getattr(self.mamba_pool, "_memory_profiler", None)
+        if profiler is None:
+            return self.mamba_allocator.translate(virtual_ids).to(torch.int32)
+        profiler.record_sample(
+            "mamba_batch", "mamba", "virtual_indices", virtual_ids.numel()
+        )
+        with profile_cpu_scope(
+            profiler,
+            "translation",
+            "mamba",
+            "virtual_to_physical",
+            rows=virtual_ids.numel(),
+        ):
+            return self.mamba_allocator.translate(virtual_ids).to(torch.int32)
 
 
 class UnifiedHybridLinearKVPool(HybridLinearKVPool):

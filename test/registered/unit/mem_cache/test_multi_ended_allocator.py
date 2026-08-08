@@ -2289,6 +2289,27 @@ class TestLazyCompaction(unittest.TestCase):
         self.assertIsNotNone(a2)
         self.assertIsNotNone(a3)
 
+    def test_opt_in_trace_materializes_exact_lazy_hole_page(self):
+        """Diagnostic tracing may synchronize to expose the exact physical row."""
+        _pool, fa, _kv = self._make_full(lazy=True)
+        values = fa.alloc(3)
+        expected_page = int(fa.virtual_to_physical[values[1]].item())
+        module = "sglang.srt.mem_cache.multi_ended_allocator"
+        with (
+            patch(f"{module}.trace_enabled", return_value=True),
+            patch(f"{module}.trace_hicache_event") as emit,
+        ):
+            fa.free(values[1:2])
+        state_events = [
+            call
+            for call in emit.call_args_list
+            if call.args and call.args[0] == "l1_allocator_state"
+        ]
+        self.assertEqual(len(state_events), 1)
+        self.assertEqual(
+            state_events[0].kwargs["freed_physical_pages"], [expected_page]
+        )
+
     def test_lazy_available_size_includes_holes(self):
         """available_size counts drainable holes + extension capacity."""
         _pool, fa, _kv = self._make_full(lazy=True)
