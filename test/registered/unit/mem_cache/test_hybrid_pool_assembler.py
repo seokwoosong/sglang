@@ -17,6 +17,32 @@ class _Pool:
         return self._kv_bytes
 
 
+class _UnifiedSpec:
+    def __init__(self, entry_bytes):
+        self._entry_bytes = entry_bytes
+
+    def entry_bytes(self):
+        return self._entry_bytes
+
+
+class _UnifiedBuffer:
+    def __init__(self, capacities):
+        self._capacities = capacities
+
+    def spec(self, name):
+        return _UnifiedSpec(self._capacities[name][1])
+
+    def max_slots(self, name):
+        return self._capacities[name][0]
+
+
+class _UnifiedViewPool(_Pool):
+    def __init__(self, unified_buffer, name):
+        super().__init__((0, 0))
+        self._unified_buffer = unified_buffer
+        self._sub_pool_name = name
+
+
 class TestSplitHicacheSize(CustomTestCase):
     def test_splits_total_budget_by_device_bytes(self):
         # scalar and (k, v) tuple return shapes both supported
@@ -33,6 +59,26 @@ class TestSplitHicacheSize(CustomTestCase):
         )
         self.assertEqual(shares, (55.0, 25.0, 20.0))  # proportional to device KV bytes
         self.assertEqual(sum(shares), 100)  # total budget preserved, not doubled
+
+    def test_unified_views_use_logical_sub_pool_capacity(self):
+        # Unified views report zero physical bytes so the shared GPU allocation
+        # is logged only once. Fixed-size L2 splitting must still assign both
+        # typed pools a nonzero share instead of triggering ratio-based sizing.
+        unified = _UnifiedBuffer(
+            {
+                "full": (200, 10),
+                "mamba": (20, 100),
+            }
+        )
+        shares = _split_hicache_size(
+            8,
+            (
+                _UnifiedViewPool(unified, "full"),
+                _UnifiedViewPool(unified, "mamba"),
+            ),
+        )
+        self.assertEqual(shares, (4.0, 4.0))
+        self.assertEqual(sum(shares), 8)
 
 
 if __name__ == "__main__":

@@ -113,10 +113,9 @@ class TestPrefillAdder(CustomTestCase):
         defaults.update(kwargs)
         return PrefillAdder(**defaults)
 
-    def test_unified_mamba_budget_reserves_missing_slots_and_handoff(self):
+    def test_unified_mamba_gap_budget_counts_only_missing_slots(self):
         adder = object.__new__(PrefillAdder)
         adder._mamba_slot_cost = 7
-        adder.is_hybrid_ssm_cache = True
         req_pool = HybridReqToTokenPool.__new__(HybridReqToTokenPool)
         req_pool.enable_mamba_extra_buffer = True
         req_pool.enable_mamba_extra_buffer_lazy = False
@@ -126,13 +125,30 @@ class TestPrefillAdder(CustomTestCase):
             req_pool_idx=None,
             mamba_pool_idx=None,
             mamba_ping_pong_track_buffer=None,
+            mamba_host_hit_length=0,
         )
 
-        # Active + two tracking states + one transient radix handoff state.
+        adder.is_hybrid_ssm_cache = True
         self.assertEqual(adder._mamba_gap_budget_for_req(req), 4 * 7)
         req.mamba_pool_idx = object()
         self.assertEqual(adder._mamba_gap_budget_for_req(req), 3 * 7)
+
         req.mamba_ping_pong_track_buffer = object()
+        self.assertEqual(adder._mamba_gap_budget_for_req(req), 7)
+        req.mamba_host_hit_length = 128
+        self.assertEqual(adder._mamba_gap_budget_for_req(req), 7)
+        self.assertEqual(
+            adder._mamba_gap_budget_for_req(req, include_pending_host_load=True),
+            2 * 7,
+        )
+
+        req.mamba_pool_idx = None
+        req.mamba_ping_pong_track_buffer = None
+        req.mamba_host_hit_length = 0
+        req_pool.enable_mamba_extra_buffer_lazy = True
+        self.assertEqual(adder._mamba_gap_budget_for_req(req), 3 * 7)
+
+        req.req_pool_idx = 3
         self.assertEqual(adder._mamba_gap_budget_for_req(req), 7)
 
     def test_unified_joint_budget_credits_evictable_mamba_bytes(self):
@@ -144,9 +160,10 @@ class TestPrefillAdder(CustomTestCase):
         adder.rem_total_token_offset = 4
         adder.cur_rem_token_offset = 3
         adder._rem_mamba_slot_offset = 1
+        mamba_allocator = SimpleNamespace(schedulable_available_size=lambda: 2)
         adder.token_to_kv_pool_allocator = SimpleNamespace(
             available_size=lambda: 10,
-            mamba_allocator=SimpleNamespace(schedulable_available_size=lambda: 2),
+            mamba_allocator=mamba_allocator,
         )
         adder.tree_cache = SimpleNamespace(
             full_evictable_size=lambda: 5,
