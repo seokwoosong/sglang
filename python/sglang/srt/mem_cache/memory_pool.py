@@ -1290,7 +1290,13 @@ class HybridReqToTokenPool(ReqToTokenPool):
         self.layer_transfer_counter = layer_transfer_counter
 
     def mamba_slots_needed_for_req(self, req: Req) -> int:
-        """Return the Mamba slots that ``alloc([req])`` will still allocate."""
+        """Return the Mamba slots that ``alloc([req])`` will still allocate.
+
+        Prefix matching and HiCache load-back may assign the request's active
+        state before the request-table row is allocated.  Count only the
+        missing active/tracking slots so the shared-memory admission planner
+        does not charge already-resident states a second time.
+        """
         if req.req_pool_idx is not None:
             return 0
 
@@ -1425,7 +1431,9 @@ class HybridReqToTokenPool(ReqToTokenPool):
         slots = self.mamba_allocator.alloc(n)
         assert slots is not None, (
             "Not enough space for mamba ping pong idx, "
-            "try to increase --mamba-full-memory-ratio."
+            "try to increase --mamba-full-memory-ratio. "
+            f"needed={n}, available={self.mamba_allocator.available_size()}, "
+            f"allocator={self.mamba_allocator.allocator_state_str()}"
         )
         buf = torch.full(
             (self.mamba_ping_pong_track_buffer_size,),

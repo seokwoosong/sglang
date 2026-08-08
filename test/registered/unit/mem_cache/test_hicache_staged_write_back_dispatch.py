@@ -691,7 +691,9 @@ class TestHiCacheStagedWriteBackDispatch(unittest.TestCase):
             layout = "page_first"
             can_use_write_back_jit = True
             anchor_entry = SimpleNamespace(
-                name=PoolName.KV, host_pool=SimpleNamespace(size_per_token=2)
+                name=PoolName.KV,
+                host_pool=SimpleNamespace(size_per_token=2),
+                device_index_translate_fn=None,
             )
             entry_map = {}
 
@@ -755,7 +757,9 @@ class TestHiCacheStagedWriteBackDispatch(unittest.TestCase):
             layout = "page_first"
             can_use_write_back_jit = False
             anchor_entry = SimpleNamespace(
-                name=PoolName.KV, host_pool=SimpleNamespace(size_per_token=2)
+                name=PoolName.KV,
+                host_pool=SimpleNamespace(size_per_token=2),
+                device_index_translate_fn=None,
             )
             entry_map = {}
 

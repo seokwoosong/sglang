@@ -48,5 +48,22 @@ class TestDecisionMethodsHaveNoHiddenBatchChannel(unittest.TestCase):
                 )
 
 
+class TestMambaAllocationGroupPolicy(unittest.TestCase):
+    def test_unified_hicache_uses_only_consumed_mamba_slots(self):
+        scheduler = Scheduler.__new__(Scheduler)
+        scheduler.enable_hierarchical_cache = True
+        scheduler.enable_unified_memory = True
+
+        self.assertFalse(scheduler._should_use_mamba_alloc_group())
+
+    def test_other_modes_keep_group_allocation_fast_path(self):
+        scheduler = Scheduler.__new__(Scheduler)
+        for hicache, unified in ((False, False), (True, False), (False, True)):
+            with self.subTest(hicache=hicache, unified=unified):
+                scheduler.enable_hierarchical_cache = hicache
+                scheduler.enable_unified_memory = unified
+                self.assertTrue(scheduler._should_use_mamba_alloc_group())
+
+
 if __name__ == "__main__":
     unittest.main()

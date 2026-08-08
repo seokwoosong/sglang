@@ -349,13 +349,19 @@ class MambaPoolHost(HostKVCache):
         src_indices: torch.Tensor,
         dst_indices: torch.Tensor,
         layer_id: int,
-        num_layers: int,
         io_backend: str,
     ) -> None:
         if src_indices.numel() == 0:
             return
         if io_backend == "kernel":
             item_size = MambaPoolHost._item_size_per_index(dst)
+            dst_stride = dst.stride(0) * dst.dtype.itemsize
+            if dst.device.type != "cuda":
+                selected = src[:, layer_id, 0].index_select(
+                    0, src_indices.to(device="cpu", dtype=torch.long)
+                )
+                dst.index_copy_(0, dst_indices.to(dst.device), selected.to(dst.device))
+                return
             # Mamba JIT kernel expects all index tensors on CUDA.
             # host_indices may be on CPU (kept there by start_writing when
             # can_use_write_back_jit is True on the HostPoolGroup).
@@ -368,7 +374,8 @@ class MambaPoolHost(HostKVCache):
                 dst_indices=dst_indices,
                 layer_id=layer_id,
                 item_size=item_size,
-                src_layout_dim=item_size * num_layers,
+                src_layout_dim=src.stride(0) * src.element_size(),
+                dst_stride=dst_stride,
             )
         elif io_backend == "direct":
             transfer_kv_per_layer_direct_pf_lf(
@@ -398,6 +405,38 @@ class MambaPoolHost(HostKVCache):
             return
         if io_backend == "kernel":
             item_size = MambaPoolHost._item_size_per_index(src_layers[0])
+            src_stride = src_layers[0].stride(0) * src_layers[0].dtype.itemsize
+            if src_stride != item_size:
+                # Unified Mamba rows are separated by the complete per-slot
+                # state envelope.  Gather into a contiguous device staging
+                # tensor first; direct kernel stores into pinned host memory
+                # are not reliable for these very large rows.  This path is
+                # intentionally synchronous at the controller boundary; the
+                # scheduler may still use overlap scheduling safely.
+                staging = torch.empty(
+                    (len(src_indices), num_layers, 1, *src_layers.shape[2:]),
+                    dtype=src_layers.dtype,
+                    device=src_layers.device,
+                )
+                staging_indices = torch.arange(
+                    len(src_indices), dtype=torch.int64, device=src_indices.device
+                )
+                transfer_kv_mamba_lf_pf(
+                    src_ptrs=src_ptrs,
+                    dst=staging,
+                    src_indices=src_indices,
+                    dst_indices=staging_indices,
+                    item_size=item_size,
+                    dst_layout_dim=item_size * num_layers,
+                    num_layers=num_layers,
+                    src_stride=src_stride,
+                )
+                dst.index_copy_(
+                    0,
+                    dst_indices.cpu(),
+                    staging.cpu(),
+                )
+                return
             # Mamba JIT kernel expects all index tensors on CUDA.
             # When can_use_write_back_jit is True on the HostPoolGroup,
             # start_writing() keeps host_indices on CPU (for MLA staged kernel).
@@ -412,6 +451,7 @@ class MambaPoolHost(HostKVCache):
                 item_size=item_size,
                 dst_layout_dim=item_size * num_layers,
                 num_layers=num_layers,
+                src_stride=src_stride,
             )
         elif io_backend == "direct":
             src_ptrs = [src_layers[i] for i in range(num_layers)]
@@ -442,7 +482,6 @@ class MambaPoolHost(HostKVCache):
                     src_indices=host_indices,
                     dst_indices=device_indices,
                     layer_id=layer_id,
-                    num_layers=self.num_mamba_layers,
                     io_backend=io_backend,
                 )
             for conv_idx in range(len(self.conv_state_shapes)):
@@ -452,7 +491,6 @@ class MambaPoolHost(HostKVCache):
                     src_indices=host_indices,
                     dst_indices=device_indices,
                     layer_id=layer_id,
-                    num_layers=self.num_mamba_layers,
                     io_backend=io_backend,
                 )
         else:
@@ -1513,6 +1551,10 @@ class PoolEntry:
     # When None, fall back to entry.device_pool.alloc/free.
     device_alloc_fn: Optional[Callable] = None
     device_free_fn: Optional[Callable] = None
+    # Optional virtual-to-physical translation applied immediately before a
+    # D<->H transfer. Tree nodes and allocators continue to own virtual IDs;
+    # only raw device-pool tensor accesses consume the translated IDs.
+    device_index_translate_fn: Optional[Callable] = None
 
 
 class HostPoolGroup:
