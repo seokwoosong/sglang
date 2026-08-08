@@ -521,6 +521,9 @@ class Envs:
     # behavior. The default uses allocator-aware CUDA event fencing so scheduler
     # execution can overlap with D<->H copies. This is a rollback / A/B knob.
     SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS = EnvBool(False)
+    # Use a shared typed-chunk L2 pool for unified-memory hybrid models. Disable
+    # only for A/B evaluation against the legacy split KV/Mamba host pools.
+    SGLANG_HICACHE_UNIFIED_TYPED_L2 = EnvBool(True)
     SGLANG_HICACHE_HF3FS_CONFIG_PATH = EnvStr(None)
     SGLANG_HICACHE_DECODE_OFFLOAD_STRIDE = EnvInt(None)
     SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR = EnvStr(None)

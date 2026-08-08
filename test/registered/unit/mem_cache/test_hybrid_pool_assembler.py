@@ -2,7 +2,11 @@
 
 import unittest
 
-from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import _split_hicache_size
+from sglang.srt.environ import envs
+from sglang.srt.mem_cache.hybrid_cache.hybrid_pool_assembler import (
+    _split_hicache_size,
+    _use_unified_typed_l2,
+)
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
@@ -44,6 +48,13 @@ class _UnifiedViewPool(_Pool):
 
 
 class TestSplitHicacheSize(CustomTestCase):
+    def test_unified_typed_l2_ablation_switch(self):
+        with envs.SGLANG_HICACHE_UNIFIED_TYPED_L2.override(True):
+            self.assertTrue(_use_unified_typed_l2(is_unified_mamba=True))
+            self.assertFalse(_use_unified_typed_l2(is_unified_mamba=False))
+        with envs.SGLANG_HICACHE_UNIFIED_TYPED_L2.override(False):
+            self.assertFalse(_use_unified_typed_l2(is_unified_mamba=True))
+
     def test_splits_total_budget_by_device_bytes(self):
         # scalar and (k, v) tuple return shapes both supported
         shares = _split_hicache_size(
