@@ -13,6 +13,11 @@ import pytest
 import torch
 
 from sglang.srt.mem_cache.memory_pool_host import MambaPoolHost
+from sglang.srt.mem_cache.pool_host.common import (
+    HostTensorAllocator,
+    _cuda_host_unregister,
+    alloc_with_host_register,
+)
 from sglang.test.ci.ci_register import register_amd_ci, register_cuda_ci
 
 register_cuda_ci(est_time=10, stage="base-b-kernel-unit", runner_config="1-gpu-large")
@@ -29,6 +34,70 @@ TEMPORAL_SHAPE = (16, 128)  # 16*128*2 = 4096 bytes (fp16), 16-byte aligned
 CONV_SHAPE = (4, 128)  # 4*128*2 = 1024 bytes (fp16), 16-byte aligned
 DTYPES = [torch.float16, torch.bfloat16]
 LAYOUTS = ["page_first", "page_first_direct"]
+
+
+def test_registered_mmap_large_state_roundtrip():
+    """Exercise a Qwen3.5-sized row backed by registered mmap memory."""
+    from sglang.kernels.ops.mamba.transfer_mamba import (
+        transfer_kv_mamba_lf_pf,
+        transfer_kv_mamba_pf_lf,
+    )
+
+    num_layers = 18
+    num_slots = 2
+    state_shape = (16, 128, 128)  # 1 MiB per fp32 layer/slot
+    source = torch.empty(
+        (num_layers, num_slots, *state_shape), dtype=torch.float32, device=DEVICE
+    )
+    for layer_id in range(num_layers):
+        source[layer_id].fill_(layer_id + 1)
+    host = alloc_with_host_register(
+        (num_slots, num_layers, 1, *state_shape),
+        dtype=torch.float32,
+        device="cpu",
+        pin_memory=True,
+        allocator=HostTensorAllocator(),
+    )
+    host.zero_()
+    source_ptrs = torch.tensor(
+        [source[layer_id].data_ptr() for layer_id in range(num_layers)],
+        dtype=torch.uint64,
+        device=DEVICE,
+    )
+    source_indices = torch.tensor([1], dtype=torch.int64, device=DEVICE)
+    host_indices = torch.tensor([0], dtype=torch.int64, device=DEVICE)
+    item_size = source[0].stride(0) * source.dtype.itemsize
+
+    try:
+        transfer_kv_mamba_lf_pf(
+            source_ptrs,
+            host,
+            source_indices,
+            host_indices,
+            item_size,
+            item_size * num_layers,
+            num_layers,
+        )
+        torch.cuda.synchronize()
+        torch.testing.assert_close(
+            host[0, :, 0, 0, 0, 0],
+            torch.arange(1, num_layers + 1, dtype=torch.float32),
+        )
+
+        restored = torch.zeros_like(source[0])
+        transfer_kv_mamba_pf_lf(
+            host,
+            restored,
+            host_indices,
+            source_indices,
+            7,
+            item_size,
+            item_size * num_layers,
+        )
+        torch.cuda.synchronize()
+        assert restored[1, 0, 0, 0].item() == 8.0
+    finally:
+        _cuda_host_unregister(host)
 
 
 def make_device_pool(dtype, device=DEVICE):

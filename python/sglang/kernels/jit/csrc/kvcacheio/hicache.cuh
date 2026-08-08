@@ -163,6 +163,29 @@ SGL_DEVICE void store_vec(void* __restrict__ dst, const Storage& vec) {
 
 }  // namespace device
 
+namespace host {
+
+// Registered host memory can have a distinct device virtual address (notably
+// under WSL). DMA APIs accept the CPU address, but a GPU kernel must use the
+// mapped alias returned by HostGetDevicePointer.
+inline void* device_accessible_ptr(const tvm::ffi::TensorView& tensor) {
+  void* ptr = tensor.data_ptr();
+  const auto type = tensor.device().device_type;
+  if (type != kDLCPU && type != kDLGPUHost) return ptr;
+
+  void* device_ptr = nullptr;
+#ifndef USE_ROCM
+  const auto error = cudaHostGetDevicePointer(&device_ptr, ptr, 0);
+  RuntimeCheck(error == cudaSuccess, "HiCache: failed to resolve registered host pointer: ", cudaGetErrorString(error));
+#else
+  const auto error = hipHostGetDevicePointer(&device_ptr, ptr, 0);
+  RuntimeCheck(error == hipSuccess, "HiCache: failed to resolve registered host pointer: ", hipGetErrorString(error));
+#endif
+  return device_ptr;
+}
+
+}  // namespace host
+
 #define SGL_HICACHE_KERNEL __global__ __launch_bounds__(kBlockSize, 1)
 
 struct HicacheKernelParams {
