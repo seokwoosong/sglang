@@ -77,16 +77,43 @@ inline void copy_page_first_pages_fallback(
         "Source and destination tensors must have the same dtype");
     const int64_t elem_size = host::dtype_bytes(src_ptrs[tensor_id].dtype());
     const int64_t src_stride0 = src_ptrs[tensor_id].stride(0);
+    const int64_t src_stride1 = src_ptrs[tensor_id].stride(1);
     const int64_t dst_stride0 = dst_ptrs[tensor_id].stride(0);
+    const int64_t dst_stride1 = dst_ptrs[tensor_id].stride(1);
     const size_t src_page_bytes = static_cast<size_t>(page_size * src_stride0 * elem_size);
     const size_t dst_page_bytes = static_cast<size_t>(page_size * dst_stride0 * elem_size);
-    RuntimeCheck(src_page_bytes == dst_page_bytes, "Source and destination page spans must match");
+    if (src_stride0 == dst_stride0 && src_stride1 == dst_stride1 && src_page_bytes == dst_page_bytes) {
+      for (const auto page_offset : irange(num_pages)) {
+        const char* src_ptr = static_cast<const char*>(src_ptrs[tensor_id].data_ptr()) +
+                              static_cast<size_t>(page_offset * page_size * src_stride0 * elem_size);
+        char* dst_ptr = static_cast<char*>(dst_ptrs[tensor_id].data_ptr()) +
+                        static_cast<size_t>(dst_indices_ptr[page_offset * page_size] * dst_stride0 * elem_size);
+        RuntimeDeviceCheck(cudaMemcpyAsync(dst_ptr, src_ptr, src_page_bytes, cudaMemcpyDeviceToHost, stream));
+      }
+      continue;
+    }
+
+    // A typed-chunk KV envelope stores [L0 K,V | L1 K,V | ...] in one
+    // physical slot.  The staged source remains packed [token, layer, row],
+    // while the final K/V host views have gaps between layers.  Preserve the
+    // asynchronous DMA path by copying one contiguous row at a time instead
+    // of launching a GPU kernel that directly dereferences mapped host memory.
+    RuntimeCheck(src_stride1 > 0, "Source layer stride must be positive");
+    RuntimeCheck(src_stride0 % src_stride1 == 0, "Packed staged source has invalid layer strides");
+    const int64_t num_layers = src_stride0 / src_stride1;
+    const size_t row_bytes = static_cast<size_t>(src_stride1 * elem_size);
     for (const auto page_offset : irange(num_pages)) {
-      const char* src_ptr = static_cast<const char*>(src_ptrs[tensor_id].data_ptr()) +
-                            static_cast<size_t>(page_offset * page_size * src_stride0 * elem_size);
-      char* dst_ptr = static_cast<char*>(dst_ptrs[tensor_id].data_ptr()) +
-                      static_cast<size_t>(dst_indices_ptr[page_offset * page_size] * dst_stride0 * elem_size);
-      RuntimeDeviceCheck(cudaMemcpyAsync(dst_ptr, src_ptr, src_page_bytes, cudaMemcpyDeviceToHost, stream));
+      for (const auto token_offset : irange(page_size)) {
+        const int64_t staging_token = page_offset * page_size + token_offset;
+        const int64_t dst_token = dst_indices_ptr[staging_token];
+        for (const auto layer : irange(num_layers)) {
+          const char* src_ptr = static_cast<const char*>(src_ptrs[tensor_id].data_ptr()) +
+                                static_cast<size_t>((staging_token * src_stride0 + layer * src_stride1) * elem_size);
+          char* dst_ptr = static_cast<char*>(dst_ptrs[tensor_id].data_ptr()) +
+                          static_cast<size_t>((dst_token * dst_stride0 + layer * dst_stride1) * elem_size);
+          RuntimeDeviceCheck(cudaMemcpyAsync(dst_ptr, src_ptr, row_bytes, cudaMemcpyDeviceToHost, stream));
+        }
+      }
     }
   }
 }
@@ -134,10 +161,16 @@ inline bool try_copy_page_first_pages_batch(
         "Source and destination tensors must have the same dtype");
     const int64_t elem_size = host::dtype_bytes(src_ptrs[tensor_id].dtype());
     const int64_t src_stride0 = src_ptrs[tensor_id].stride(0);
+    const int64_t src_stride1 = src_ptrs[tensor_id].stride(1);
     const int64_t dst_stride0 = dst_ptrs[tensor_id].stride(0);
+    const int64_t dst_stride1 = dst_ptrs[tensor_id].stride(1);
     const size_t src_page_bytes = static_cast<size_t>(page_size * src_stride0 * elem_size);
     const size_t dst_page_bytes = static_cast<size_t>(page_size * dst_stride0 * elem_size);
-    host::RuntimeCheck(src_page_bytes == dst_page_bytes, "Source and destination page spans must match");
+    // cudaMemcpyBatchAsync's fast page copy requires identical packed page
+    // spans.  Strided typed-chunk destinations use the row-wise fallback.
+    if (src_stride0 != dst_stride0 || src_stride1 != dst_stride1 || src_page_bytes != dst_page_bytes) {
+      return false;
+    }
     if (tensor_id == 0) {
       first_page_bytes = src_page_bytes;
     }
@@ -208,6 +241,8 @@ struct HiCacheStagedWriteBackKernel {
     auto indices_dtype = SymbolicDType{};
     auto dst_indices_dtype = SymbolicDType{};
     auto device_ = SymbolicDevice{};
+    auto H0 = SymbolicSize{"host token stride"};
+    auto H1 = SymbolicSize{"host layer stride"};
 
     TensorMatcher({T, N, D})  //
         .with_dtype(cache_dtype)
@@ -220,11 +255,13 @@ struct HiCacheStagedWriteBackKernel {
           .verify(staging_v);
     }
     TensorMatcher({-1, N, D})  //
+        .with_strides({H0, H1, 1})
         .with_dtype(cache_dtype)
         .with_device<kDLCPU, kDLGPUHost>()
         .verify(k_cache_dst);
     if constexpr (!kIsMLA) {
       TensorMatcher({-1, N, D})  //
+          .with_strides({H0, H1, 1})
           .with_dtype(cache_dtype)
           .with_device<kDLCPU, kDLGPUHost>()
           .verify(v_cache_dst);
