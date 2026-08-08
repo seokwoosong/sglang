@@ -28,11 +28,51 @@ EVAL_WORKTREE_ROOT = Path(
 )
 DEFAULT_MODEL = Path(
     "/home/sukwoo24/.cache/huggingface/hub/"
-    "models--Qwen--Qwen3.5-4B/snapshots/"
-    "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+    "models--Qwen--Qwen3.5-0.8B/snapshots/"
+    "2fc06364715b967f1860aea9cf38778875588b17"
 )
+EVAL_SERVER_SHA = "936a38b31b99e75e27974ccdf84767a1cee39adb"
+EVAL_SERVER_WORKTREE = Path("/home/sukwoo24/sglang-eval-worktrees/qwen08-eval-server")
 
 VARIANTS = {
+    # Fair final-source evaluation: all four variants use the same allocator,
+    # compaction, transfer, and profiling code. Only the advertised memory/L2
+    # configuration changes.
+    "eval-s1": {
+        "sha": EVAL_SERVER_SHA,
+        "worktree": EVAL_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": True,
+        "sync_unified_transfers": None,
+        "hicache_mem_layout": "page_first",
+        "server_env": {"SGLANG_HICACHE_UNIFIED_TYPED_L2": "1"},
+    },
+    "eval-u0": {
+        "sha": EVAL_SERVER_SHA,
+        "worktree": EVAL_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": False,
+        "sync_unified_transfers": None,
+        "server_env": {"SGLANG_HICACHE_UNIFIED_TYPED_L2": "1"},
+    },
+    "eval-u2": {
+        "sha": EVAL_SERVER_SHA,
+        "worktree": EVAL_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "hicache_mem_layout": "page_first",
+        "server_env": {"SGLANG_HICACHE_UNIFIED_TYPED_L2": "0"},
+    },
+    "eval-u3": {
+        "sha": EVAL_SERVER_SHA,
+        "worktree": EVAL_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "hicache_mem_layout": "page_first",
+        "server_env": {"SGLANG_HICACHE_UNIFIED_TYPED_L2": "1"},
+    },
     # Multi-token typed-L2 evaluation. Both variants use identical source;
     # only --enable-unified-memory selects OURS.
     "paged-baseline": {
@@ -265,14 +305,28 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
         str(args.chunked_prefill_size),
         "--context-length",
         str(args.context_length),
-        "--cuda-graph-backend-decode",
-        "disabled",
-        "--cuda-graph-backend-prefill",
-        "disabled",
         "--enable-metrics",
         "--log-level",
         args.log_level,
     ]
+    if args.cuda_graph_mode == "enabled":
+        command.extend(
+            [
+                "--cuda-graph-backend-decode",
+                "full",
+                "--cuda-graph-backend-prefill",
+                "breakable",
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "--cuda-graph-backend-decode",
+                "disabled",
+                "--cuda-graph-backend-prefill",
+                "disabled",
+            ]
+        )
     if args.max_mamba_cache_size is not None:
         command.extend(["--max-mamba-cache-size", str(args.max_mamba_cache_size)])
     if variant["unified"]:
@@ -540,6 +594,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="write_through",
     )
     parser.add_argument("--log-level", default="info")
+    parser.add_argument(
+        "--cuda-graph-mode",
+        choices=["enabled", "disabled"],
+        default="disabled",
+        help=(
+            "Use decode=full and prefill=breakable for clean/correctness runs, "
+            "or disable both graphs for component profiling."
+        ),
+    )
     parser.add_argument("--server-extra-arg", action="append", default=[])
     parser.add_argument(
         "--server-env",
@@ -633,6 +696,8 @@ def main() -> None:
         environment.pop("SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS", None)
     else:
         environment["SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS"] = sync_value
+    variant_environment = dict(variant.get("server_env", {}))
+    environment.update(variant_environment)
     explicit_environment: dict[str, str] = {}
     for item in args.server_env:
         key, separator, value = item.partition("=")
@@ -668,6 +733,7 @@ def main() -> None:
             "SGLANG_ENABLE_METRICS_DEVICE_TIMER": (
                 "true" if args.profile_memory_breakdown else None
             ),
+            **variant_environment,
             **explicit_environment,
         },
         "hardware_before": run_text(
