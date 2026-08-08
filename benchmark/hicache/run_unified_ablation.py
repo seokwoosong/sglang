@@ -54,7 +54,7 @@ VARIANTS = {
         "sync_unified_transfers": None,
     },
     "mapping-after": {
-        "sha": "33d951f5bb1260babfafdcd22b6e1290bdb46814",
+        "sha": "66535cef39775b13a589668fc1429d57e8f8ff03",
         "worktree": Path(
             "/home/sukwoo24/sglang-eval-worktrees/upstream-compaction-batch-lookup"
         ),
