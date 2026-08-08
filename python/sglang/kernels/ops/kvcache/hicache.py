@@ -65,6 +65,78 @@ def _jit_hicache_staged_module(
     )
 
 
+@cache_once
+def _jit_hicache_page_copy_module() -> Module:
+    return load_jit(
+        "hicache_page_copy",
+        cuda_files=["kvcacheio/page_copy.cuh"],
+        cuda_wrappers=[("launch", "&HiCachePageCopyKernel::run")],
+    )
+
+
+@debug_kernel_api
+def transfer_hicache_pages(
+    dst: torch.Tensor,
+    dst_page_indices: torch.Tensor,
+    src: torch.Tensor,
+    src_page_indices: torch.Tensor,
+    *,
+    page_stride_bytes: int | None = None,
+    dst_page_stride_bytes: int | None = None,
+    src_page_stride_bytes: int | None = None,
+    copy_offset_bytes: int = 0,
+    copy_bytes: int | None = None,
+) -> None:
+    """Copy identical raw page-envelope ranges with GPU-resident page IDs."""
+
+    if page_stride_bytes is not None:
+        if dst_page_stride_bytes is not None or src_page_stride_bytes is not None:
+            raise ValueError(
+                "page_stride_bytes cannot be combined with separate source/destination strides"
+            )
+        dst_page_stride_bytes = src_page_stride_bytes = page_stride_bytes
+    if dst_page_stride_bytes is None or src_page_stride_bytes is None:
+        raise ValueError(
+            "provide page_stride_bytes or both dst_page_stride_bytes and "
+            "src_page_stride_bytes"
+        )
+    copy_bytes = (
+        min(dst_page_stride_bytes, src_page_stride_bytes)
+        if copy_bytes is None
+        else copy_bytes
+    )
+    if dst_page_indices.numel() != src_page_indices.numel():
+        raise ValueError("source and destination page-index counts must match")
+    _jit_hicache_page_copy_module().launch(
+        dst,
+        dst_page_indices,
+        src,
+        src_page_indices,
+        dst_page_stride_bytes,
+        src_page_stride_bytes,
+        copy_offset_bytes,
+        copy_bytes,
+    )
+
+
+def can_use_hicache_page_copy_kernel(
+    *, page_stride_bytes: int, copy_bytes: int
+) -> bool:
+    logger = logging.getLogger(__name__)
+    if page_stride_bytes % 16 or copy_bytes % 16:
+        logger.warning(
+            "Raw HiCache page copy requires 16-byte alignment: "
+            f"{page_stride_bytes=}, {copy_bytes=}"
+        )
+        return False
+    try:
+        _jit_hicache_page_copy_module()
+        return True
+    except Exception as exc:
+        logger.warning(f"Failed to load raw HiCache page-copy kernel: {exc}")
+        return False
+
+
 def can_use_hicache_jit_kernel(
     *,
     element_size: int,
@@ -273,6 +345,7 @@ def transfer_hicache_all_layer_staged_lf_pf(
     *,
     page_size: int,
     src_stride_bytes: int | None = None,
+    src_is_page_major: bool = False,
     element_size: int | None = None,
     unroll: int | None = None,
     block_quota: int | None = None,
@@ -309,6 +382,7 @@ def transfer_hicache_all_layer_staged_lf_pf(
             v_ptr_src,
             page_size,
             src_stride_bytes,
+            src_is_page_major,
         )
 
 

@@ -21,6 +21,18 @@ from sglang.kernels.ops.kvcache.hicache import (
 )
 from sglang.kernels.ops.kvcache.hisparse import transfer_cache_dsv4_mla
 from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool, MambaPool
+from sglang.srt.mem_cache.pool_host import HostKVCache
+from sglang.srt.mem_cache.pool_host.base import (
+    _WRITE_BACK_STAGING_PAGE_CHUNK,
+    HICACHE_HOST_MEMORY_RESERVE_BYTES,
+    sync_fixed_hicache_size,
+    synchronized,
+)
+from sglang.srt.mem_cache.pool_host.common import (
+    ALLOC_MEMORY_FUNCS,
+    get_allocator_from_storage,
+)
+from sglang.srt.mem_cache.pool_host.hisparse import HiSparseHostPoolMixin
 from sglang.srt.utils import is_cuda, is_hip, is_mps, is_npu, is_xpu
 
 _is_cuda = is_cuda()
@@ -49,22 +61,7 @@ if _is_npu:
 logger = logging.getLogger(__name__)
 
 
-from sglang.srt.mem_cache.pool_host import HostKVCache
-from sglang.srt.mem_cache.pool_host.base import (
-    _WRITE_BACK_STAGING_PAGE_CHUNK,
-    HICACHE_HOST_MEMORY_RESERVE_BYTES,
-    sync_fixed_hicache_size,
-    synchronized,
-)
-from sglang.srt.mem_cache.pool_host.common import (
-    ALLOC_MEMORY_FUNCS,
-    get_allocator_from_storage,
-)
-from sglang.srt.mem_cache.pool_host.hisparse import HiSparseHostPoolMixin
-
-
 class MambaPoolHost(HostKVCache):
-
     def __init__(
         self,
         device_pool: MambaPool,
@@ -235,8 +232,11 @@ class MambaPoolHost(HostKVCache):
         # staged write-back kernel requires. MambaPoolHost's own backup path does
         # not check this flag — it routes by layout + io_backend instead.
         self.can_use_write_back_jit = True
-        self._temporal_can_use_jit = False
-        self._conv_can_use_jit = [False] * len(self.conv_buffer)
+
+        # Both directions use the mapped-host Mamba kernels directly. The
+        # kernels accept the real device row stride, so unified rows do not
+        # need a gather buffer even though consecutive rows are separated by
+        # the complete shared slot envelope.
 
     def get_hybrid_pool_buffer(self):
         # Expose all mamba host tensors that need Mooncake buffer registration.
@@ -398,45 +398,12 @@ class MambaPoolHost(HostKVCache):
         num_layers: int,
         io_backend: str,
         src_ptrs: torch.Tensor,
-        staging: Optional[torch.Tensor] = None,
-        can_use_jit: bool = False,
     ) -> None:
         if src_indices.numel() == 0:
             return
         if io_backend == "kernel":
             item_size = MambaPoolHost._item_size_per_index(src_layers[0])
             src_stride = src_layers[0].stride(0) * src_layers[0].dtype.itemsize
-            if src_stride != item_size:
-                # Unified Mamba rows are separated by the complete per-slot
-                # state envelope.  Gather into a contiguous device staging
-                # tensor first; direct kernel stores into pinned host memory
-                # are not reliable for these very large rows.  This path is
-                # intentionally synchronous at the controller boundary; the
-                # scheduler may still use overlap scheduling safely.
-                staging = torch.empty(
-                    (len(src_indices), num_layers, 1, *src_layers.shape[2:]),
-                    dtype=src_layers.dtype,
-                    device=src_layers.device,
-                )
-                staging_indices = torch.arange(
-                    len(src_indices), dtype=torch.int64, device=src_indices.device
-                )
-                transfer_kv_mamba_lf_pf(
-                    src_ptrs=src_ptrs,
-                    dst=staging,
-                    src_indices=src_indices,
-                    dst_indices=staging_indices,
-                    item_size=item_size,
-                    dst_layout_dim=item_size * num_layers,
-                    num_layers=num_layers,
-                    src_stride=src_stride,
-                )
-                dst.index_copy_(
-                    0,
-                    dst_indices.cpu(),
-                    staging.cpu(),
-                )
-                return
             # Mamba JIT kernel expects all index tensors on CUDA.
             # When can_use_write_back_jit is True on the HostPoolGroup,
             # start_writing() keeps host_indices on CPU (for MLA staged kernel).
@@ -449,7 +416,7 @@ class MambaPoolHost(HostKVCache):
                 src_indices=src_indices,
                 dst_indices=dst_indices,
                 item_size=item_size,
-                dst_layout_dim=item_size * num_layers,
+                dst_layout_dim=dst.stride(0) * dst.dtype.itemsize,
                 num_layers=num_layers,
                 src_stride=src_stride,
             )
@@ -523,8 +490,6 @@ class MambaPoolHost(HostKVCache):
                     dst_indices=host_indices,
                     num_layers=self.num_mamba_layers,
                     io_backend=io_backend,
-                    staging=self.temporal_staging_buffer,
-                    can_use_jit=self._temporal_can_use_jit,
                     src_ptrs=self.temporal_device_ptrs,
                 )
             for conv_idx in range(len(self.conv_state_shapes)):
@@ -535,8 +500,6 @@ class MambaPoolHost(HostKVCache):
                     dst_indices=host_indices,
                     num_layers=self.num_mamba_layers,
                     io_backend=io_backend,
-                    staging=self.conv_staging_buffers[conv_idx],
-                    can_use_jit=self._conv_can_use_jit[conv_idx],
                     src_ptrs=self.conv_device_ptrs[conv_idx],
                 )
         else:
@@ -1620,12 +1583,142 @@ class HostPoolGroup:
         return self.anchor_entry.host_pool.is_stride_page_aligned(page_size_bytes)
 
     def clear(self) -> None:
+        cleared_arenas = set()
         for entry in self.entries:
-            entry.host_pool.clear()
+            arena = getattr(entry.host_pool, "shared_arena", None)
+            if arena is None:
+                entry.host_pool.clear()
+                continue
+            arena_id = id(arena)
+            if arena_id not in cleared_arenas:
+                arena.clear()
+                cleared_arenas.add(arena_id)
 
     def destroy(self) -> None:
+        destroyed_arenas = set()
         for entry in self.entries:
-            entry.host_pool.destroy()
+            arena = getattr(entry.host_pool, "shared_arena", None)
+            if arena is None:
+                entry.host_pool.destroy()
+                continue
+            arena_id = id(arena)
+            if arena_id not in destroyed_arenas:
+                arena.destroy()
+                destroyed_arenas.add(arena_id)
+
+    def pin_transfer_chunks(
+        self,
+        host_indices: torch.Tensor,
+        pool_transfers: Optional[list] = None,
+    ) -> list[tuple[Any, tuple[int, ...]]]:
+        """Protect shared-arena chunks touched by one async D2H/H2D operation."""
+
+        by_arena: dict[int, tuple[Any, set[int]]] = {}
+
+        def collect(entry: PoolEntry, indices: Optional[torch.Tensor]) -> None:
+            if indices is None or indices.numel() == 0:
+                return
+            pool = entry.host_pool
+            arena = getattr(pool, "shared_arena", None)
+            chunk_mapper = getattr(pool, "transfer_chunk_ids", None)
+            if arena is None or not callable(chunk_mapper):
+                return
+            arena_key = id(arena)
+            if arena_key not in by_arena:
+                by_arena[arena_key] = (arena, set())
+            by_arena[arena_key][1].update(chunk_mapper(indices))
+
+        collect(self.anchor_entry, host_indices)
+        for transfer in pool_transfers or []:
+            entry = self.entry_map.get(transfer.name)
+            if entry is not None:
+                collect(entry, transfer.host_indices)
+
+        guards = []
+        try:
+            for arena, chunk_ids in by_arena.values():
+                pinned = arena.pin_chunks_for_transfer(chunk_ids)
+                if pinned:
+                    guards.append((arena, pinned))
+        except BaseException:
+            for arena, chunk_ids in guards:
+                arena.cancel_transfer_pin(chunk_ids)
+            raise
+        return guards
+
+    @staticmethod
+    def release_transfer_chunks_after_event(
+        guards: list[tuple[Any, tuple[int, ...]]], event: Any
+    ) -> None:
+        for arena, chunk_ids in guards:
+            arena.release_chunks_after_event(chunk_ids, event)
+
+    @staticmethod
+    def cancel_transfer_chunk_pins(
+        guards: list[tuple[Any, tuple[int, ...]]],
+    ) -> None:
+        for arena, chunk_ids in guards:
+            arena.cancel_transfer_pin(chunk_ids)
+
+    def reclaim_shared_capacity(self, target_name: PoolName, need_size: int) -> bool:
+        """Evict opposite-type host entries until a shared arena can allocate.
+
+        Typed chunks are dynamically owned, but ownership cannot be changed by
+        the byte allocator alone: radix metadata must first evict the entries
+        that reference those bytes.  Each PoolEntry callback performs that
+        metadata-aware eviction.  We retry in chunk-sized batches because an
+        LRU eviction may free pages spread across several partially used KV
+        chunks before one whole chunk becomes retypable.
+        """
+
+        target_entry = self.entry_map.get(target_name)
+        if target_entry is None or need_size <= 0:
+            return False
+        target_pool = target_entry.host_pool
+        arena = getattr(target_pool, "shared_arena", None)
+        if arena is None:
+            return False
+
+        target_units_per_chunk = getattr(
+            target_pool, "allocation_units_per_chunk", None
+        )
+        if not target_units_per_chunk:
+            return False
+
+        def missing_chunks() -> int:
+            shortfall = max(0, need_size - target_pool.available_size())
+            return (shortfall + target_units_per_chunk - 1) // target_units_per_chunk
+
+        initial_missing = missing_chunks()
+        if initial_missing == 0:
+            return True
+
+        for source_entry in self.entries:
+            source_pool = source_entry.host_pool
+            if (
+                source_entry is target_entry
+                or getattr(source_pool, "shared_arena", None) is not arena
+                or not callable(source_entry.host_evict_fn)
+            ):
+                continue
+            source_units_per_chunk = getattr(
+                source_pool, "allocation_units_per_chunk", None
+            )
+            if not source_units_per_chunk:
+                continue
+
+            # At most every arena chunk can be visited.  Usually one call is
+            # sufficient; the bound only handles fragmented KV ownership.
+            for _ in range(arena.chunks.num_chunks):
+                missing = missing_chunks()
+                if missing == 0:
+                    return True
+                evict_units = missing * source_units_per_chunk
+                evicted = source_entry.host_evict_fn(evict_units)
+                if not evicted:
+                    break
+
+        return missing_chunks() == 0
 
     def available_size(self):
         return self.anchor_entry.host_pool.available_size()
