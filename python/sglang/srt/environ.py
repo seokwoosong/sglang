@@ -508,6 +508,10 @@ class Envs:
     SGLANG_EXA_INCLUDE_HIGHLIGHTS = EnvBool(True)
 
     # Hi-Cache
+    # Force the unified-memory + HiCache transfer path back to host-synchronous
+    # behavior. The default uses allocator-aware CUDA event fencing so scheduler
+    # execution can overlap with D<->H copies. This is a rollback / A/B knob.
+    SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS = EnvBool(False)
     SGLANG_HICACHE_HF3FS_CONFIG_PATH = EnvStr(None)
     SGLANG_HICACHE_DECODE_OFFLOAD_STRIDE = EnvInt(None)
     SGLANG_HICACHE_FILE_BACKEND_STORAGE_DIR = EnvStr(None)
