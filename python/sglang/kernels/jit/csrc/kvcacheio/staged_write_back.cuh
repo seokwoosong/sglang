@@ -2,6 +2,7 @@
 
 #include "hicache.cuh"
 #include "relayout.cuh"
+#include <cstdlib>
 #include <dlfcn.h>
 #include <limits>
 #include <vector>
@@ -130,6 +131,14 @@ inline bool try_copy_page_first_pages_batch(
   return false;
 #else
   host::RuntimeCheck(src_ptrs.size() == dst_ptrs.size(), "Source and destination tensors must have the same count");
+  // CUDA's batched D2H path can return success and later fault when its
+  // destination is cudaHostRegister'd mmap memory under WSL.  Keep the
+  // stream-ordered cudaMemcpyAsync fallback on WSL; it supports the same
+  // registered buffers and preserves correctness.
+  if (std::getenv("SGLANG_HICACHE_DISABLE_CUDA_MEMCPY_BATCH") != nullptr || std::getenv("WSL_DISTRO_NAME") != nullptr ||
+      std::getenv("WSL_INTEROP") != nullptr) {
+    return false;
+  }
   constexpr size_t kLargeCopyThresholdBytes = 128 * 1024;
   thread_local std::vector<CudaMemcpyBatchPtr> batch_srcs;
   thread_local std::vector<CudaMemcpyBatchPtr> batch_dsts;
