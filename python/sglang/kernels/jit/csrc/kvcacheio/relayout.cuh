@@ -14,6 +14,7 @@ struct HicacheRelayoutParams {
   uint32_t num_pages;
   uint32_t num_layers;
   uint32_t page_size;
+  uint32_t src_is_page_major;
   int64_t src_stride_bytes;
 };
 
@@ -25,7 +26,7 @@ __global__ void hicache_relayout_kernel(const __grid_constant__ HicacheRelayoutP
   constexpr uint32_t kVecBytes = 16;
   constexpr uint32_t kVecPerItem = kElementSize / kVecBytes;
 
-  const auto& [k_cache_dst, v_cache_dst, indices_src, k_ptr_src, v_ptr_src, num_pages, num_layers, page_size, src_stride_bytes] =
+  const auto& [k_cache_dst, v_cache_dst, indices_src, k_ptr_src, v_ptr_src, num_pages, num_layers, page_size, src_is_page_major, src_stride_bytes] =
       params;
   const auto k_ptr_src_arr = static_cast<const void* const*>(k_ptr_src);
   const auto v_ptr_src_arr = static_cast<const void* const*>(v_ptr_src);
@@ -42,11 +43,19 @@ __global__ void hicache_relayout_kernel(const __grid_constant__ HicacheRelayoutP
     const auto token_vec_id = page_vec_id % (num_layers * kVecPerItem);
     const auto layer_id = token_vec_id / kVecPerItem;
     const auto vec_id = token_vec_id % kVecPerItem;
-    const auto src_page = static_cast<uint32_t>(static_cast<const IndexType*>(indices_src)[page_id]);
-    const auto src_token = src_page + token_in_page;
+    const auto src_page_begin = static_cast<uint32_t>(static_cast<const IndexType*>(indices_src)[page_id]);
+    const auto src_token = src_page_begin + token_in_page;
+    auto src_row_offset = static_cast<int64_t>(src_token) * src_stride_bytes;
+    if (src_is_page_major) {
+      const auto src_page_id = src_token / page_size;
+      const auto src_token_in_page = src_token % page_size;
+      // Unified-memory MHA views use the complete shared-pool page envelope
+      // as stride(0), while rows inside a layer's page block are contiguous.
+      src_row_offset =
+          static_cast<int64_t>(src_page_id) * src_stride_bytes + static_cast<int64_t>(src_token_in_page) * kElementSize;
+    }
     const auto src_k = pointer::offset(
-        static_cast<const void*>(k_ptr_src_arr[layer_id]),
-        static_cast<int64_t>(src_token) * src_stride_bytes + static_cast<int64_t>(vec_id) * kVecBytes);
+        static_cast<const void*>(k_ptr_src_arr[layer_id]), src_row_offset + static_cast<int64_t>(vec_id) * kVecBytes);
     const auto dst_k =
         pointer::offset(static_cast<void*>(k_cache_dst), static_cast<int64_t>(linear_vec_id) * kVecBytes);
     const auto vec_k = details::load_nc(reinterpret_cast<const pack_t*>(src_k));
@@ -54,8 +63,7 @@ __global__ void hicache_relayout_kernel(const __grid_constant__ HicacheRelayoutP
 
     if constexpr (!kIsMLA) {
       const auto src_v = pointer::offset(
-          static_cast<const void*>(v_ptr_src_arr[layer_id]),
-          static_cast<int64_t>(src_token) * src_stride_bytes + static_cast<int64_t>(vec_id) * kVecBytes);
+          static_cast<const void*>(v_ptr_src_arr[layer_id]), src_row_offset + static_cast<int64_t>(vec_id) * kVecBytes);
       const auto dst_v =
           pointer::offset(static_cast<void*>(v_cache_dst), static_cast<int64_t>(linear_vec_id) * kVecBytes);
       const auto vec_v = details::load_nc(reinterpret_cast<const pack_t*>(src_v));

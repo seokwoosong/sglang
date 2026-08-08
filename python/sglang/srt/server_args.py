@@ -8098,10 +8098,6 @@ class ServerArgs:
                 "--enable-unified-memory currently supports only the L2 host tier; "
                 "an L3 --hicache-storage-backend is not yet supported."
             )
-            assert self.page_size == 1, (
-                "--enable-unified-memory currently supports HiCache only with "
-                "--page-size 1."
-            )
         assert self.dcp_size == 1, (
             "--enable-unified-memory is not yet compatible with decode context "
             "parallelism (--dcp-size > 1): the pool has no DCP-aware masked write "

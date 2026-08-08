@@ -37,7 +37,7 @@ LAYOUTS = ["page_first", "page_first_direct"]
 
 
 def test_registered_mmap_large_state_roundtrip():
-    """Exercise the production L2 allocator with a Qwen3.5-sized state row."""
+    """Exercise registered L2 with Qwen3.5-sized strided unified rows."""
     from sglang.kernels.ops.mamba.transfer_mamba import (
         transfer_kv_mamba_lf_pf,
         transfer_kv_mamba_pf_lf,
@@ -46,8 +46,17 @@ def test_registered_mmap_large_state_roundtrip():
     num_layers = 18
     num_slots = 2
     state_shape = (16, 128, 128)  # 1 MiB per fp32 layer/slot
-    source = torch.empty(
-        (num_layers, num_slots, *state_shape), dtype=torch.float32, device=DEVICE
+    slot_size = 19_537_920
+    item_size = int(torch.tensor(state_shape).prod()) * torch.float32.itemsize
+    slot_elems = slot_size // torch.float32.itemsize
+    item_elems = item_size // torch.float32.itemsize
+    source_backing = torch.empty(
+        num_slots * slot_elems, dtype=torch.float32, device=DEVICE
+    )
+    source = torch.as_strided(
+        source_backing,
+        size=(num_layers, num_slots, *state_shape),
+        stride=(item_elems, slot_elems, 16_384, 128, 1),
     )
     for layer_id in range(num_layers):
         source[layer_id].fill_(layer_id + 1)
@@ -66,7 +75,6 @@ def test_registered_mmap_large_state_roundtrip():
     )
     source_indices = torch.tensor([1], dtype=torch.int64, device=DEVICE)
     host_indices = torch.tensor([0], dtype=torch.int64, device=DEVICE)
-    item_size = source[0].stride(0) * source.dtype.itemsize
 
     try:
         transfer_kv_mamba_lf_pf(
@@ -77,7 +85,7 @@ def test_registered_mmap_large_state_roundtrip():
             item_size,
             item_size * num_layers,
             num_layers,
-            item_size,
+            slot_size,
         )
         torch.cuda.synchronize()
         torch.testing.assert_close(
@@ -87,8 +95,6 @@ def test_registered_mmap_large_state_roundtrip():
 
         # Match the unified L1 envelope: each Mamba row is contiguous, but
         # consecutive slots are separated by the complete Mamba slot stride.
-        slot_size = 19_537_920
-        slot_elems = slot_size // source.element_size()
         restored_backing = torch.zeros(
             num_slots * slot_elems, dtype=torch.float32, device=DEVICE
         )
@@ -169,6 +175,10 @@ def bind_device_pool(host, device_pool):
         )
         for conv_state in device_pool.mamba_cache.conv
     ]
+    # The production constructor creates bounded staging after binding the
+    # device pool. This fixture swaps in a strided unified pool later, so repeat
+    # that initialization instead of leaving the old contiguous-pool buffers.
+    host._init_write_back_staging_buffers()
 
 
 def make_host_pool(dtype, layout):
@@ -203,12 +213,10 @@ def make_host_pool(dtype, layout):
     conv_dims = (SIZE, NUM_LAYERS, 1) + CONV_SHAPE
     host.conv_buffer.append(torch.zeros(conv_dims, dtype=dtype).pin_memory())
 
-    # Staging buffers and JIT flags
+    # Unified backup no longer needs GPU staging buffers.
     host.temporal_staging_buffer = None
     host.conv_staging_buffers = [None]
     host.can_use_write_back_jit = True
-    host._temporal_can_use_jit = False
-    host._conv_can_use_jit = [False]
 
     # Device pointers (needed for backup kernel path)
     device_pool = make_device_pool(dtype)
@@ -255,8 +263,6 @@ def assert_host_mock_complete(host):
         "temporal_staging_buffer",
         "conv_staging_buffers",
         "can_use_write_back_jit",
-        "_temporal_can_use_jit",
-        "_conv_can_use_jit",
         "device_pool",
         "temporal_device_ptrs",
         "conv_device_ptrs",
@@ -385,10 +391,12 @@ def test_mamba_kernel_backup_load_roundtrip(dtype, layout):
 
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_unified_mamba_strided_backup_load_roundtrip(dtype):
-    """Exercise staged D2H and direct H2D on unified envelope strides."""
+    """Exercise direct D2H and H2D on unified envelope strides."""
     host = make_host_pool(dtype, "page_first")
     device_pool = make_unified_device_pool(dtype)
     bind_device_pool(host, device_pool)
+    assert host.temporal_staging_buffer is None
+    assert host.conv_staging_buffers[0] is None
     fill_device_data(device_pool, dtype)
 
     source_indices = torch.tensor([1, 5, 10], dtype=torch.int64, device=DEVICE)

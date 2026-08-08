@@ -447,7 +447,9 @@ class HybridCacheController(BaseHiCacheController):
         node_id: int = -1,
         extra_pools: Optional[list[PoolTransfer]] = None,
     ) -> Optional[torch.Tensor]:
-        host_indices = self.mem_pool_host.alloc(len(device_indices))
+        host_indices = self._alloc_host_entry(
+            self.mem_pool_host.anchor_entry, len(device_indices)
+        )
         if host_indices is None:
             return None
         pool_transfers = self._resolve_pool_transfers_allocation(
@@ -471,6 +473,22 @@ class HybridCacheController(BaseHiCacheController):
         )
         self.start_writing()
         return host_indices
+
+    def _alloc_host_entry(self, entry: PoolEntry, size: int) -> Optional[torch.Tensor]:
+        """Allocate host slots with self-type then cross-type radix eviction."""
+
+        indices = entry.host_pool.alloc(size)
+        if indices is not None:
+            return indices
+        if callable(entry.host_evict_fn):
+            entry.host_evict_fn(size)
+            indices = entry.host_pool.alloc(size)
+            if indices is not None:
+                return indices
+        reclaim = getattr(self.mem_pool_host, "reclaim_shared_capacity", None)
+        if callable(reclaim) and reclaim(entry.name, size):
+            return entry.host_pool.alloc(size)
+        return None
 
     def start_writing(self) -> None:
         if not self.write_queue:
@@ -500,31 +518,54 @@ class HybridCacheController(BaseHiCacheController):
         self.write_queue.clear()
         start_event = device_module.Event()
         ack_start_event, ack_finish_event, timing_enabled = make_timing_event_pair()
-        start_event.record()
-        with device_module.stream(self.write_stream):
-            start_event.wait(self.write_stream)
-            ack_start_event.record()
-            self.mem_pool_host.backup_from_device_all_layer(
-                self.mem_pool_device,
-                host_indices,
-                device_indices,
-                self.io_backend,
-                pool_transfers=resolved_pool_transfers,
-            )
-            if self.has_draft and host_indices.numel() > 0:
-                self.mem_pool_host_draft.backup_from_device_all_layer(
-                    self.mem_pool_device_draft,
+        pin_host_chunks = getattr(self.mem_pool_host, "pin_transfer_chunks", None)
+        host_chunk_guards = (
+            pin_host_chunks(host_indices, resolved_pool_transfers)
+            if callable(pin_host_chunks)
+            else []
+        )
+        try:
+            start_event.record()
+            with device_module.stream(self.write_stream):
+                start_event.wait(self.write_stream)
+                ack_start_event.record()
+                self.mem_pool_host.backup_from_device_all_layer(
+                    self.mem_pool_device,
                     host_indices,
                     device_indices,
                     self.io_backend,
+                    pool_transfers=resolved_pool_transfers,
                 )
-            ack_finish_event.record()
-            self._record_transfer_indices_on_stream(
-                self.write_stream,
-                host_indices,
-                device_indices,
-                resolved_pool_transfers,
+                if self.has_draft and host_indices.numel() > 0:
+                    self.mem_pool_host_draft.backup_from_device_all_layer(
+                        self.mem_pool_device_draft,
+                        host_indices,
+                        device_indices,
+                        self.io_backend,
+                    )
+                ack_finish_event.record()
+                self._record_transfer_indices_on_stream(
+                    self.write_stream,
+                    host_indices,
+                    device_indices,
+                    resolved_pool_transfers,
+                )
+            release_host_chunks = getattr(
+                self.mem_pool_host, "release_transfer_chunks_after_event", None
             )
+            if callable(release_host_chunks):
+                release_host_chunks(host_chunk_guards, ack_finish_event)
+        except BaseException:
+            # A failure can happen after one or more asynchronous copies were
+            # already enqueued. Drain this exceptional path before unpinning;
+            # otherwise rollback could retype host bytes still used by D2H.
+            self.write_stream.synchronize()
+            cancel_host_chunks = getattr(
+                self.mem_pool_host, "cancel_transfer_chunk_pins", None
+            )
+            if callable(cancel_host_chunks):
+                cancel_host_chunks(host_chunk_guards)
+            raise
         self._finish_transfer_before_scheduler(
             ack_finish_event, device_indices, resolved_pool_transfers
         )
@@ -625,72 +666,82 @@ class HybridCacheController(BaseHiCacheController):
         producer_id = self.layer_done_counter.update_producer()
         op = CacheOperation.merge_ops(self.load_queue)
         host_indices, device_indices, resolved_pool_transfers = (
-            self.move_hybrid_indices(op)
+            self.move_hybrid_indices(op, keep_cpu_extra_host_indices=True)
         )
         self.load_queue.clear()
         producer_event = self.layer_done_counter.events[producer_id]
         producer_event.start_event.record()
 
         ack_start_event, ack_finish_event, timing_enabled = make_timing_event_pair()
-
-        with device_module.stream(self.load_stream):
-            producer_event.start_event.wait(self.load_stream)
-            ack_start_event.record()
-            target_device_pool = self.mem_pool_host.anchor_entry.device_pool
-            for i in range(self.layer_num):
-                self.mem_pool_host.load_to_device_per_layer(
-                    target_device_pool,
-                    host_indices,
-                    device_indices,
-                    i,
-                    self.io_backend,
-                    pool_transfers=resolved_pool_transfers,
-                )
-                if (
-                    self.has_draft
-                    and host_indices.numel() > 0
-                    and i < self.mem_pool_host_draft.layer_num
-                ):
-                    self.mem_pool_host_draft.load_to_device_per_layer(
-                        self.mem_pool_device_draft,
+        pin_host_chunks = getattr(self.mem_pool_host, "pin_transfer_chunks", None)
+        host_chunk_guards = (
+            pin_host_chunks(host_indices, resolved_pool_transfers)
+            if callable(pin_host_chunks)
+            else []
+        )
+        try:
+            with device_module.stream(self.load_stream):
+                producer_event.start_event.wait(self.load_stream)
+                ack_start_event.record()
+                target_device_pool = self.mem_pool_host.anchor_entry.device_pool
+                for i in range(self.layer_num):
+                    self.mem_pool_host.load_to_device_per_layer(
+                        target_device_pool,
                         host_indices,
                         device_indices,
                         i,
                         self.io_backend,
-                    )
-
-                # HiCache now supports draft caches through two paths:
-                #
-                # - Packed: standard NextN/MTP models (DeepSeek-V3.2, GLM-5.x,
-                #   DeepSeek-V4, MiMo-V2.5) and DeepSeek-V4 DSpark. Draft KV/indexer/SWA
-                #   buffers are appended to the matching target host pools as tail layers
-                #   and share their slot mappings. D2H/H2D therefore moves target and draft
-                #   in the same cache operation; the branch below restores the tail layers.
-                #
-                # - Sidecar: standalone EAGLE/EAGLE3 (for example Llama-2/Llama-3.1),
-                #   DFlash (for example Gemma-4), and non-DeepSeek-V4 DSpark. Draft
-                #   KV/indexer/SWA gets a separate host-pool entry sized to its source target
-                #   pool. Its PoolTransfer follows the target KV or SWA indices and is
-                #   attached to the same cache operation.
-
-                if self.has_mtp_draft and i < len(self.mtp_draft_device_pools):
-                    self.mem_pool_host.load_to_device_per_layer(
-                        self.mtp_draft_device_pools[i],
-                        host_indices,
-                        device_indices,
-                        self.layer_num + i,
-                        self.io_backend,
                         pool_transfers=resolved_pool_transfers,
-                        is_draft=True,
                     )
-                producer_event.complete(i)
-            ack_finish_event.record()
-            self._record_transfer_indices_on_stream(
-                self.load_stream,
-                host_indices,
-                device_indices,
-                resolved_pool_transfers,
+                    if (
+                        self.has_draft
+                        and host_indices.numel() > 0
+                        and i < self.mem_pool_host_draft.layer_num
+                    ):
+                        self.mem_pool_host_draft.load_to_device_per_layer(
+                            self.mem_pool_device_draft,
+                            host_indices,
+                            device_indices,
+                            i,
+                            self.io_backend,
+                        )
+
+                    # Packed MTP draft layers share the target slot mapping and
+                    # ride on the same cache operation. Sidecar draft pools are
+                    # represented in resolved_pool_transfers above.
+                    if self.has_mtp_draft and i < len(self.mtp_draft_device_pools):
+                        self.mem_pool_host.load_to_device_per_layer(
+                            self.mtp_draft_device_pools[i],
+                            host_indices,
+                            device_indices,
+                            self.layer_num + i,
+                            self.io_backend,
+                            pool_transfers=resolved_pool_transfers,
+                            is_draft=True,
+                        )
+                    producer_event.complete(i)
+                ack_finish_event.record()
+                self._record_transfer_indices_on_stream(
+                    self.load_stream,
+                    host_indices,
+                    device_indices,
+                    resolved_pool_transfers,
+                )
+            release_host_chunks = getattr(
+                self.mem_pool_host, "release_transfer_chunks_after_event", None
             )
+            if callable(release_host_chunks):
+                release_host_chunks(host_chunk_guards, ack_finish_event)
+        except BaseException:
+            # H2D may be partially enqueued when a later layer fails. Keep the
+            # host chunks pinned until those reads have drained.
+            self.load_stream.synchronize()
+            cancel_host_chunks = getattr(
+                self.mem_pool_host, "cancel_transfer_chunk_pins", None
+            )
+            if callable(cancel_host_chunks):
+                cancel_host_chunks(host_chunk_guards)
+            raise
         self._finish_transfer_before_scheduler(
             ack_finish_event, device_indices, resolved_pool_transfers
         )
@@ -787,21 +838,41 @@ class HybridCacheController(BaseHiCacheController):
         )
 
     def move_hybrid_indices(
-        self, operation: CacheOperation
+        self,
+        operation: CacheOperation,
+        *,
+        keep_cpu_extra_host_indices: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, Optional[list[PoolTransfer]]]:
         device_indices, translated_pool_transfers = (
             self.translate_hybrid_device_indices(operation)
         )
-        host_indices, device_indices = self.move_indices(
-            operation.host_indices, device_indices
-        )
+        anchor_entry = self.mem_pool_host.anchor_entry
+        if keep_cpu_extra_host_indices and getattr(
+            anchor_entry.host_pool, "requires_host_indices_cpu", False
+        ):
+            host_indices = operation.host_indices.to(device="cpu", dtype=torch.int64)
+        else:
+            host_indices, device_indices = self.move_indices(
+                operation.host_indices, device_indices
+            )
         resolved_pool_transfers = None
         if translated_pool_transfers:
             resolved_pool_transfers = []
             for transfer in translated_pool_transfers:
-                transfer_host_indices, transfer_device_indices = self.move_indices(
-                    transfer.host_indices, transfer.device_indices
-                )
+                entry = self.mem_pool_host.entry_map.get(transfer.name)
+                if (
+                    keep_cpu_extra_host_indices
+                    and entry is not None
+                    and getattr(entry.host_pool, "requires_host_indices_cpu", False)
+                ):
+                    transfer_host_indices = transfer.host_indices.to(
+                        device="cpu", dtype=torch.int64
+                    )
+                    transfer_device_indices = transfer.device_indices
+                else:
+                    transfer_host_indices, transfer_device_indices = self.move_indices(
+                        transfer.host_indices, transfer.device_indices
+                    )
                 # Keep the original PoolTransfer unchanged because tree-owned
                 # transfers may still reference radix-tree host state. The
                 # controller only needs a normalized execution-time copy.
@@ -1053,9 +1124,7 @@ class HybridCacheController(BaseHiCacheController):
             if alloc_host:
                 if pool.host_indices is not None or pool.device_indices is None:
                     continue
-                alloc_fn = entry.host_pool.alloc
                 free_fn = entry.host_pool.free
-                evict_fn = entry.host_evict_fn
                 size = len(pool.device_indices)
             else:
                 if pool.device_indices is not None or pool.host_indices is None:
@@ -1067,10 +1136,13 @@ class HybridCacheController(BaseHiCacheController):
                 free_fn = entry.device_free_fn or entry.device_pool.free
                 evict_fn = entry.device_evict_fn
                 size = len(pool.host_indices)
-            indices = alloc_fn(size)
-            if indices is None and evict_fn:
-                evict_fn(size)
+            if alloc_host:
+                indices = self._alloc_host_entry(entry, size)
+            else:
                 indices = alloc_fn(size)
+                if indices is None and evict_fn:
+                    evict_fn(size)
+                    indices = alloc_fn(size)
             if indices is None:
                 # Atomic rollback: free everything we successfully allocated.
                 rollback_allocated()

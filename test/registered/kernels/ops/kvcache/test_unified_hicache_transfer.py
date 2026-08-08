@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sglang.srt.mem_cache.layout.page_major import build_page_major_mha_views
 from sglang.srt.mem_cache.multi_ended_allocator import MultiEndedAllocator
 from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
 from sglang.srt.mem_cache.unified_memory_pool import (
@@ -121,6 +122,116 @@ def _make_host_pool(device_pool) -> MHATokenToKVPoolHost:
     return host
 
 
+def _make_paged_unified_device_pool(dtype: torch.dtype, page_size: int):
+    page_count = 10
+    token_count = page_count * page_size
+    row_elements = HEAD_NUM * HEAD_DIM
+    raw = torch.empty(
+        token_count * NUM_LAYERS * 2 * row_elements * dtype.itemsize,
+        dtype=torch.uint8,
+        device=DEVICE,
+    )
+    k_buffer, v_buffer = build_page_major_mha_views(
+        raw,
+        layer_num=NUM_LAYERS,
+        head_num=HEAD_NUM,
+        head_dim=HEAD_DIM,
+        v_head_dim=HEAD_DIM,
+        store_dtype=dtype,
+        page_size=page_size,
+        num_pages=page_count,
+    )
+    for layer_id in range(NUM_LAYERS):
+        _fill_view(k_buffer[layer_id], 10 + layer_id * 20)
+        _fill_view(v_buffer[layer_id], 110 + layer_id * 20)
+
+    return SimpleNamespace(
+        _unified_buffer=object(),
+        _backing=raw,
+        _page_size=page_size,
+        device=torch.device(DEVICE),
+        size=token_count - page_size,
+        head_num=HEAD_NUM,
+        head_dim=HEAD_DIM,
+        layer_num=NUM_LAYERS,
+        dtype=dtype,
+        k_buffer=k_buffer,
+        v_buffer=v_buffer,
+        k_data_ptrs=torch.tensor(
+            [tensor.data_ptr() for tensor in k_buffer],
+            dtype=torch.uint64,
+            device=DEVICE,
+        ),
+        v_data_ptrs=torch.tensor(
+            [tensor.data_ptr() for tensor in v_buffer],
+            dtype=torch.uint64,
+            device=DEVICE,
+        ),
+    )
+
+
+def _make_paged_host_pool(device_pool, page_size: int) -> MHATokenToKVPoolHost:
+    token_count = device_pool.k_buffer[0].shape[0] * page_size
+    host = _make_host_pool(device_pool)
+    host.page_size = page_size
+    host.page_num = token_count // page_size
+    host.size = token_count
+    host.kv_buffer = (
+        torch.zeros(
+            (token_count, NUM_LAYERS, HEAD_NUM, HEAD_DIM), dtype=host.dtype
+        ).pin_memory(),
+        torch.zeros(
+            (token_count, NUM_LAYERS, HEAD_NUM, HEAD_DIM), dtype=host.dtype
+        ).pin_memory(),
+    )
+    k_transposed = host.k_buffer.transpose(0, 1)
+    v_transposed = host.v_buffer.transpose(0, 1)
+    host.k_data_refs = [k_transposed[i] for i in range(NUM_LAYERS)]
+    host.v_data_refs = [v_transposed[i] for i in range(NUM_LAYERS)]
+    host.k_data_ptrs = torch.tensor(
+        [tensor.data_ptr() for tensor in host.k_data_refs],
+        dtype=torch.uint64,
+        device=DEVICE,
+    )
+    host.v_data_ptrs = torch.tensor(
+        [tensor.data_ptr() for tensor in host.v_data_refs],
+        dtype=torch.uint64,
+        device=DEVICE,
+    )
+    host.staging_page_capacity = host.page_num
+    host.staging_token_capacity = token_count
+    host.staging_k_buffer = torch.empty(
+        (token_count, NUM_LAYERS, HEAD_NUM, HEAD_DIM),
+        dtype=host.dtype,
+        device=DEVICE,
+    )
+    host.staging_v_buffer = torch.empty_like(host.staging_k_buffer)
+    return host
+
+
+def _page_token_indices(
+    page_ids: list[int], page_size: int, *, device: str
+) -> torch.Tensor:
+    return torch.cat(
+        [
+            torch.arange(
+                page_id * page_size,
+                (page_id + 1) * page_size,
+                dtype=torch.int64,
+                device=device,
+            )
+            for page_id in page_ids
+        ]
+    )
+
+
+def _gather_paged_rows(
+    view: torch.Tensor, token_indices: torch.Tensor, page_size: int
+) -> torch.Tensor:
+    token_indices = token_indices.to(device=view.device, dtype=torch.long)
+    return view[token_indices // page_size, token_indices % page_size]
+
+
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_unified_mha_strided_backup_load_roundtrip(dtype):
     """Exercise real staged D2H and strided H2D paths with non-identity indices."""
@@ -165,6 +276,64 @@ def test_unified_mha_strided_backup_load_roundtrip(dtype):
             device_pool.v_buffer[layer_id][restore_indices], expected_v[layer_id]
         )
     torch.testing.assert_close(device_pool._backing[:, :, [0, 2]], untouched_envelope)
+
+
+@pytest.mark.parametrize("page_size", [8, 32])
+def test_unified_mha_paged_backup_load_roundtrip(page_size):
+    """Exercise legacy L2 D2H/H2D against the real unified page envelope."""
+    device_pool = _make_paged_unified_device_pool(torch.bfloat16, page_size)
+    host = _make_paged_host_pool(device_pool, page_size)
+    source_indices = _page_token_indices([1, 3, 5], page_size, device=DEVICE)
+    host_indices = _page_token_indices([0, 2, 4], page_size, device="cpu")
+    restore_indices = _page_token_indices([2, 6, 8], page_size, device=DEVICE)
+
+    expected_k = [
+        _gather_paged_rows(layer, source_indices, page_size).clone()
+        for layer in device_pool.k_buffer
+    ]
+    expected_v = [
+        _gather_paged_rows(layer, source_indices, page_size).clone()
+        for layer in device_pool.v_buffer
+    ]
+
+    host.backup_from_device_all_layer(
+        device_pool, host_indices, source_indices, io_backend="kernel"
+    )
+    torch.cuda.synchronize()
+
+    for layer_id in range(NUM_LAYERS):
+        torch.testing.assert_close(
+            host.k_data_refs[layer_id][host_indices], expected_k[layer_id].cpu()
+        )
+        torch.testing.assert_close(
+            host.v_data_refs[layer_id][host_indices], expected_v[layer_id].cpu()
+        )
+        restore_pages = restore_indices // page_size
+        restore_offsets = restore_indices % page_size
+        device_pool.k_buffer[layer_id][restore_pages, restore_offsets] = -3
+        device_pool.v_buffer[layer_id][restore_pages, restore_offsets] = -5
+        host.load_to_device_per_layer(
+            device_pool,
+            host_indices,
+            restore_indices,
+            layer_id,
+            io_backend="kernel",
+        )
+
+    torch.cuda.synchronize()
+    for layer_id in range(NUM_LAYERS):
+        torch.testing.assert_close(
+            _gather_paged_rows(
+                device_pool.k_buffer[layer_id], restore_indices, page_size
+            ),
+            expected_k[layer_id],
+        )
+        torch.testing.assert_close(
+            _gather_paged_rows(
+                device_pool.v_buffer[layer_id], restore_indices, page_size
+            ),
+            expected_v[layer_id],
+        )
 
 
 class _CudaMarkerPool:

@@ -258,30 +258,29 @@ class MHATokenToKVPoolHost(HostKVCache):
             if hasattr(device_pool, "_unified_buffer"):
                 # Unified MHA rows are strided by the complete shared-pool
                 # entry, whereas the per-layer HiCache kernels assume tightly
-                # packed destination rows. Gather the host rows and let
-                # index_copy_ honor the destination tensor's real stride.
-                # Unified-memory HiCache currently requires page_size == 1.
+                # packed destination rows. Gather the host rows and use the
+                # destination tensor's real page-major strides.
                 # The controller synchronizes this compatibility path before
                 # scheduler-side allocation or compaction can resume.
-                assert self.page_size == 1
                 host_indices_cpu = host_indices.to(device="cpu", dtype=torch.long)
                 device_indices = device_indices.to(dtype=torch.long)
                 k_rows = self.k_data_refs[layer_id].index_select(0, host_indices_cpu)
                 v_rows = self.v_data_refs[layer_id].index_select(0, host_indices_cpu)
-                device_pool.k_buffer[layer_id].index_copy_(
-                    0,
-                    device_indices,
-                    k_rows.reshape(
-                        len(k_rows), *device_pool.k_buffer[layer_id].shape[1:]
-                    ).to(device_pool.device),
-                )
-                device_pool.v_buffer[layer_id].index_copy_(
-                    0,
-                    device_indices,
-                    v_rows.reshape(
-                        len(v_rows), *device_pool.v_buffer[layer_id].shape[1:]
-                    ).to(device_pool.device),
-                )
+                k_dst = device_pool.k_buffer[layer_id]
+                v_dst = device_pool.v_buffer[layer_id]
+                k_rows = k_rows.to(device_pool.device, non_blocking=True)
+                v_rows = v_rows.to(device_pool.device, non_blocking=True)
+                if k_dst.ndim == 4:
+                    assert k_dst.shape[1] == self.page_size
+                    assert v_dst.ndim == 4 and v_dst.shape[1] == self.page_size
+                    device_pages = device_indices // self.page_size
+                    device_offsets = device_indices % self.page_size
+                    k_dst.index_put_((device_pages, device_offsets), k_rows)
+                    v_dst.index_put_((device_pages, device_offsets), v_rows)
+                else:
+                    # page_size == 1 compatibility for older 3-D strided views.
+                    k_dst.index_copy_(0, device_indices, k_rows)
+                    v_dst.index_copy_(0, device_indices, v_rows)
                 return
             if self.layout == "layer_first":
                 if self.can_use_jit:
@@ -462,6 +461,7 @@ class MHATokenToKVPoolHost(HostKVCache):
                             device_pool.k_buffer[0].stride(0)
                             * device_pool.k_buffer[0].dtype.itemsize
                         ),
+                        src_is_page_major=device_pool.k_buffer[0].ndim == 4,
                     )
                 elif self.can_use_write_back_jit:
                     jit_transfer_hicache_all_layer_staged_lf_pf(

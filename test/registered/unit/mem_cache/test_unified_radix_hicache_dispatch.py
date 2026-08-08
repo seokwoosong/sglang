@@ -577,6 +577,106 @@ class TestHybridTransferIndexTranslation(unittest.TestCase):
         calls.wait_for_finish.assert_called_once_with(ack_finish_event, physical, None)
         self.assertEqual(len(controller.ack_load_queue), 1)
 
+    def test_failed_write_drains_stream_before_canceling_host_chunk_pins(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        host_indices = torch.tensor([0], dtype=torch.int64)
+        device_indices = torch.tensor([3], dtype=torch.int64)
+        controller.write_queue = [
+            CacheOperation(host_indices, device_indices, node_id=1)
+        ]
+        controller.io_backend = "kernel"
+        controller.mem_pool_host = MagicMock(
+            layout="page_first", can_use_write_back_jit=True
+        )
+        controller.mem_pool_device = MagicMock()
+        controller.has_draft = False
+        controller.write_stream = MagicMock()
+        controller.ack_write_queue = []
+        controller.translate_hybrid_device_indices = MagicMock(
+            return_value=(device_indices, None)
+        )
+        guards = [(MagicMock(), (1,))]
+        controller.mem_pool_host.pin_transfer_chunks.return_value = guards
+        controller.mem_pool_host.backup_from_device_all_layer.side_effect = (
+            RuntimeError("injected D2H failure")
+        )
+
+        with (
+            patch.object(
+                hybrid_cache_controller,
+                "make_timing_event_pair",
+                return_value=(MagicMock(), MagicMock(), False),
+            ),
+            patch.object(
+                hybrid_cache_controller.device_module,
+                "Event",
+                return_value=MagicMock(),
+            ),
+            patch.object(
+                hybrid_cache_controller.device_module,
+                "stream",
+                return_value=nullcontext(),
+            ),
+            self.assertRaisesRegex(RuntimeError, "injected D2H failure"),
+        ):
+            controller.start_writing()
+
+        controller.write_stream.synchronize.assert_called_once_with()
+        controller.mem_pool_host.cancel_transfer_chunk_pins.assert_called_once_with(
+            guards
+        )
+        controller.mem_pool_host.release_transfer_chunks_after_event.assert_not_called()
+        self.assertEqual(controller.ack_write_queue, [])
+
+    def test_failed_load_drains_stream_before_canceling_host_chunk_pins(self):
+        controller = HybridCacheController.__new__(HybridCacheController)
+        host_indices = torch.tensor([2], dtype=torch.int64)
+        device_indices = torch.tensor([4], dtype=torch.int64)
+        controller.load_queue = [
+            CacheOperation(host_indices, device_indices, node_id=1)
+        ]
+        controller.mem_pool_device = MagicMock()
+        controller.mem_pool_host = MagicMock()
+        controller.io_backend = "kernel"
+        controller.has_draft = False
+        controller.load_stream = MagicMock()
+        controller.layer_num = 2
+        controller.ack_load_queue = []
+        controller.move_hybrid_indices = MagicMock(
+            return_value=(host_indices, device_indices, None)
+        )
+        producer_event = MagicMock()
+        controller.layer_done_counter = MagicMock(
+            events=[producer_event], update_producer=MagicMock(return_value=0)
+        )
+        guards = [(MagicMock(), (2,))]
+        controller.mem_pool_host.pin_transfer_chunks.return_value = guards
+        controller.mem_pool_host.load_to_device_per_layer.side_effect = RuntimeError(
+            "injected H2D failure"
+        )
+
+        with (
+            patch.object(
+                hybrid_cache_controller,
+                "make_timing_event_pair",
+                return_value=(MagicMock(), MagicMock(), False),
+            ),
+            patch.object(
+                hybrid_cache_controller.device_module,
+                "stream",
+                return_value=nullcontext(),
+            ),
+            self.assertRaisesRegex(RuntimeError, "injected H2D failure"),
+        ):
+            controller.start_loading()
+
+        controller.load_stream.synchronize.assert_called_once_with()
+        controller.mem_pool_host.cancel_transfer_chunk_pins.assert_called_once_with(
+            guards
+        )
+        controller.mem_pool_host.release_transfer_chunks_after_event.assert_not_called()
+        self.assertEqual(controller.ack_load_queue, [])
+
 
 class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
     @staticmethod
@@ -599,9 +699,7 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
         tree_cache = MagicMock()
         tree_cache.supports_mamba.return_value = True
         tree_cache.mamba_evictable_size.return_value = 3
-        tree_cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
-            7
-        )
+        tree_cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = 7
 
         self.assertEqual(
             alloc_req_slots(req_pool, [self._req(), self._req()], tree_cache), [3, 4]
@@ -637,9 +735,7 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
     def test_mamba_slot_reuses_evictable_mamba_state_first(self):
         component = MambaComponent.__new__(MambaComponent)
         component.cache = MagicMock()
-        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
-            1590
-        )
+        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = 1590
         component.cache.mamba_evictable_size.return_value = 1
 
         params = component._mamba_slot_eviction_params()
@@ -650,9 +746,7 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
     def test_mamba_slot_uses_full_bytes_when_no_mamba_is_evictable(self):
         component = MambaComponent.__new__(MambaComponent)
         component.cache = MagicMock()
-        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
-            1590
-        )
+        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = 1590
         component.cache.mamba_evictable_size.return_value = 0
 
         params = component._mamba_slot_eviction_params()
@@ -664,9 +758,7 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
         component = MambaComponent.__new__(MambaComponent)
         component.cache = MagicMock()
         component.cache.mamba_evictable_size.return_value = 1
-        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
-            1590
-        )
+        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = 1590
         allocated = torch.tensor([9])
         component.cache.req_to_token_pool.mamba_allocator.alloc.side_effect = [
             None,
@@ -686,9 +778,7 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
         component = MambaComponent.__new__(MambaComponent)
         component.cache = MagicMock()
         component.cache.mamba_evictable_size.return_value = 0
-        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
-            1590
-        )
+        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = 1590
         allocated = torch.tensor([9])
         component.cache.req_to_token_pool.mamba_allocator.alloc.side_effect = [
             None,
@@ -763,10 +853,13 @@ class TestUnifiedMHAHostLoad(unittest.TestCase):
             dst_indices=torch.tensor([1, 3]),
             layer_id=1,
             io_backend="kernel",
+            staging=torch.empty((1, 2, 1, 4), dtype=torch.long),
         )
 
         torch.testing.assert_close(dst[1], src[2, 1, 0])
         torch.testing.assert_close(dst[3], src[0, 1, 0])
+        self.assertTrue(torch.all(backing[:, 0] == -1))
+        self.assertTrue(torch.all(backing[:, 2] == -1))
 
 
 class TestUnifiedHiCacheServerArgs(unittest.TestCase):
@@ -803,7 +896,6 @@ class TestUnifiedHiCacheServerArgs(unittest.TestCase):
 
         invalid_cases = (
             ({"hicache_io_backend": "direct"}, "hicache-io-backend kernel"),
-            ({"page_size": 2}, "page-size 1"),
             (
                 {"hicache_write_policy": "write_through_selective"},
                 "write_through or write_back",
@@ -822,6 +914,20 @@ class TestUnifiedHiCacheServerArgs(unittest.TestCase):
             with self.subTest(overrides=overrides):
                 with self.assertRaisesRegex(AssertionError, message):
                     ServerArgs(**kwargs)._handle_unified_memory_pool()
+
+    def test_multi_token_pages_are_supported(self):
+        from sglang.srt.server_args import ServerArgs
+
+        for page_size in (1, 2, 4, 8, 16, 32):
+            with self.subTest(page_size=page_size):
+                ServerArgs(
+                    model_path="dummy",
+                    enable_unified_memory=True,
+                    enable_hierarchical_cache=True,
+                    hicache_io_backend="kernel",
+                    hicache_write_policy="write_through",
+                    page_size=page_size,
+                )._handle_unified_memory_pool()
 
 
 if __name__ == "__main__":
