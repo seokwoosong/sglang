@@ -1,6 +1,8 @@
+from contextlib import nullcontext
 from typing import Optional, Tuple, Union
 
 import torch
+from torch.profiler import record_function
 
 from sglang.kernels.ops.attention.fla.fused_gdn_gating import fused_gdn_gating
 from sglang.kernels.ops.mamba.causal_conv1d_triton import (
@@ -336,6 +338,9 @@ class GDNAttnBackend(MambaAttnBackendBase):
 
     def __init__(self, model_runner: ModelRunner):
         super().__init__(model_runner)
+        self._memory_profiler = getattr(
+            model_runner.req_to_token_pool.mamba_pool, "_memory_profiler", None
+        )
         self.conv_states_shape = (
             model_runner.req_to_token_pool.mamba_pool.mamba_cache.conv[0].shape
         )
@@ -390,6 +395,13 @@ class GDNAttnBackend(MambaAttnBackendBase):
         ssm_states = layer_cache.temporal
         query_start_loc = self.forward_metadata.query_start_loc
         cache_indices = self.forward_metadata.mamba_cache_indices
+        if self._memory_profiler is not None:
+            self._memory_profiler.increment(
+                "mamba_layout_access",
+                "mamba",
+                "decode_layer",
+                rows=cache_indices.numel(),
+            )
         # GDN ReplaySSM (slice 1a): per-layer ring slices + the once-per-forward
         # per-row write cursor. All None unless --enable-linear-replayssm, so the
         # legacy dispatch below is byte-identical when the flag is off.
@@ -518,8 +530,39 @@ class GDNAttnBackend(MambaAttnBackendBase):
             and (not conv_states.is_contiguous() or not ssm_states.is_contiguous())
         )
         if needs_state_gather:
-            conv_states_contig = conv_states[cache_indices].contiguous()
-            ssm_states_contig = ssm_states[cache_indices].contiguous()
+            gather_cuda_start = (
+                self._memory_profiler.start_cuda_interval()
+                if self._memory_profiler is not None
+                else None
+            )
+            gather_scope = (
+                record_function("MambaLayout.extend_state_gather")
+                if self._memory_profiler is not None
+                else nullcontext()
+            )
+            with gather_scope:
+                conv_states_contig = conv_states[cache_indices].contiguous()
+                ssm_states_contig = ssm_states[cache_indices].contiguous()
+            gathered_bytes = (
+                conv_states_contig.numel() * conv_states_contig.element_size()
+                + ssm_states_contig.numel() * ssm_states_contig.element_size()
+            )
+            if self._memory_profiler is not None:
+                self._memory_profiler.increment(
+                    "mamba_layout_access",
+                    "mamba",
+                    "extend_state_gather",
+                    rows=cache_indices.numel(),
+                    num_bytes=gathered_bytes,
+                )
+                self._memory_profiler.finish_cuda_interval(
+                    gather_cuda_start,
+                    "mamba_layout_gpu",
+                    "mamba",
+                    "extend_state_gather",
+                    rows=cache_indices.numel(),
+                    num_bytes=gathered_bytes,
+                )
             state_cache_indices = torch.arange(
                 cache_indices.shape[0],
                 device=cache_indices.device,
@@ -529,6 +572,13 @@ class GDNAttnBackend(MambaAttnBackendBase):
             conv_states_contig = conv_states
             ssm_states_contig = ssm_states
             state_cache_indices = cache_indices
+            if self._memory_profiler is not None:
+                self._memory_profiler.increment(
+                    "mamba_layout_access",
+                    "mamba",
+                    "extend_direct",
+                    rows=cache_indices.numel(),
+                )
 
         if is_target_verify:
             batch_size = seq_len // forward_batch.spec_info.draft_token_num
@@ -692,8 +742,35 @@ class GDNAttnBackend(MambaAttnBackendBase):
             if needs_state_gather:
                 # Scatter the in-place-updated contiguous copies back to the
                 # strided envelope pool (advanced indexing handles the strides).
-                conv_states[cache_indices] = conv_states_contig
-                ssm_states[cache_indices] = ssm_states_contig
+                scatter_cuda_start = (
+                    self._memory_profiler.start_cuda_interval()
+                    if self._memory_profiler is not None
+                    else None
+                )
+                scatter_scope = (
+                    record_function("MambaLayout.extend_state_scatter")
+                    if self._memory_profiler is not None
+                    else nullcontext()
+                )
+                with scatter_scope:
+                    conv_states[cache_indices] = conv_states_contig
+                    ssm_states[cache_indices] = ssm_states_contig
+                if self._memory_profiler is not None:
+                    self._memory_profiler.increment(
+                        "mamba_layout_access",
+                        "mamba",
+                        "extend_state_scatter",
+                        rows=cache_indices.numel(),
+                        num_bytes=gathered_bytes,
+                    )
+                    self._memory_profiler.finish_cuda_interval(
+                        scatter_cuda_start,
+                        "mamba_layout_gpu",
+                        "mamba",
+                        "extend_state_scatter",
+                        rows=cache_indices.numel(),
+                        num_bytes=gathered_bytes,
+                    )
 
             if forward_metadata.has_mamba_track_mask:
                 self._track_mamba_state_extend(

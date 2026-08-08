@@ -29,6 +29,11 @@ from sglang.srt.mem_cache.hicache_storage import (
     PoolTransfer,
     SidecarPoolSpec,
 )
+from sglang.srt.mem_cache.hicache_trace import (
+    hicache_trace_object_id,
+    trace_enabled,
+    trace_hicache_event,
+)
 from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
     HybridCacheController,
 )
@@ -402,6 +407,113 @@ class UnifiedRadixCache(BasePrefixCache):
         if self.host_pool_group is not None:
             self.host_pool_group.destroy()
 
+    @staticmethod
+    def _trace_index_list(value: Optional[torch.Tensor]) -> list[int]:
+        if value is None:
+            return []
+        try:
+            return [
+                int(index)
+                for index in value.detach()
+                .to(device="cpu", dtype=torch.int64)
+                .reshape(-1)
+                .tolist()
+            ]
+        except Exception:
+            # Optional diagnostics must never turn a valid cache operation
+            # into a serving failure for a third-party tensor-like value.
+            return []
+
+    def _trace_mamba_device_location(
+        self, value: Optional[torch.Tensor]
+    ) -> tuple[list[int], list[int], str]:
+        """Return physical rows plus the cache-owned virtual slot IDs."""
+        virtual_indices = self._trace_index_list(value)
+        if value is None:
+            return [], virtual_indices, "identity"
+        allocator = getattr(self.req_to_token_pool, "mamba_allocator", None)
+        translate = getattr(allocator, "translate", None)
+        if not callable(translate):
+            return virtual_indices, virtual_indices, "identity"
+        try:
+            physical_indices = self._trace_index_list(translate(value))
+        except Exception:
+            # Trace collection is optional and must not affect serving if a
+            # third-party allocator exposes a different translation contract.
+            return virtual_indices, virtual_indices, "identity"
+        return physical_indices, virtual_indices, "physical"
+
+    def _trace_mamba_lru_state(self, reason: str, **fields) -> None:
+        """Record authoritative Mamba eviction order for the replay UI.
+
+        ``last_access_time`` increases on use, so its raw numeric direction is
+        the opposite of an intuitive eviction score.  The trace derives a
+        0..100 risk from the actual LRU-tail walk: 100 is the first unlocked
+        node the eviction driver will consider.  Locked entries remain visible
+        with no rank and score zero.
+        """
+        if not trace_enabled() or ComponentType.MAMBA not in self.tree_components:
+            return
+        device_lrus = getattr(self.tree_core, "lru_lists", None)
+        host_lrus = getattr(self.tree_core, "host_lru_lists", None)
+        if device_lrus is None or host_lrus is None:
+            return
+
+        def snapshot(lru, *, host: bool) -> list[dict]:
+            entries = []
+            pointer = lru._pt
+            node = lru.tail.lru_prev[pointer]
+            while node is not lru.head:
+                previous = node.lru_prev[pointer]
+                if node.id in lru.cache:
+                    component = node.component_data[ComponentType.MAMBA]
+                    lock_ref = component.host_lock_ref if host else component.lock_ref
+                    value = component.host_value if host else component.value
+                    if host:
+                        indices = self._trace_index_list(value)
+                        virtual_indices = []
+                        index_space = "host_chunk"
+                    else:
+                        indices, virtual_indices, index_space = (
+                            self._trace_mamba_device_location(value)
+                        )
+                    entries.append(
+                        {
+                            "node_id": int(node.id),
+                            "indices": indices,
+                            "virtual_indices": virtual_indices,
+                            "index_space": index_space,
+                            "last_access_time": float(node.last_access_time),
+                            "lock_ref": int(lock_ref),
+                            "session_ref": int(component.session_ref),
+                            "is_leaf": not bool(node.children),
+                            "protected": lock_ref > 0,
+                        }
+                    )
+                node = previous
+
+            eligible_count = sum(not entry["protected"] for entry in entries)
+            rank = 0
+            for entry in entries:
+                if entry["protected"]:
+                    entry["eviction_rank"] = None
+                    entry["eviction_score"] = 0
+                    continue
+                rank += 1
+                entry["eviction_rank"] = rank
+                entry["eviction_score"] = round(
+                    100 * (eligible_count - rank + 1) / eligible_count
+                )
+            return entries
+
+        trace_hicache_event(
+            "mamba_lru_state",
+            reason=reason,
+            device=snapshot(device_lrus[ComponentType.MAMBA], host=False),
+            host=snapshot(host_lrus[ComponentType.MAMBA], host=True),
+            **fields,
+        )
+
     def match_prefix(self, params: MatchPrefixParams) -> MatchResult:
         result = self.session.try_match_prefix(params)
         if result is not None:
@@ -416,6 +528,7 @@ class UnifiedRadixCache(BasePrefixCache):
             result = component.finalize_match_result_in_cache(params, result)
         # Finalizers must not emit actions; the walk's were applied above.
         assert not result.cache_actions
+        self._trace_mamba_lru_state("match")
         return result
 
     def insert(self, params: InsertParams) -> InsertResult:
@@ -431,6 +544,7 @@ class UnifiedRadixCache(BasePrefixCache):
                 if step.result is not None:
                     # Walk actions flow through the steps; the result is action-free.
                     assert not step.result.cache_actions
+                    self._trace_mamba_lru_state("insert")
                     return step.result
                 step = self.tree_core.resume_insert()
         finally:
@@ -448,6 +562,11 @@ class UnifiedRadixCache(BasePrefixCache):
             ComponentType.SWA: params.swa_num_tokens,
             ComponentType.MAMBA: params.mamba_num,
         }
+        self._trace_mamba_lru_state(
+            "device_eviction_requested",
+            requested_full=int(params.num_tokens),
+            requested_mamba=int(params.mamba_num),
+        )
         self._evict_components(request_by_type, tracker)
 
         if (
@@ -458,6 +577,11 @@ class UnifiedRadixCache(BasePrefixCache):
 
         # Report full-layer tokens only
         self.update_eviction_metrics(tracker[BASE_COMPONENT_TYPE], start_time)
+        self._trace_mamba_lru_state(
+            "device_eviction_completed",
+            evicted_full=int(tracker[BASE_COMPONENT_TYPE]),
+            evicted_mamba=int(tracker.get(ComponentType.MAMBA, 0)),
+        )
         return EvictResult(
             num_tokens_evicted=tracker[BASE_COMPONENT_TYPE],
             swa_num_tokens_evicted=tracker.get(ComponentType.SWA, 0),
@@ -495,13 +619,30 @@ class UnifiedRadixCache(BasePrefixCache):
         return result.node_id
 
     def _evict_device_leaf(
-        self, node_id: NodeId, tracker: dict[ComponentType, int]
+        self,
+        component_type: ComponentType,
+        node_id: NodeId,
+        tracker: dict[ComponentType, int],
     ) -> Optional[BackupKV]:
         """Evict one device leaf, consuming its step result; returns the
         deferred write-back BackupKV when one must run before the demote."""
         result = self.tree_core.evict_device_leaf(node_id, self.is_write_back)
         self._free_values(result.device_frees, result.host_frees)
         self._accumulate_tracker(tracker, result.tracker)
+        trace_hicache_event(
+            "l1_node_evicted",
+            node_id=node_id,
+            component=component_type.name,
+            evicted_by_component={
+                key.name: value for key, value in result.tracker.items()
+            },
+            backup_required=result.backup_kv is not None,
+            write_policy=(
+                self.cache_controller.write_policy
+                if self.cache_controller is not None
+                else None
+            ),
+        )
         return result.backup_kv
 
     def _demote(self, node_id: NodeId, tracker: dict[ComponentType, int]) -> None:
@@ -509,6 +650,13 @@ class UnifiedRadixCache(BasePrefixCache):
         result = self.tree_core.demote(node_id)
         self._free_values(result.device_frees, result.host_frees)
         self._accumulate_tracker(tracker, result.tracker)
+        trace_hicache_event(
+            "l1_node_demoted",
+            node_id=node_id,
+            evicted_by_component={
+                key.name: value for key, value in result.tracker.items()
+            },
+        )
 
     def _drop_subtree_no_host(
         self, node_id: NodeId, tracker: dict[ComponentType, int]
@@ -534,7 +682,7 @@ class UnifiedRadixCache(BasePrefixCache):
                 while (
                     node_id := self._evict_device_next_node(ct, tracker)
                 ) is not None:
-                    backup_kv = self._evict_device_leaf(node_id, tracker)
+                    backup_kv = self._evict_device_leaf(ct, node_id, tracker)
                     if backup_kv is not None:
                         # Deferred demote: run the D->H backup, demote only on success.
                         written = self._execute_and_commit_kv_backup(
@@ -900,9 +1048,20 @@ class UnifiedRadixCache(BasePrefixCache):
         self, num_tokens: int, component_type: ComponentType = BASE_COMPONENT_TYPE
     ) -> int:
         """Evict host resources for a specific component to free host pool space."""
+        self._trace_mamba_lru_state(
+            "host_eviction_requested",
+            requested_component=component_type.name,
+            requested_count=int(num_tokens),
+        )
         result = self.tree_core.drive_host_eviction(component_type, num_tokens)
         self._free_values(result.device_frees, result.host_frees)
-        return result.tracker.get(component_type, 0)
+        evicted = result.tracker.get(component_type, 0)
+        self._trace_mamba_lru_state(
+            "host_eviction_completed",
+            evicted_component=component_type.name,
+            evicted_count=int(evicted),
+        )
+        return evicted
 
     # ---- HiCache: Backup / LoadBack ----
 
@@ -916,6 +1075,16 @@ class UnifiedRadixCache(BasePrefixCache):
             if self.tree_core.is_backuped(node_id):
                 continue
             device_value, comp_xfers = self.tree_core.build_backup_spec(node_id)
+            trace_hicache_event(
+                "l2_backup_requested",
+                node_id=node_id,
+                write_back=write_back,
+                full_tokens=int(device_value.numel()),
+                component_transfers={
+                    key.name: [transfer.name.name for transfer in transfers]
+                    for key, transfers in comp_xfers.items()
+                },
+            )
             sidecar_xfers = self._build_backup_sidecar(device_value, comp_xfers)
             host_indices = self._execute_kv_backup(
                 node_id, device_value, comp_xfers, sidecar_xfers
@@ -923,6 +1092,19 @@ class UnifiedRadixCache(BasePrefixCache):
             if host_indices is None:
                 return 0
             self.tree_core.commit_backup(node_id, host_indices, comp_xfers)
+            mamba_host_chunks = []
+            if trace_enabled() and ComponentType.MAMBA in self.tree_components:
+                node = self.tree_core.node_by_id(node_id)
+                mamba_host_chunks = self._trace_index_list(
+                    node.component_data[ComponentType.MAMBA].host_value
+                )
+            trace_hicache_event(
+                "l2_backup_metadata_committed",
+                node_id=node_id,
+                full_host_tokens=int(host_indices.numel()),
+                mamba_host_chunks=mamba_host_chunks,
+                write_back=write_back,
+            )
             lock_params = None
             if not write_back:
                 lock_params = self.inc_lock_ref(node_id).to_dec_params()
@@ -992,6 +1174,11 @@ class UnifiedRadixCache(BasePrefixCache):
             ack_id
         )
         self.tree_core.finish_write_through(publish_node_ids, ack_id)
+        trace_hicache_event(
+            "l2_backup_ready",
+            ack_id=ack_id,
+            node_ids=publish_node_ids,
+        )
         if lock_params is not None:
             self.dec_lock_ref(lock_node_id, lock_params)
         if self.enable_storage:
@@ -1050,6 +1237,15 @@ class UnifiedRadixCache(BasePrefixCache):
         # Build the KV + per-component aux transfers.
         kv_xfer, comp_xfers = self.tree_core.build_load_back_spec(node_id, req=req)
         kv_tokens = len(kv_xfer.host_indices)
+        trace_hicache_event(
+            "loadback_requested",
+            node_id=node_id,
+            full_tokens=kv_tokens,
+            component_transfers={
+                key.name: [transfer.name.name for transfer in transfers]
+                for key, transfers in comp_xfers.items()
+            },
+        )
         sidecar_xfers = self._build_sidecar_transfers(
             CacheTransferPhase.LOAD_BACK, kv_xfer, comp_xfers
         )
@@ -1096,6 +1292,12 @@ class UnifiedRadixCache(BasePrefixCache):
                 node_id, device_indices, kv_xfer, comp_xfers
             )
         )
+        trace_hicache_event(
+            "loadback_metadata_committed",
+            node_id=node_id,
+            full_device_tokens=int(device_indices.numel()),
+        )
+        self._trace_mamba_lru_state("loadback_committed", node_id=int(node_id))
 
         self.ongoing_load_back[node_id] = _OngoingLoadBack(
             node_id,
@@ -1869,6 +2071,13 @@ class UnifiedRadixCache(BasePrefixCache):
             while self.ongoing_write_through:
                 for ack in cc.ack_write_queue:
                     ack.finish_event.synchronize()
+                    trace_hicache_event(
+                        "d2h_transfer_completed",
+                        transfer_id=hicache_trace_object_id(ack.finish_event),
+                        cuda_event_id=hicache_trace_object_id(ack.finish_event),
+                        node_ids=ack.node_ids,
+                        observed_by="write_back_wait",
+                    )
                     for ack_id in ack.node_ids:
                         if ack_id in self.ongoing_write_through:
                             self._finish_write_through_ack(ack_id)
@@ -1893,6 +2102,13 @@ class UnifiedRadixCache(BasePrefixCache):
         while finish_count > 0:
             ack = cc.ack_write_queue.pop(0)
             ack.finish_event.synchronize()
+            trace_hicache_event(
+                "d2h_transfer_completed",
+                transfer_id=hicache_trace_object_id(ack.finish_event),
+                cuda_event_id=hicache_trace_object_id(ack.finish_event),
+                node_ids=ack.node_ids,
+                observed_by="scheduler_poll",
+            )
             for ack_id in ack.node_ids:
                 self._finish_write_through_ack(ack_id)
             self._log_write_ack_metrics(ack)
@@ -1933,6 +2149,13 @@ class UnifiedRadixCache(BasePrefixCache):
         while finish_count > 0:
             ack = cc.ack_load_queue.pop(0)
             ack.finish_event.synchronize()
+            trace_hicache_event(
+                "h2d_transfer_completed",
+                transfer_id=hicache_trace_object_id(ack.finish_event),
+                cuda_event_id=hicache_trace_object_id(ack.finish_event),
+                node_ids=ack.node_ids,
+                observed_by="scheduler_poll",
+            )
             for ack_id in ack.node_ids:
                 node, lock_params, host_lock_params = self.ongoing_load_back.pop(ack_id)
                 self.dec_lock_ref(node, lock_params)

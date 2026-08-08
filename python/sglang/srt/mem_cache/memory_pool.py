@@ -66,6 +66,11 @@ from sglang.srt.mem_cache.layout.page_major import (
     mamba_entry_bytes,
     mha_entry_bytes,
 )
+from sglang.srt.mem_cache.memory_breakdown_profiler import (
+    get_memory_breakdown_profiler,
+    profile_cpu_scope,
+    record_mamba_layout,
+)
 from sglang.srt.mem_cache.utils import (
     get_mla_kv_buffer_triton,
     maybe_init_custom_mem_pool,
@@ -872,6 +877,14 @@ class MambaPool:
         # attn_tp_size (GDN: [key_dim, key_dim, value_dim]); None otherwise.
         self.conv_shard_groups = getattr(cache_params.shape, "conv_shard_groups", None)
         self.conv_slice_axis = getattr(cache_params.shape, "conv_slice_axis", 0)
+        self._memory_profiler = get_memory_breakdown_profiler()
+        record_mamba_layout(
+            self._memory_profiler,
+            pool="mamba",
+            layout_kind=("page_first_envelope" if envelope_layout else "layer_first"),
+            conv=list(self.mamba_cache.conv),
+            temporal=self.mamba_cache.temporal,
+        )
 
     def get_speculative_mamba2_params_all_layers(self) -> SpeculativeState:
         assert isinstance(self.mamba_cache, self.SpeculativeState)
@@ -1370,7 +1383,20 @@ class HybridReqToTokenPool(ReqToTokenPool):
         unified memory pool, where mamba slot ids are virtual. Callers translate
         before calling the pool's physical-id state ops (copy_from / clear_slots
         / get_cpu_copy / load_cpu_copy)."""
-        return mamba_indices
+        profiler = getattr(self.mamba_pool, "_memory_profiler", None)
+        if profiler is None:
+            return mamba_indices
+        profiler.record_sample(
+            "mamba_batch", "mamba", "physical_indices", mamba_indices.numel()
+        )
+        with profile_cpu_scope(
+            profiler,
+            "translation",
+            "mamba",
+            "physical_identity",
+            rows=mamba_indices.numel(),
+        ):
+            return mamba_indices
 
     def mamba2_layer_index(self, layer_id: int) -> int:
         """Pool-side index of ``layer_id``'s state, gated on its HiCache transfer.
