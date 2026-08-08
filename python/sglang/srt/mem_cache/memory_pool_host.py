@@ -20,6 +20,10 @@ from sglang.kernels.ops.kvcache.hicache import (
     transfer_hicache_all_layer_mla_staged_lf_pf as jit_transfer_hicache_all_layer_mla_staged_lf_pf,
 )
 from sglang.kernels.ops.kvcache.hisparse import transfer_cache_dsv4_mla
+from sglang.srt.mem_cache.memory_breakdown_profiler import (
+    get_memory_breakdown_profiler,
+    profile_cpu_scope,
+)
 from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool, MambaPool
 from sglang.srt.mem_cache.pool_host import HostKVCache
 from sglang.srt.mem_cache.pool_host.base import (
@@ -1545,6 +1549,94 @@ class HostPoolGroup:
         ]
         self.can_use_write_back_jit = all(child_write_back_jit)
         self.supports_per_pool_backup_indices = any(child_write_back_jit)
+        self._memory_profiler = get_memory_breakdown_profiler()
+        if self._memory_profiler is not None:
+            for entry in entries:
+                host_pool = entry.host_pool
+                self._memory_profiler.record_layout(
+                    entry.name.value,
+                    "hicache_host_pool",
+                    {
+                        "layout": getattr(host_pool, "layout", "unknown"),
+                        "page_size": int(getattr(host_pool, "page_size", 1)),
+                        "size_per_token": int(getattr(host_pool, "size_per_token", 0)),
+                        "io_granularity": (
+                            "raw_page"
+                            if hasattr(host_pool, "layer_page_bytes")
+                            else "per_layer"
+                        ),
+                    },
+                )
+
+    @staticmethod
+    def _profile_transfer_bytes(
+        host_pool: Any, indices: torch.Tensor, *, all_layers: bool
+    ) -> int:
+        """Return logical payload bytes for one profiled transfer call."""
+
+        count = int(indices.numel())
+        if count == 0:
+            return 0
+        if all_layers:
+            return count * int(getattr(host_pool, "size_per_token", 0))
+
+        layer_page_bytes = getattr(host_pool, "layer_page_bytes", None)
+        if layer_page_bytes is not None:
+            page_size = int(getattr(host_pool, "page_size", 1))
+            return count // page_size * int(layer_page_bytes)
+
+        layer_num = int(
+            getattr(
+                host_pool,
+                "num_mamba_layers",
+                getattr(host_pool, "layer_num", 1),
+            )
+        )
+        return count * int(getattr(host_pool, "size_per_token", 0)) // max(1, layer_num)
+
+    def _profile_pool_transfer(
+        self,
+        entry: PoolEntry,
+        indices: torch.Tensor,
+        operation: str,
+        transfer: Callable[[], None],
+        *,
+        all_layers: bool,
+        record_batch: bool,
+    ) -> None:
+        profiler = getattr(self, "_memory_profiler", None)
+        if profiler is None:
+            transfer()
+            return
+
+        rows = int(indices.numel())
+        num_bytes = self._profile_transfer_bytes(
+            entry.host_pool, indices, all_layers=all_layers
+        )
+        if record_batch:
+            profiler.record_sample(
+                "hicache_transfer_batch", entry.name.value, operation, rows
+            )
+        cuda_start = profiler.start_cuda_interval()
+        try:
+            with profile_cpu_scope(
+                profiler,
+                "hicache_transfer_dispatch",
+                entry.name.value,
+                operation,
+                rows=rows,
+                num_bytes=num_bytes,
+            ):
+                transfer()
+        finally:
+            profiler.finish_cuda_interval(
+                cuda_start,
+                "hicache_transfer_gpu",
+                entry.name.value,
+                operation,
+                rows=rows,
+                num_bytes=num_bytes,
+            )
 
     @property
     def kv_buffer(self):
@@ -1751,12 +1843,19 @@ class HostPoolGroup:
         anchor = self.anchor_entry
         local_layer_id = anchor.layer_mapper(layer_id)
         if local_layer_id is not None and host_indices.numel() > 0:
-            anchor.host_pool.load_to_device_per_layer(
-                anchor.device_pool,
+            self._profile_pool_transfer(
+                anchor,
                 host_indices,
-                device_indices,
-                local_layer_id,
-                io_backend,
+                "h2d_per_layer",
+                lambda: anchor.host_pool.load_to_device_per_layer(
+                    anchor.device_pool,
+                    host_indices,
+                    device_indices,
+                    local_layer_id,
+                    io_backend,
+                ),
+                all_layers=False,
+                record_batch=local_layer_id == 0,
             )
 
         # 2. Extra pool transfers
@@ -1767,12 +1866,19 @@ class HostPoolGroup:
             local_layer_id = entry.layer_mapper(layer_id)
             if local_layer_id is None:
                 continue
-            entry.host_pool.load_to_device_per_layer(
-                entry.device_pool,
+            self._profile_pool_transfer(
+                entry,
                 transfer.host_indices,
-                transfer.device_indices,
-                local_layer_id,
-                io_backend,
+                "h2d_per_layer",
+                lambda: entry.host_pool.load_to_device_per_layer(
+                    entry.device_pool,
+                    transfer.host_indices,
+                    transfer.device_indices,
+                    local_layer_id,
+                    io_backend,
+                ),
+                all_layers=False,
+                record_batch=local_layer_id == 0,
             )
 
     def _backup_uses_cpu_host_indices(self, host_pool, io_backend) -> bool:
@@ -1820,11 +1926,18 @@ class HostPoolGroup:
         anchor_host_indices, anchor_device_indices = self._normalize_backup_indices(
             self.anchor_entry, host_indices, device_indices, io_backend
         )
-        self.anchor_entry.host_pool.backup_from_device_all_layer(
-            self.anchor_entry.device_pool,
+        self._profile_pool_transfer(
+            self.anchor_entry,
             anchor_host_indices,
-            anchor_device_indices,
-            io_backend,
+            "d2h_all_layers",
+            lambda: self.anchor_entry.host_pool.backup_from_device_all_layer(
+                self.anchor_entry.device_pool,
+                anchor_host_indices,
+                anchor_device_indices,
+                io_backend,
+            ),
+            all_layers=True,
+            record_batch=True,
         )
         # 2. Extra pool backup
         for transfer in pool_transfers or []:
@@ -1839,11 +1952,18 @@ class HostPoolGroup:
                     io_backend,
                 )
             )
-            entry.host_pool.backup_from_device_all_layer(
-                entry.device_pool,
+            self._profile_pool_transfer(
+                entry,
                 transfer_host_indices,
-                transfer_device_indices,
-                io_backend,
+                "d2h_all_layers",
+                lambda: entry.host_pool.backup_from_device_all_layer(
+                    entry.device_pool,
+                    transfer_host_indices,
+                    transfer_device_indices,
+                    io_backend,
+                ),
+                all_layers=True,
+                record_batch=True,
             )
 
 

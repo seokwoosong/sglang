@@ -106,6 +106,52 @@ class TypedChunkHostAllocator:
 
         self._lock = threading.RLock()
         self.clear()
+        trace_hicache_event(
+            "l2_arena_initialized",
+            total_bytes=self.total_bytes,
+            usable_bytes=self.usable_bytes,
+            unused_budget_bytes=self.unused_budget_bytes,
+            chunk_bytes=self.chunk_bytes,
+            num_chunks=self.num_chunks,
+            kv_page_bytes=self.kv_page_bytes,
+            kv_pages_per_chunk=self.kv_pages_per_chunk,
+            mamba_slot_bytes=self.mamba_slot_bytes,
+            mamba_padding_bytes=self.mamba_padding_bytes,
+        )
+
+    def _chunk_trace_state(self, chunk_id: int) -> dict[str, Any]:
+        return {
+            "chunk_id": chunk_id,
+            "owner": self._owners[chunk_id].name,
+            "kv_used_offsets": sorted(self._kv_used.get(chunk_id, ())),
+            "pin_count": self._chunk_pin_count[chunk_id],
+            "pending_release": self._pending_release[chunk_id],
+        }
+
+    def _trace_chunks(
+        self, event: str, chunk_ids: Iterable[int], **fields: Any
+    ) -> None:
+        if not trace_enabled():
+            return
+        normalized = sorted(set(int(chunk_id) for chunk_id in chunk_ids))
+        trace_hicache_event(
+            event,
+            chunks=[self._chunk_trace_state(chunk_id) for chunk_id in normalized],
+            free_chunks=len(self._free_chunk_set),
+            **fields,
+        )
+
+    def _set_owner(self, chunk_id: int, owner: HostChunkOwner, *, reason: str) -> None:
+        previous = self._owners[chunk_id]
+        self._owners[chunk_id] = owner
+        if previous != owner:
+            trace_hicache_event(
+                "l2_chunk_owner_changed",
+                chunk_id=chunk_id,
+                previous_owner=previous.name,
+                owner=owner.name,
+                reason=reason,
+            )
 
     def clear(self) -> None:
         with self._lock:
@@ -118,6 +164,11 @@ class TypedChunkHostAllocator:
             self._kv_used: dict[int, set[int]] = {}
             self._chunk_pin_count = [0] * self.num_chunks
             self._pending_release = [False] * self.num_chunks
+            trace_hicache_event(
+                "l2_arena_cleared",
+                num_chunks=self.num_chunks,
+                free_chunks=self.num_chunks,
+            )
 
     def _rebuild_free_heaps_if_needed(self) -> None:
         # Each heap keeps stale entries popped by the opposite end.  Rebuild
@@ -145,7 +196,7 @@ class TypedChunkHostAllocator:
 
     def _release_chunk(self, chunk_id: int) -> None:
         assert self._chunk_pin_count[chunk_id] == 0
-        self._owners[chunk_id] = HostChunkOwner.FREE
+        self._set_owner(chunk_id, HostChunkOwner.FREE, reason="empty_unpinned")
         self._pending_release[chunk_id] = False
         if chunk_id not in self._free_chunk_set:
             self._free_chunk_set.add(chunk_id)
@@ -197,12 +248,18 @@ class TypedChunkHostAllocator:
                     result.append(chunk_id * self.kv_pages_per_chunk + offset)
                     remaining -= 1
                     if remaining == 0:
+                        self._trace_chunks(
+                            "l2_kv_allocated",
+                            (index // self.kv_pages_per_chunk for index in result),
+                            requested_pages=num_pages,
+                            host_indices=result,
+                        )
                         return torch.tensor(result, dtype=torch.int64)
 
             while remaining:
                 chunk_id = self._pop_free_chunk()
                 assert chunk_id is not None  # guarded by available_kv_pages()
-                self._owners[chunk_id] = HostChunkOwner.KV
+                self._set_owner(chunk_id, HostChunkOwner.KV, reason="kv_allocation")
                 used: set[int] = set()
                 self._kv_used[chunk_id] = used
                 take = min(remaining, self.kv_pages_per_chunk)
@@ -211,6 +268,12 @@ class TypedChunkHostAllocator:
                     result.append(chunk_id * self.kv_pages_per_chunk + offset)
                 remaining -= take
 
+            self._trace_chunks(
+                "l2_kv_allocated",
+                (index // self.kv_pages_per_chunk for index in result),
+                requested_pages=num_pages,
+                host_indices=result,
+            )
             return torch.tensor(result, dtype=torch.int64)
 
     def free_kv(self, indices: torch.Tensor) -> int:
@@ -259,6 +322,12 @@ class TypedChunkHostAllocator:
                         self._pending_release[chunk_id] = True
                     else:
                         self._release_chunk(chunk_id)
+            self._trace_chunks(
+                "l2_kv_freed",
+                by_chunk,
+                freed_pages=len(values),
+                host_indices=values,
+            )
             return len(values)
 
     def alloc_mamba(self, num_slots: int) -> Optional[torch.Tensor]:
@@ -274,8 +343,16 @@ class TypedChunkHostAllocator:
             for _ in range(num_slots):
                 chunk_id = self._pop_free_chunk(high=True)
                 assert chunk_id is not None
-                self._owners[chunk_id] = HostChunkOwner.MAMBA
+                self._set_owner(
+                    chunk_id, HostChunkOwner.MAMBA, reason="mamba_allocation"
+                )
                 result.append(chunk_id)
+            self._trace_chunks(
+                "l2_mamba_allocated",
+                result,
+                requested_slots=num_slots,
+                host_indices=result,
+            )
             return torch.tensor(result, dtype=torch.int64)
 
     def free_mamba(self, indices: torch.Tensor) -> int:
@@ -306,6 +383,12 @@ class TypedChunkHostAllocator:
                     self._pending_release[chunk_id] = True
                 else:
                     self._release_chunk(chunk_id)
+            self._trace_chunks(
+                "l2_mamba_freed",
+                values,
+                freed_slots=len(values),
+                host_indices=values,
+            )
             return len(values)
 
     def _normalize_chunks(self, chunk_ids: Iterable[int]) -> list[int]:
@@ -334,12 +417,15 @@ class TypedChunkHostAllocator:
 
     def pin_chunks(self, chunk_ids: Iterable[int]) -> None:
         with self._lock:
-            for chunk_id in self._normalize_chunks(chunk_ids):
+            normalized = self._normalize_chunks(chunk_ids)
+            for chunk_id in normalized:
                 self._chunk_pin_count[chunk_id] += 1
+            self._trace_chunks("l2_chunks_pinned", normalized)
 
     def unpin_chunks(self, chunk_ids: Iterable[int]) -> None:
         with self._lock:
-            for chunk_id in sorted(set(int(x) for x in chunk_ids)):
+            normalized = sorted(set(int(x) for x in chunk_ids))
+            for chunk_id in normalized:
                 if not 0 <= chunk_id < self.num_chunks:
                     raise AssertionError(
                         f"chunk {chunk_id} is outside [0, {self.num_chunks})"
@@ -352,6 +438,7 @@ class TypedChunkHostAllocator:
                     and self._pending_release[chunk_id]
                 ):
                     self._release_chunk(chunk_id)
+            self._trace_chunks("l2_chunks_unpinned", normalized)
 
     def owner(self, chunk_id: int) -> HostChunkOwner:
         with self._lock:
@@ -464,14 +551,20 @@ class SharedTypedChunkHostArena:
             for event, chunk_ids in pending:
                 if synchronize:
                     event.synchronize()
-                    completed.append(chunk_ids)
+                    completed.append((event, chunk_ids))
                 elif event.query():
-                    completed.append(chunk_ids)
+                    completed.append((event, chunk_ids))
                 else:
                     still_pending.append((event, chunk_ids))
             self._pending_transfer_events.extend(still_pending)
-            for chunk_ids in completed:
+            for event, chunk_ids in completed:
                 self.chunks.unpin_chunks(chunk_ids)
+                trace_hicache_event(
+                    "l2_transfer_pin_released",
+                    cuda_event_id=hicache_trace_object_id(event),
+                    chunk_ids=chunk_ids,
+                    synchronized=synchronize,
+                )
 
     def pin_chunks_for_transfer(self, chunk_ids: Iterable[int]) -> tuple[int, ...]:
         """Pin allocated chunks before enqueueing an asynchronous transfer."""
@@ -491,6 +584,11 @@ class SharedTypedChunkHostArena:
             return
         with self._transfer_event_lock:
             self._pending_transfer_events.append((event, normalized))
+        trace_hicache_event(
+            "l2_transfer_pin_armed",
+            cuda_event_id=hicache_trace_object_id(event),
+            chunk_ids=normalized,
+        )
 
     def cancel_transfer_pin(self, chunk_ids: Iterable[int]) -> None:
         """Undo a pre-enqueue pin when scheduling the transfer raises."""

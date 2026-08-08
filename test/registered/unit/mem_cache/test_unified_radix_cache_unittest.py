@@ -5216,6 +5216,51 @@ class TestUnifiedMambaLRUMatchRefresh(CustomTestCase):
         self.assertIs(order[0], b1)
         self.assertGreater(order.index(a1), order.index(a2))
 
+    def test_trace_snapshot_converts_lru_tail_to_high_eviction_score(self):
+        cache, allocator, req_to_token_pool = build_fixture(self.cfg)
+
+        def insert(tokens):
+            value = allocator.alloc(len(tokens))
+            req = self._make_req(req_to_token_pool)
+            cache.insert(
+                InsertParams(
+                    key=RadixKey(array("q", tokens)),
+                    value=value[: len(tokens)],
+                    mamba_value=req.mamba_pool_idx.unsqueeze(0),
+                )
+            )
+
+        insert([1, 2, 3])
+        insert([7, 8, 9])
+        mru_to_lru = self._mamba_lru_mru_to_lru(cache)
+        mamba_allocator = cache.req_to_token_pool.mamba_allocator
+        mamba_allocator.translate = lambda indices: indices + 100
+
+        with (
+            mock.patch(
+                "sglang.srt.mem_cache.unified_radix_cache.trace_enabled",
+                return_value=True,
+            ),
+            mock.patch(
+                "sglang.srt.mem_cache.unified_radix_cache.trace_hicache_event"
+            ) as trace_event,
+        ):
+            cache._trace_mamba_lru_state("test")
+
+        trace_event.assert_called_once()
+        (event_name,) = trace_event.call_args.args
+        self.assertEqual(event_name, "mamba_lru_state")
+        device = trace_event.call_args.kwargs["device"]
+        self.assertEqual(device[0]["node_id"], mru_to_lru[-1].id)
+        self.assertEqual(
+            device[0]["indices"],
+            [index + 100 for index in device[0]["virtual_indices"]],
+        )
+        self.assertEqual(device[0]["index_space"], "physical")
+        self.assertEqual(device[0]["eviction_rank"], 1)
+        self.assertEqual(device[0]["eviction_score"], 100)
+        self.assertGreater(device[0]["eviction_score"], device[-1]["eviction_score"])
+
 
 class TestUnifiedRadixCacheInt8MambaCheckpoint(CustomTestCase):
     cfg = CacheConfig(
@@ -6033,7 +6078,7 @@ class TestReturnedValuesDrain(_InsertWalkSuite):
             (
                 "evict_device_leaf",
                 lambda: make(EvictDeviceLeafResult),
-                lambda: cache._evict_device_leaf(node.id, tracker),
+                lambda: cache._evict_device_leaf(ComponentType.FULL, node.id, tracker),
                 None,
             ),
             (

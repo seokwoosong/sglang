@@ -334,6 +334,9 @@ class Envs:
     SGLANG_ENABLE_CUDA_GRAPH_CAPTURE_TRACE = EnvBool(False)
     SGLANG_FORCE_SHUTDOWN = EnvBool(False)
     SGLANG_DEBUG_MEMORY_POOL = EnvBool(False)
+    # Opt-in JSONL lifecycle/layout trace for unified-memory HiCache. The path
+    # may contain ``{pid}`` for multi-process runs. Empty keeps all hooks no-op.
+    SGLANG_HICACHE_TRACE_PATH = EnvStr("")
     SGLANG_DSPARK_DEBUG_CONFIDENCE_PREFIX_SCHEDULER = EnvBool(False)
     SGLANG_DSPARK_DEBUG_CONFIDENCE_METRICS = EnvBool(False)
     SGLANG_DSPARK_DEBUG_DUMP = EnvTuple(tuple())
@@ -373,6 +376,12 @@ class Envs:
     SGLANG_SORT_FREE_LIST_AFTER_MERGE = EnvBool(False)
     # Periodically log lazy-compaction stats per sub-pool (observability only).
     SGLANG_LOG_LAZY_COMPACTION_STATS = EnvBool(False)
+    # Optional low-overhead breakdown profiler for static/unified L1 experiments.
+    # Each process periodically writes one aggregate JSON snapshot under this
+    # directory. Empty disables all counters and CUDA timing events.
+    SGLANG_MEMORY_BREAKDOWN_PROFILE_DIR = EnvStr("")
+    SGLANG_MEMORY_BREAKDOWN_PROFILE_INTERVAL = EnvFloat(0.25)
+    SGLANG_MEMORY_BREAKDOWN_PROFILE_CUDA_TIMING = EnvBool(True)
     SGLANG_LOG_LAZY_COMPACTION_STATS_INTERVAL_SEC = EnvInt(30)
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK = EnvBool(True)
     SGLANG_TEST_DISAGG_FAILURE_PROB = EnvFloat(0.0)
