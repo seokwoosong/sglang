@@ -2043,17 +2043,29 @@ class UnifiedRadixCache(BasePrefixCache):
         """Notify the cache controller to start the KV cache loading."""
         if self.cache_controller is not None:
             producer_id = self.cache_controller.start_loading()
-            # Unified pools synchronize H2D before start_loading() returns so
-            # translated physical rows cannot move underneath the transfer.
-            # Reap that already-complete ack now: keeping its radix/component
-            # locks until the next scheduler tick can strand Mamba slots that
-            # prepare_for_extend() needs for the request's ping-pong buffers.
-            # Ordinary HiCache remains asynchronous and is reaped by the
-            # scheduler's periodic check_hicache_events() path.
-            if producer_id >= 0 and self.cache_controller.synchronize_unified_transfers:
+            # The synchronous rollback mode has an already-complete ACK, so reap
+            # it immediately. The normal allocator-fenced path stays asynchronous
+            # and is reaped by the scheduler's periodic event polling.
+            if producer_id >= 0 and getattr(
+                self.cache_controller, "synchronize_unified_transfers", False
+            ):
                 self.loading_check()
             return producer_id
         return 0
+
+    def synchronize_pending_loads(self) -> None:
+        """Finish queued load-backs before immediately freeing their destinations.
+
+        Normal serving never calls this: allocator event fencing keeps load-back
+        asynchronous. It is reserved for rollback paths such as a request rejected
+        after HiCache allocated and queued its Mamba destination.
+        """
+        cc = self.cache_controller
+        if cc is None or not cc.ack_load_queue:
+            return
+        for ack in cc.ack_load_queue:
+            ack.finish_event.synchronize()
+        self.loading_check()
 
     # ---- Query / Inspection APIs ----
     # These APIs exist for compatibility with other RadixTree implementations.

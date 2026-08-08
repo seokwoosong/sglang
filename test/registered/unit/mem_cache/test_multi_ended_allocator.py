@@ -26,6 +26,7 @@ register_cpu_ci(est_time=8, suite="base-a-test-cpu")
 
 import random
 import unittest
+from unittest.mock import MagicMock, patch
 
 import torch
 
@@ -1924,6 +1925,27 @@ class TestLazyCompaction(unittest.TestCase):
             p = int(alloc.virtual_to_physical[v].item())
             kv.buf[p] = int(v)
 
+    def _make_transfer_case(self, pool_name: str):
+        """Create the same interior-hole compaction on either unified side."""
+        _pool, full_alloc, full_kv = self._make_full(lazy=True)
+        if pool_name == "kv":
+            alloc, kv = full_alloc, full_kv
+        elif pool_name == "mamba":
+            alloc, kv = full_alloc.peer, full_alloc.peer._kvcache
+        else:
+            raise ValueError(f"unknown pool: {pool_name}")
+
+        values = alloc.alloc(6)
+        self._stamp_kv(kv, alloc, values)
+        if alloc.grow_direction == "up":
+            free_virtual = values[:1]
+            source_virtual = values[-1:]
+        else:
+            free_virtual = values[-1:]
+            source_virtual = values[:1]
+        unrelated_virtual = values[2:3]
+        return alloc, kv, free_virtual, source_virtual, unrelated_virtual
+
     def test_lazy_free_boundary_shortcut(self):
         """Boundary absorption is DEFERRED to `_flush` (the hot
         path `_free_lazy` does only a `torch.cat`, no watermark mutation).
@@ -1948,6 +1970,259 @@ class TestLazyCompaction(unittest.TestCase):
         self.assertEqual(fa.watermark_physical, before_wm - 1)
         self.assertEqual(len(fa._free_phys_pages), 0)
         self.assertEqual(fa.live_page_count, 2)
+
+    def test_external_transfer_defers_opportunistic_compaction(self):
+        """A pending HiCache copy must preserve its physical-index snapshot
+        without blocking the scheduler's opportunistic maintenance tick.
+        """
+        _pool, fa, kv = self._make_full(lazy=True)
+        values = fa.alloc(4)
+        self._stamp_kv(kv, fa, values)
+        fa.free(values[:1])  # interior hole; last survivor would relocate here
+        watermark_before = fa.watermark_physical
+        v2p_before = fa.virtual_to_physical.clone()
+
+        transfer_done = MagicMock()
+        transfer_done.query.return_value = False
+        fa.register_external_transfer_event(transfer_done)
+
+        self.assertEqual(fa.flush_opportunistic(), 0)
+        self.assertEqual(fa.watermark_physical, watermark_before)
+        torch.testing.assert_close(fa.virtual_to_physical, v2p_before)
+        self.assertEqual(fa._external_transfer_events, [transfer_done])
+        transfer_done.synchronize.assert_not_called()
+
+        transfer_done.query.return_value = True
+        self.assertGreaterEqual(fa.flush_opportunistic(), 1)
+        self.assertEqual(fa._external_transfer_events, [])
+
+    def test_row_transfer_allows_unrelated_opportunistic_compaction(self):
+        """A physical row outside the planned src/dst footprint is not a
+        reason to block the allocator globally.
+        """
+        for pool_name in ("kv", "mamba"):
+            with self.subTest(pool=pool_name):
+                fa, _, free_virtual, _, unrelated_virtual = self._make_transfer_case(
+                    pool_name
+                )
+                protected_physical = fa.virtual_to_physical[unrelated_virtual].clone()
+                fa.free(free_virtual)
+
+                transfer_done = MagicMock()
+                transfer_done.query.return_value = False
+                fa.register_external_transfer(transfer_done, protected_physical)
+
+                self.assertEqual(fa.flush_opportunistic(), 1)
+                self.assertEqual(len(fa._external_transfer_hazards), 1)
+                transfer_done.synchronize.assert_not_called()
+
+    def test_row_transfer_defers_overlapping_opportunistic_compaction(self):
+        for pool_name in ("kv", "mamba"):
+            with self.subTest(pool=pool_name):
+                fa, _, free_virtual, source_virtual, _ = self._make_transfer_case(
+                    pool_name
+                )
+                compaction_source = fa.virtual_to_physical[source_virtual].clone()
+                fa.free(free_virtual)
+                watermark_before = fa.watermark_physical
+
+                transfer_done = MagicMock()
+                transfer_done.query.return_value = False
+                fa.register_external_transfer(transfer_done, compaction_source)
+
+                self.assertEqual(fa.flush_opportunistic(), 0)
+                self.assertEqual(fa.watermark_physical, watermark_before)
+                self.assertEqual(len(fa._external_transfer_hazards), 1)
+
+    def test_row_transfer_preview_uses_post_boundary_watermark(self):
+        """Boundary holes must not hide the real compaction source.
+
+        With one interior hole, two boundary holes, and one survivor, the
+        preview must first account for boundary absorption.  Otherwise it can
+        report a boundary hole as the source and let a transfer protecting the
+        actual survivor overlap the move.
+        """
+        _pool, full_alloc, full_kv = self._make_full(lazy=True)
+        for alloc, kv in (
+            (full_alloc, full_kv),
+            (full_alloc.peer, full_alloc.peer._kvcache),
+        ):
+            with self.subTest(direction=alloc.grow_direction):
+                values = alloc.alloc(4)
+                self._stamp_kv(kv, alloc, values)
+                physical_to_virtual = sorted(
+                    (int(alloc.virtual_to_physical[v].item()), v)
+                    for v in values.tolist()
+                )
+                if alloc.grow_direction == "up":
+                    free_pairs = (
+                        physical_to_virtual[0],
+                        physical_to_virtual[2],
+                        physical_to_virtual[3],
+                    )
+                    survivor_physical = physical_to_virtual[1][0]
+                    destination_physical = physical_to_virtual[0][0]
+                else:
+                    free_pairs = (
+                        physical_to_virtual[0],
+                        physical_to_virtual[1],
+                        physical_to_virtual[3],
+                    )
+                    survivor_physical = physical_to_virtual[2][0]
+                    destination_physical = physical_to_virtual[3][0]
+                alloc.free(
+                    torch.tensor(
+                        [virtual for _, virtual in free_pairs], dtype=torch.int64
+                    )
+                )
+
+                all_cpu = sorted(alloc._free_phys_pages.tolist())
+                touched = alloc._preview_flush_touched_pages(all_cpu, urgent=False)
+                self.assertIn(survivor_physical, touched)
+                self.assertIn(destination_physical, touched)
+
+                transfer_done = MagicMock()
+                transfer_done.query.return_value = False
+                alloc.register_external_transfer(
+                    transfer_done,
+                    torch.tensor([survivor_physical], dtype=torch.int64),
+                )
+                self.assertEqual(alloc.flush_opportunistic(), 0)
+                transfer_done.synchronize.assert_not_called()
+
+    def test_row_transfer_urgent_waits_only_for_compaction_blocker(self):
+        for pool_name in ("kv", "mamba"):
+            with self.subTest(pool=pool_name):
+                fa, _, free_virtual, source_virtual, unrelated_virtual = (
+                    self._make_transfer_case(pool_name)
+                )
+                related_physical = fa.virtual_to_physical[source_virtual].clone()
+                unrelated_physical = fa.virtual_to_physical[unrelated_virtual].clone()
+                fa.free(free_virtual)
+
+                related_done = MagicMock()
+                unrelated_done = MagicMock()
+                related_done.query.return_value = False
+                unrelated_done.query.return_value = False
+                fa.register_external_transfer(related_done, related_physical)
+                fa.register_external_transfer(unrelated_done, unrelated_physical)
+                schedule_stream = MagicMock()
+
+                with patch("torch.cuda.current_stream", return_value=schedule_stream):
+                    self.assertEqual(fa._flush(urgent=True), 1)
+
+                schedule_stream.wait_event.assert_called_once_with(related_done)
+                related_done.synchronize.assert_not_called()
+                unrelated_done.synchronize.assert_not_called()
+                self.assertEqual(len(fa._external_transfer_hazards), 1)
+                self.assertIs(fa._external_transfer_hazards[0].event, unrelated_done)
+
+    def test_external_transfer_urgent_flush_uses_stream_wait(self):
+        """Allocation pressure may compact, but only after a stream-side wait;
+        the allocator must never host-synchronize the transfer event.
+        """
+        _pool, fa, kv = self._make_full(lazy=True)
+        values = fa.alloc(4)
+        self._stamp_kv(kv, fa, values)
+        fa.free(values[:1])
+
+        transfer_done = MagicMock()
+        transfer_done.query.return_value = False
+        fa.register_external_transfer_event(transfer_done)
+        schedule_stream = MagicMock()
+
+        with patch("torch.cuda.current_stream", return_value=schedule_stream):
+            self.assertGreaterEqual(fa._flush(urgent=True), 1)
+
+        schedule_stream.wait_event.assert_called_once_with(transfer_done)
+        transfer_done.synchronize.assert_not_called()
+        self.assertEqual(fa._external_transfer_events, [])
+
+    def test_external_transfer_fences_lazy_hole_reuse(self):
+        """A freed row cannot be rebound while HiCache still reads it."""
+        _pool, fa, _kv = self._make_full(lazy=True)
+        values = fa.alloc(4)
+        freed_physical = fa.virtual_to_physical[values[:1]].clone()
+        fa.free(values[:1])
+
+        transfer_done = MagicMock()
+        transfer_done.query.return_value = False
+        fa.register_external_transfer_event(transfer_done)
+        schedule_stream = MagicMock()
+
+        with patch("torch.cuda.current_stream", return_value=schedule_stream):
+            replacement = fa.alloc(1)
+
+        schedule_stream.wait_event.assert_called_once_with(transfer_done)
+        transfer_done.synchronize.assert_not_called()
+        torch.testing.assert_close(fa.virtual_to_physical[replacement], freed_physical)
+        self.assertEqual(fa._external_transfer_events, [])
+
+    def test_row_transfer_allows_unrelated_lazy_hole_reuse(self):
+        for pool_name in ("kv", "mamba"):
+            with self.subTest(pool=pool_name):
+                fa, _, free_virtual, _, unrelated_virtual = self._make_transfer_case(
+                    pool_name
+                )
+                freed_physical = fa.virtual_to_physical[free_virtual].clone()
+                protected_physical = fa.virtual_to_physical[unrelated_virtual].clone()
+                fa.free(free_virtual)
+
+                transfer_done = MagicMock()
+                transfer_done.query.return_value = False
+                fa.register_external_transfer(transfer_done, protected_physical)
+                schedule_stream = MagicMock()
+
+                with patch("torch.cuda.current_stream", return_value=schedule_stream):
+                    replacement = fa.alloc(1)
+
+                schedule_stream.wait_event.assert_not_called()
+                torch.testing.assert_close(
+                    fa.virtual_to_physical[replacement], freed_physical
+                )
+                self.assertEqual(len(fa._external_transfer_hazards), 1)
+
+    def test_row_transfer_fences_overlapping_lazy_hole_reuse(self):
+        for pool_name in ("kv", "mamba"):
+            with self.subTest(pool=pool_name):
+                fa, _, free_virtual, _, _ = self._make_transfer_case(pool_name)
+                freed_physical = fa.virtual_to_physical[free_virtual].clone()
+                fa.free(free_virtual)
+
+                transfer_done = MagicMock()
+                transfer_done.query.return_value = False
+                fa.register_external_transfer(transfer_done, freed_physical)
+                schedule_stream = MagicMock()
+
+                with patch("torch.cuda.current_stream", return_value=schedule_stream):
+                    replacement = fa.alloc(1)
+
+                schedule_stream.wait_event.assert_called_once_with(transfer_done)
+                transfer_done.synchronize.assert_not_called()
+                torch.testing.assert_close(
+                    fa.virtual_to_physical[replacement], freed_physical
+                )
+                self.assertEqual(fa._external_transfer_hazards, [])
+
+    def test_eager_compaction_waits_for_external_transfer(self):
+        """The eager-compaction rollback mode remains correct, although an
+        interior free can block at its existing V2P validation sync.
+        """
+        _pool, fa, kv = self._make_full(lazy=False)
+        values = fa.alloc(4)
+        self._stamp_kv(kv, fa, values)
+
+        transfer_done = MagicMock()
+        transfer_done.query.return_value = False
+        fa.register_external_transfer_event(transfer_done)
+        schedule_stream = MagicMock()
+
+        with patch("torch.cuda.current_stream", return_value=schedule_stream):
+            fa.free(values[:1])
+
+        schedule_stream.wait_event.assert_called_once_with(transfer_done)
+        transfer_done.synchronize.assert_not_called()
+        self.assertEqual(fa._external_transfer_events, [])
 
     def test_lazy_free_inward_walk(self):
         """The inward walk (multiple contiguous holes absorbed
