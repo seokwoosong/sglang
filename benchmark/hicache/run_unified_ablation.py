@@ -33,6 +33,35 @@ DEFAULT_MODEL = Path(
 )
 
 VARIANTS = {
+    # Standalone lazy-compaction mapping benchmark. These variants deliberately
+    # disable HiCache so the comparison isolates unified-memory compaction.
+    "mapping-static": {
+        "sha": "52afe87a08c6aa049c52f9507b4f0ca26cecb562",
+        "worktree": Path(
+            "/home/sukwoo24/sglang-eval-worktrees/upstream-compaction-before"
+        ),
+        "unified": False,
+        "hicache": False,
+        "sync_unified_transfers": None,
+    },
+    "mapping-before": {
+        "sha": "52afe87a08c6aa049c52f9507b4f0ca26cecb562",
+        "worktree": Path(
+            "/home/sukwoo24/sglang-eval-worktrees/upstream-compaction-before"
+        ),
+        "unified": True,
+        "hicache": False,
+        "sync_unified_transfers": None,
+    },
+    "mapping-after": {
+        "sha": "33d951f5bb1260babfafdcd22b6e1290bdb46814",
+        "worktree": Path(
+            "/home/sukwoo24/sglang-eval-worktrees/upstream-compaction-batch-lookup"
+        ),
+        "unified": True,
+        "hicache": False,
+        "sync_unified_transfers": None,
+    },
     # Direct-copy experiment: all three variants use the same production
     # source. Only the GPU layout and scheduler-side transfer fence differ.
     "direct-plain": {
