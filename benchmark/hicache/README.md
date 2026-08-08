@@ -89,3 +89,39 @@ Note: for the server args, `tokenizer-path`, overriding architecture are necessa
 - sglang (oai)
 - vllm (oai)
 - lmdeploy (oai)
+
+## Unified-memory breakdown profiling
+
+`run_unified_ablation.py` enables an aggregate memory-path profile by default.
+Each run stores periodic per-process snapshots under
+`memory_breakdown_profile/`, embeds the final snapshots in `result.json`, and
+records measured-phase deltas for:
+
+- allocator and virtual-to-physical translation CPU time;
+- compaction CPU time, CUDA relocation time, moved rows/bytes, and hole/move
+  batch sizes;
+- asynchronous row-fence registrations, deferrals, waits, and unrelated moves;
+- the actual Mamba tensor shape/stride, active-index batch sizes, and the exact
+  bytes copied by page-first prefill gather/scatter;
+- SGLang's asynchronous model-forward GPU timer.
+- HiCache transfer-stream envelopes plus separate KV/Mamba D2H and H2D CUDA
+  intervals, logical payload throughput, Python enqueue time, and batch sizes.
+
+Compare completed Baseline/U1/U2 run directories with:
+
+```bash
+python benchmark/hicache/summarize_memory_breakdown.py \
+  artifacts/RUN_NAME/direct-static \
+  artifacts/RUN_NAME/direct-u1 \
+  artifacts/RUN_NAME/direct-u2 \
+  --markdown-output artifacts/RUN_NAME/MEMORY_BREAKDOWN.md \
+  --json-output artifacts/RUN_NAME/memory_breakdown.json
+```
+
+CPU and CUDA intervals may overlap, and allocator CPU time includes compaction
+invoked inside allocation. They are comparison signals, not additive latency
+percentages. Use `--torch-profile-steps N` for a short, deeper CPU/GPU trace;
+the Qwen GDN path includes named `MambaLayout.extend_state_gather` and
+`MambaLayout.extend_state_scatter` regions. Torch profiling affects the
+profiled requests, so keep it disabled for clean performance repetitions. Use
+`--no-profile-memory-breakdown` for a completely uninstrumented control run.

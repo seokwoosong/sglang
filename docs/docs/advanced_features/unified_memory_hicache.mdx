@@ -1,0 +1,166 @@
+---
+title: "Unified Memory with HiCache"
+description: "Configure L2 HiCache for unified full-attention KV and Mamba/GDN state pools."
+---
+
+Unified memory lets a hybrid model allocate full-attention KV and Mamba/GDN
+state from one GPU byte buffer instead of fixed-size sub-pools. Enabling
+HiCache extends the same model to pinned host memory: both state types can move
+between the L1 GPU pool and the L2 host pool as one reusable prefix.
+
+This integration supports L1 and L2 only. Do not configure an L3 storage
+backend with unified memory.
+
+## Supported configuration
+
+The qualified path has the following requirements:
+
+| Setting | Supported value |
+| --- | --- |
+| Model cache | Hybrid full-attention KV and Mamba/GDN state |
+| Platform | NVIDIA CUDA |
+| Tensor parallelism | TP=1 is covered by the current serving test; qualify TP>1 separately |
+| HiCache I/O backend | `kernel` |
+| Host layout | `page_first` |
+| Page size | `1` |
+| Write policy | `write_through` or `write_back` |
+| Attention backends | Triton attention, linear-attention, and Mamba backends |
+| L3 storage | Not supported |
+| MLA | Not supported by the typed-chunk L2 pool |
+
+The broader unified-memory restrictions also apply. It does not support PD
+disaggregation, speculative decoding, LMCache, or decode context parallelism.
+The serving test disables CUDA graphs; qualify a different CUDA graph
+configuration before using it in production.
+
+## Launch a server
+
+The following example launches `Qwen/Qwen3.5-0.8B` on one NVIDIA CUDA GPU. Set
+`HF_TOKEN` first if your environment requires authenticated Hugging Face
+downloads.
+
+```bash Command
+python3 -m sglang.launch_server \
+  --model-path Qwen/Qwen3.5-0.8B \
+  --tp 1 \
+  --enable-unified-memory \
+  --enable-hierarchical-cache \
+  --hicache-ratio 2 \
+  --hicache-write-policy write_through \
+  --hicache-io-backend kernel \
+  --hicache-mem-layout page_first \
+  --page-size 1 \
+  --attention-backend triton \
+  --linear-attn-backend triton \
+  --mamba-backend triton \
+  --mamba-radix-cache-strategy extra_buffer \
+  --cuda-graph-backend-decode disabled \
+  --cuda-graph-backend-prefill disabled
+```
+
+Use `--hicache-size HOST_GB` to set an explicit total L2 budget. When it is
+nonzero, it overrides `--hicache-ratio`. The unified L2 allocator shares this
+one budget between KV pages and Mamba states; it does not statically split the
+budget into separate pools.
+
+## How the integration works
+
+### L2 transfers for unified rows
+
+Unified-memory radix metadata stores stable virtual IDs, while compaction can
+move the corresponding physical rows. The HiCache controller translates each
+KV and Mamba virtual ID immediately before a device-to-host or host-to-device
+copy. It uses the translated IDs only for that transfer and does not write them
+back into the radix tree.
+
+Full-attention KV and Mamba state are strided views of the shared GPU byte
+buffer. The transfer path gathers those strided device rows into contiguous
+staging buffers for L1-to-L2 copies. For L2-to-L1 copies, it stages the selected
+host rows and writes them into the strided device destinations. This applies to
+both full-attention KV eviction and Mamba-state eviction.
+
+### Asynchronous transfers with row-aware fences
+
+By default, the scheduler does not block the host thread until a unified
+HiCache transfer finishes. The controller registers the transfer's CUDA event
+and physical rows with the Full-KV and Mamba allocators independently.
+
+Before compaction or freed-row reuse, each allocator compares its affected rows
+with active transfers. Unrelated work can continue. An overlapping operation
+waits on the CUDA event in the scheduler stream, preserving ordering without a
+host-side event synchronization.
+
+For debugging or a performance A/B comparison, restore the conservative
+host-synchronous path before launching the server:
+
+```bash
+export SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS=1
+```
+
+### Shared typed-chunk L2 allocation
+
+The L2 host arena uses typed chunks so KV and Mamba state can share one memory
+budget safely:
+
+- One Mamba state slot owns one chunk.
+- The same chunk can instead hold an integral number of KV pages.
+- A chunk can change type only after it becomes empty and no transfer pins it.
+- Allocation failure can evict data of the opposite type and retry, allowing
+  the L2 split to follow the workload.
+
+The chunk size is the smallest integral number of KV pages that can contain one
+Mamba state slot. Any alignment padding belongs only to the Mamba view. KV and
+Mamba tensor views alias the host arena, while the chunk owner metadata prevents
+the two types from using the same bytes concurrently.
+
+## Validate the integration
+
+Run the L2 serving test on an NVIDIA CUDA GPU:
+
+```bash
+PYTHONPATH=python \
+python test/registered/hicache/test_unified_memory_hicache_l2.py
+```
+
+The test fixes `--max-total-tokens` and `--max-mamba-cache-size` instead of
+deriving pressure from physical GPU memory. It then verifies L1 eviction, an
+L2 load-back, output-token and logprob-token identity, bounded logprob drift,
+and server health. Keep explicit logical limits when adapting the test to a GPU
+with a different DRAM size; otherwise the workload may not trigger eviction.
+
+Run the focused allocator and dispatch tests without a GPU:
+
+```bash
+PYTHONPATH=python python -m pytest \
+  test/registered/unit/mem_cache/test_typed_chunk_host.py \
+  test/registered/unit/mem_cache/test_multi_ended_allocator.py \
+  test/registered/unit/mem_cache/test_unified_radix_hicache_dispatch.py -q
+```
+
+These tests cover virtual-to-physical translation, synchronous fallback,
+row-aware compaction fences, transfer-pinned chunks, and both KV-to-Mamba and
+Mamba-to-KV eviction and chunk retyping.
+
+Run the focused CUDA transfer tests with:
+
+```bash
+PYTHONPATH=python python -m pytest \
+  test/registered/kernels/ops/kvcache/test_unified_hicache_transfer.py \
+  test/registered/kernels/ops/kvcache/test_unified_row_transfer_fence.py \
+  test/registered/kernels/ops/kvcache/test_unified_chunk_hicache_transfer.py \
+  test/registered/kernels/ops/mamba/test_transfer_mamba.py -q
+```
+
+These tests verify strided KV and Mamba round trips, overlapping and disjoint
+compaction, protected row reuse, and shared typed-chunk transfers.
+
+## Implementation map
+
+| Area | Source |
+| --- | --- |
+| Configuration guards | `python/sglang/srt/server_args.py` |
+| Unified GPU buffer and strided views | `python/sglang/srt/mem_cache/unified_memory_pool.py` |
+| L2 transfer coordination | `python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py` |
+| Row-aware allocator fences | `python/sglang/srt/mem_cache/multi_ended_allocator.py` |
+| Shared L2 chunk ownership | `python/sglang/srt/mem_cache/typed_chunk_host.py` |
+| Typed-chunk host-pool adapters | `python/sglang/srt/mem_cache/pool_host/unified_chunk.py` |
