@@ -85,13 +85,15 @@ def _fill_with_offset(tensor: torch.Tensor, offset: int) -> None:
     tensor.copy_(data + offset)
 
 
-def _assert_pages_equal(host_ref, device_ref, host_pages, device_pages) -> None:
+def _assert_pages_equal(
+    host_ref, device_ref, host_pages, device_pages, page_size: int = PAGE_SIZE
+) -> None:
     for host_page, device_page in zip(host_pages.tolist(), device_pages.tolist()):
-        host_start = host_page * PAGE_SIZE
-        device_start = device_page * PAGE_SIZE
+        host_start = host_page * page_size
+        device_start = device_page * page_size
         assert torch.equal(
-            host_ref[host_start : host_start + PAGE_SIZE].cpu(),
-            device_ref[device_start : device_start + PAGE_SIZE].cpu(),
+            host_ref[host_start : host_start + page_size].cpu(),
+            device_ref[device_start : device_start + page_size].cpu(),
         )
 
 
@@ -253,6 +255,125 @@ def test_page_first_staged_write_back_mha(element_dim: int, page_count: int) -> 
 @pytest.mark.parametrize("page_count", PAGE_COUNTS)
 def test_page_first_staged_write_back_mla(element_dim: int, page_count: int) -> None:
     _run_mla(element_dim, page_count)
+
+
+@pytest.mark.skipif(is_hip(), reason="cudaMemcpyBatchAsync is CUDA-specific.")
+def test_page_first_batch_write_back_registered_host_dedicated_stream() -> None:
+    """Exercise the server's registered-mmap and dedicated-stream D2H path."""
+    page_size = 32
+    page_count = 40
+    element_dim = 512
+    layer_num = 6
+    pool_size = page_size * (page_count + 8)
+    device_pool = MHATokenToKVPool(
+        size=pool_size,
+        page_size=page_size,
+        head_num=2,
+        head_dim=element_dim // 2,
+        dtype=torch.bfloat16,
+        layer_num=layer_num,
+        device=DEVICE,
+        enable_memory_saver=False,
+    )
+    host_pool = MHATokenToKVPoolHost(
+        device_pool=device_pool,
+        host_to_device_ratio=2.0,
+        host_size=0,
+        page_size=page_size,
+        layout="page_first",
+        pin_memory=True,
+        device="cpu",
+        allocator_type="default",
+    )
+    assert host_pool.can_use_write_back_jit
+    assert host_pool.k_buffer.is_pinned()
+
+    device_pages = torch.arange(2, 2 + page_count, device=DEVICE)
+    host_pages = torch.arange(page_count, 0, -1)
+    device_indices = torch.cat(
+        [
+            torch.arange(
+                int(page) * page_size,
+                (int(page) + 1) * page_size,
+                device=DEVICE,
+            )
+            for page in device_pages.tolist()
+        ]
+    )
+    host_indices = torch.cat(
+        [
+            torch.arange(
+                int(page) * page_size,
+                (int(page) + 1) * page_size,
+            )
+            for page in host_pages.tolist()
+        ]
+    )
+    for layer_id in range(layer_num):
+        device_pool.k_buffer[layer_id][device_indices] = layer_id + 1
+        device_pool.v_buffer[layer_id][device_indices] = layer_id + 101
+    torch.cuda.synchronize()
+
+    transfer_stream = torch.cuda.Stream()
+    start_event = torch.cuda.Event()
+    start_event.record()
+    with torch.cuda.stream(transfer_stream):
+        transfer_stream.wait_event(start_event)
+        host_pool.backup_from_device_all_layer(
+            device_pool, host_indices, device_indices, "kernel"
+        )
+    transfer_stream.synchronize()
+
+    for layer_id in (0, layer_num - 1):
+        _assert_pages_equal(
+            host_pool.k_data_refs[layer_id],
+            device_pool.k_buffer[layer_id],
+            host_pages,
+            device_pages,
+            page_size,
+        )
+        _assert_pages_equal(
+            host_pool.v_data_refs[layer_id],
+            device_pool.v_buffer[layer_id],
+            host_pages,
+            device_pages,
+            page_size,
+        )
+
+    for layer_id in range(layer_num):
+        device_pool.k_buffer[layer_id][device_indices] = 0
+        device_pool.v_buffer[layer_id][device_indices] = 0
+    torch.cuda.synchronize()
+    host_indices_device = host_indices.to(DEVICE)
+    start_event.record()
+    with torch.cuda.stream(transfer_stream):
+        transfer_stream.wait_event(start_event)
+        for layer_id in range(layer_num):
+            host_pool.load_to_device_per_layer(
+                device_pool,
+                host_indices_device,
+                device_indices,
+                layer_id,
+                "kernel",
+            )
+    transfer_stream.synchronize()
+
+    for layer_id in (0, layer_num - 1):
+        _assert_pages_equal(
+            host_pool.k_data_refs[layer_id],
+            device_pool.k_buffer[layer_id],
+            host_pages,
+            device_pages,
+            page_size,
+        )
+        _assert_pages_equal(
+            host_pool.v_data_refs[layer_id],
+            device_pool.v_buffer[layer_id],
+            host_pages,
+            device_pages,
+            page_size,
+        )
+    host_pool.destroy()
 
 
 if __name__ == "__main__":

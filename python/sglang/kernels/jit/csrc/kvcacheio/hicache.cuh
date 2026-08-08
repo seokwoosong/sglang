@@ -166,8 +166,8 @@ SGL_DEVICE void store_vec(void* __restrict__ dst, const Storage& vec) {
 namespace host {
 
 // Registered host memory can have a distinct device virtual address (notably
-// under WSL). DMA APIs accept the CPU address, but a GPU kernel must use the
-// mapped alias returned by HostGetDevicePointer.
+// under WSL). GPU kernels and cudaMemcpyBatchAsync must use the mapped alias
+// returned by HostGetDevicePointer.
 inline void* device_accessible_ptr(const tvm::ffi::TensorView& tensor) {
   void* ptr = tensor.data_ptr();
   const auto type = tensor.device().device_type;
@@ -341,10 +341,10 @@ struct HiCacheKernel {
     const auto element_bytes = D.unwrap() * dtype_size;
     RuntimeCheck(kElementSize == element_bytes, "HicacheKernel: cache dimension mismatch.");
 
-    const auto k_cache_dst_ptr = k_cache_dst.data_ptr();
-    const auto v_cache_dst_ptr = v_cache_dst.data_ptr();
-    const auto k_cache_src_ptr = k_cache_src.data_ptr();
-    const auto v_cache_src_ptr = v_cache_src.data_ptr();
+    const auto k_cache_dst_ptr = device_accessible_ptr(k_cache_dst);
+    const auto v_cache_dst_ptr = device_accessible_ptr(v_cache_dst);
+    const auto k_cache_src_ptr = device_accessible_ptr(k_cache_src);
+    const auto v_cache_src_ptr = device_accessible_ptr(v_cache_src);
     const auto indices_dst_ptr = indices_dst.data_ptr();
     const auto indices_src_ptr = indices_src.data_ptr();
     const auto length = static_cast<uint32_t>(L.unwrap());
@@ -463,8 +463,8 @@ struct HiCacheKernel {
     const auto element_bytes = D.unwrap() * dtype_size;
     RuntimeCheck(kElementSize == element_bytes, "HicacheKernel MLA: cache dimension mismatch.");
 
-    const auto cache_dst_ptr = cache_dst.data_ptr();
-    const auto cache_src_ptr = cache_src.data_ptr();
+    const auto cache_dst_ptr = device_accessible_ptr(cache_dst);
+    const auto cache_src_ptr = device_accessible_ptr(cache_src);
     const auto indices_dst_ptr = indices_dst.data_ptr();
     const auto indices_src_ptr = indices_src.data_ptr();
     const auto length = static_cast<uint32_t>(L.unwrap());

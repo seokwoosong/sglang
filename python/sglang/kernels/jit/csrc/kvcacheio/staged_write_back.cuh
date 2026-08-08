@@ -141,11 +141,12 @@ inline bool try_copy_page_first_pages_batch(
     if (tensor_id == 0) {
       first_page_bytes = src_page_bytes;
     }
+    auto* dst_base = static_cast<char*>(host::device_accessible_ptr(dst_ptrs[tensor_id]));
     for (const auto page_offset : host::irange(num_pages)) {
       char* src_ptr = static_cast<char*>(src_ptrs[tensor_id].data_ptr()) +
                       static_cast<size_t>(page_offset * page_size * src_stride0 * elem_size);
-      char* dst_ptr = static_cast<char*>(dst_ptrs[tensor_id].data_ptr()) +
-                      static_cast<size_t>(dst_indices_ptr[page_offset * page_size] * dst_stride0 * elem_size);
+      char* dst_ptr =
+          dst_base + static_cast<size_t>(dst_indices_ptr[page_offset * page_size] * dst_stride0 * elem_size);
       batch_srcs.push_back(src_ptr);
       batch_dsts.push_back(dst_ptr);
       batch_sizes.push_back(src_page_bytes);
