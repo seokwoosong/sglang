@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from sglang.srt.environ import envs
 from sglang.srt.mem_cache.hicache_storage import (
     PoolHitPolicy,
     PoolName,
@@ -39,6 +40,10 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
 logger = logging.getLogger(__name__)
+
+
+def _use_unified_typed_l2(is_unified_mamba: bool) -> bool:
+    return is_unified_mamba and envs.SGLANG_HICACHE_UNIFIED_TYPED_L2.get()
 
 
 def _get_allocator_type(server_args: ServerArgs) -> str:
@@ -677,6 +682,7 @@ def build_hybrid_mamba_stack(
         mamba_transfer_fence_fn = getattr(
             shared_mamba_allocator, "register_external_transfer", None
         )
+    if _use_unified_typed_l2(is_unified_mamba):
         if use_mla:
             raise ValueError("unified typed-chunk HiCache does not support MLA")
         if server_args.hicache_mem_layout != "page_first":
