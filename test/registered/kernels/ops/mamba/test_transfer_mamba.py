@@ -13,6 +13,11 @@ import pytest
 import torch
 
 from sglang.srt.mem_cache.memory_pool_host import MambaPoolHost
+from sglang.srt.mem_cache.pool_host.common import (
+    HostTensorAllocator,
+    _cuda_host_unregister,
+    alloc_with_host_register,
+)
 from sglang.test.ci.ci_register import register_amd_ci, register_cuda_ci
 
 register_cuda_ci(est_time=10, stage="base-b-kernel-unit", runner_config="1-gpu-large")
@@ -31,6 +36,83 @@ DTYPES = [torch.float16, torch.bfloat16]
 LAYOUTS = ["page_first", "page_first_direct"]
 
 
+def test_registered_mmap_large_state_roundtrip():
+    """Exercise the production L2 allocator with a Qwen3.5-sized state row."""
+    from sglang.kernels.ops.mamba.transfer_mamba import (
+        transfer_kv_mamba_lf_pf,
+        transfer_kv_mamba_pf_lf,
+    )
+
+    num_layers = 18
+    num_slots = 2
+    state_shape = (16, 128, 128)  # 1 MiB per fp32 layer/slot
+    source = torch.empty(
+        (num_layers, num_slots, *state_shape), dtype=torch.float32, device=DEVICE
+    )
+    for layer_id in range(num_layers):
+        source[layer_id].fill_(layer_id + 1)
+    host = alloc_with_host_register(
+        (num_slots, num_layers, 1, *state_shape),
+        dtype=torch.float32,
+        device="cpu",
+        pin_memory=True,
+        allocator=HostTensorAllocator(),
+    )
+    host.zero_()
+    source_ptrs = torch.tensor(
+        [source[layer_id].data_ptr() for layer_id in range(num_layers)],
+        dtype=torch.uint64,
+        device=DEVICE,
+    )
+    source_indices = torch.tensor([1], dtype=torch.int64, device=DEVICE)
+    host_indices = torch.tensor([0], dtype=torch.int64, device=DEVICE)
+    item_size = source[0].stride(0) * source.dtype.itemsize
+
+    try:
+        transfer_kv_mamba_lf_pf(
+            source_ptrs,
+            host,
+            source_indices,
+            host_indices,
+            item_size,
+            item_size * num_layers,
+            num_layers,
+            item_size,
+        )
+        torch.cuda.synchronize()
+        torch.testing.assert_close(
+            host[0, :, 0, 0, 0, 0],
+            torch.arange(1, num_layers + 1, dtype=torch.float32),
+        )
+
+        # Match the unified L1 envelope: each Mamba row is contiguous, but
+        # consecutive slots are separated by the complete Mamba slot stride.
+        slot_size = 19_537_920
+        slot_elems = slot_size // source.element_size()
+        restored_backing = torch.zeros(
+            num_slots * slot_elems, dtype=torch.float32, device=DEVICE
+        )
+        restored = torch.as_strided(
+            restored_backing,
+            (num_slots, *state_shape),
+            (slot_elems, 16_384, 128, 1),
+        )
+        transfer_kv_mamba_pf_lf(
+            host,
+            restored,
+            host_indices,
+            source_indices,
+            7,
+            item_size,
+            item_size * num_layers,
+            slot_size,
+        )
+        torch.cuda.synchronize()
+        assert restored[1, 0, 0, 0].item() == 8.0
+    finally:
+        _cuda_host_unregister(host)
+
+
 def make_device_pool(dtype, device=DEVICE):
     """Create a minimal mock device pool that MambaPoolHost can use."""
     temporal = torch.zeros(
@@ -44,6 +126,49 @@ def make_device_pool(dtype, device=DEVICE):
         size=SIZE,
         device=device,
     )
+
+
+def make_unified_device_pool(dtype, device=DEVICE):
+    """Build Mamba views whose slot rows are separated by a shared envelope."""
+    temporal_backing = torch.full(
+        (SIZE, NUM_LAYERS, 3) + TEMPORAL_SHAPE,
+        -77,
+        dtype=dtype,
+        device=device,
+    )
+    conv_backing = torch.full(
+        (SIZE, NUM_LAYERS, 3) + CONV_SHAPE,
+        -77,
+        dtype=dtype,
+        device=device,
+    )
+    temporal = temporal_backing[:, :, 1].transpose(0, 1)
+    conv = [conv_backing[:, :, 1].transpose(0, 1)]
+    return SimpleNamespace(
+        _unified_buffer=object(),
+        _temporal_backing=temporal_backing,
+        _conv_backing=[conv_backing],
+        mamba_cache=SimpleNamespace(temporal=temporal, conv=conv),
+        size=SIZE,
+        device=device,
+    )
+
+
+def bind_device_pool(host, device_pool):
+    host.device_pool = device_pool
+    host.temporal_device_ptrs = torch.tensor(
+        [device_pool.mamba_cache.temporal[i].data_ptr() for i in range(NUM_LAYERS)],
+        dtype=torch.uint64,
+        device=DEVICE,
+    )
+    host.conv_device_ptrs = [
+        torch.tensor(
+            [conv_state[i].data_ptr() for i in range(NUM_LAYERS)],
+            dtype=torch.uint64,
+            device=DEVICE,
+        )
+        for conv_state in device_pool.mamba_cache.conv
+    ]
 
 
 def make_host_pool(dtype, layout):
@@ -256,6 +381,63 @@ def test_mamba_kernel_backup_load_roundtrip(dtype, layout):
                     .max()
                     == 0
                 )
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_unified_mamba_strided_backup_load_roundtrip(dtype):
+    """Exercise staged D2H and direct H2D on unified envelope strides."""
+    host = make_host_pool(dtype, "page_first")
+    device_pool = make_unified_device_pool(dtype)
+    bind_device_pool(host, device_pool)
+    fill_device_data(device_pool, dtype)
+
+    source_indices = torch.tensor([1, 5, 10], dtype=torch.int64, device=DEVICE)
+    host_indices = torch.tensor([0, 3, 7], dtype=torch.int64)
+    restore_indices = torch.tensor([2, 8, 12], dtype=torch.int64, device=DEVICE)
+    expected_temporal = [
+        device_pool.mamba_cache.temporal[layer_id][source_indices].clone()
+        for layer_id in range(NUM_LAYERS)
+    ]
+    expected_conv = [
+        device_pool.mamba_cache.conv[0][layer_id][source_indices].clone()
+        for layer_id in range(NUM_LAYERS)
+    ]
+    untouched_temporal_envelope = device_pool._temporal_backing[:, :, [0, 2]].clone()
+    untouched_conv_envelope = device_pool._conv_backing[0][:, :, [0, 2]].clone()
+
+    host.backup_from_device_all_layer(
+        device_pool, host_indices, source_indices, io_backend="kernel"
+    )
+    torch.cuda.synchronize()
+    assert_host_matches_device(host, device_pool, host_indices, source_indices)
+
+    for layer_id in range(NUM_LAYERS):
+        device_pool.mamba_cache.temporal[layer_id][restore_indices] = -3
+        device_pool.mamba_cache.conv[0][layer_id][restore_indices] = -5
+        host.load_to_device_per_layer(
+            device_pool,
+            host_indices,
+            restore_indices,
+            layer_id,
+            io_backend="kernel",
+        )
+
+    torch.cuda.synchronize()
+    for layer_id in range(NUM_LAYERS):
+        torch.testing.assert_close(
+            device_pool.mamba_cache.temporal[layer_id][restore_indices],
+            expected_temporal[layer_id],
+        )
+        torch.testing.assert_close(
+            device_pool.mamba_cache.conv[0][layer_id][restore_indices],
+            expected_conv[layer_id],
+        )
+    torch.testing.assert_close(
+        device_pool._temporal_backing[:, :, [0, 2]], untouched_temporal_envelope
+    )
+    torch.testing.assert_close(
+        device_pool._conv_backing[0][:, :, [0, 2]], untouched_conv_envelope
+    )
 
 
 @pytest.mark.parametrize("dtype", DTYPES)

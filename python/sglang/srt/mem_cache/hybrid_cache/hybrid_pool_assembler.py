@@ -115,9 +115,21 @@ def _split_hicache_size(
     device_pool_sizes = []
     for kv_pool in kv_pools:
         size_bytes = kv_pool.get_kv_size_bytes()
-        device_pool_sizes.append(
-            sum(size_bytes) if isinstance(size_bytes, tuple) else size_bytes
-        )
+        size_bytes = sum(size_bytes) if isinstance(size_bytes, tuple) else size_bytes
+        if size_bytes == 0:
+            # Unified sub-pools expose views into one shared allocation and
+            # intentionally report zero here to avoid double-counting the GPU
+            # allocation. For a fixed HiCache budget we still need their
+            # relative logical capacities, otherwise the zero-weight pool
+            # falls back to hicache_ratio and violates --hicache-size.
+            unified_buffer = getattr(kv_pool, "_unified_buffer", None)
+            sub_pool_name = getattr(kv_pool, "_sub_pool_name", None)
+            if unified_buffer is not None and sub_pool_name is not None:
+                spec = unified_buffer.spec(sub_pool_name)
+                size_bytes = unified_buffer.max_slots(
+                    sub_pool_name
+                ) * spec.entry_bytes()
+        device_pool_sizes.append(size_bytes)
     total_device_pool_size = sum(device_pool_sizes)
     return tuple(
         hicache_size * size_bytes / total_device_pool_size
@@ -137,6 +149,7 @@ def build_pool_entry(
     device_evict_fn: Optional[Callable[[int], Any]] = None,
     device_alloc_fn: Optional[Callable[[int], Any]] = None,
     device_free_fn: Optional[Callable[[Any], Any]] = None,
+    device_index_translate_fn: Optional[Callable[[Any], Any]] = None,
 ) -> PoolEntry:
     return PoolEntry(
         name=name,
@@ -148,6 +161,7 @@ def build_pool_entry(
         device_evict_fn=device_evict_fn,
         device_alloc_fn=device_alloc_fn,
         device_free_fn=device_free_fn,
+        device_index_translate_fn=device_index_translate_fn,
     )
 
 
@@ -636,6 +650,12 @@ def build_hybrid_mamba_stack(
         kv_host_size, mamba_host_size = _split_hicache_size(
             server_args.hicache_size, (kv_pool, mamba_pool)
         )
+    full_index_translate_fn = getattr(
+        params.token_to_kv_pool_allocator, "translate_kv_loc", None
+    )
+    mamba_index_translate_fn = getattr(
+        params.req_to_token_pool, "translate_mamba_indices", None
+    )
     kv_host_pool = build_kv_host_pool(
         kv_pool=kv_pool,
         page_size=params.page_size,
@@ -666,6 +686,7 @@ def build_hybrid_mamba_stack(
             layer_mapping=full_layer_mapping,
             transfer_layer_num=transfer_layer_num + len(mtp_draft_device_pools),
             is_anchor=True,
+            device_index_translate_fn=full_index_translate_fn,
         ),
         build_pool_entry(
             name=PoolName.MAMBA,
@@ -677,6 +698,7 @@ def build_hybrid_mamba_stack(
             device_evict_fn=device_mamba_evict_fn,
             device_alloc_fn=mamba_allocator.alloc,
             device_free_fn=mamba_allocator.free,
+            device_index_translate_fn=mamba_index_translate_fn,
         ),
     ]
     host_pool_group = HostPoolGroup(entries)

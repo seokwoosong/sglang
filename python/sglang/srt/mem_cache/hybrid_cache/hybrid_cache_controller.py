@@ -196,6 +196,13 @@ class HybridCacheController(BaseHiCacheController):
             storage_backend_extra_config=storage_backend_extra_config,
             enable_storage_metrics=enable_storage_metrics,
         )
+        # Unified pools may relocate physical rows during compaction. Until
+        # transfer-aware allocator pinning is available, finish each unified
+        # D<->H operation before returning control to the scheduler so a
+        # compaction cannot invalidate the translated physical indices.
+        self.synchronize_unified_transfers = hasattr(
+            self.mem_pool_device, "_unified_buffer"
+        )
         # Override layer_num: hybrid models transfer all layers (For example, Linear Model (KV + Mamba)),
         # not just the full attention layers reported by full_kv_pool.
         if transfer_layer_num is not None and transfer_layer_num != self.layer_num:
@@ -214,6 +221,10 @@ class HybridCacheController(BaseHiCacheController):
     def _start_storage_threads(self):
         super()._start_storage_threads()
         self._init_extra_host_mem_release_queues()
+
+    def _finish_transfer_before_scheduler(self, finish_event) -> None:
+        if getattr(self, "synchronize_unified_transfers", False):
+            finish_event.synchronize()
 
     def attach_storage_backend(
         self,
@@ -421,8 +432,9 @@ class HybridCacheController(BaseHiCacheController):
             )
         ):
             host_indices = op.host_indices
-            device_indices = op.device_indices
-            resolved_pool_transfers = op.pool_transfers
+            device_indices, resolved_pool_transfers = (
+                self.translate_hybrid_device_indices(op)
+            )
         else:
             host_indices, device_indices, resolved_pool_transfers = (
                 self.move_hybrid_indices(op)
@@ -455,6 +467,7 @@ class HybridCacheController(BaseHiCacheController):
                 device_indices,
                 resolved_pool_transfers,
             )
+        self._finish_transfer_before_scheduler(ack_finish_event)
         self.ack_write_queue.append(
             HiCacheAck(
                 start_event=ack_start_event,
@@ -618,6 +631,7 @@ class HybridCacheController(BaseHiCacheController):
                 device_indices,
                 resolved_pool_transfers,
             )
+        self._finish_transfer_before_scheduler(ack_finish_event)
         self.ack_load_queue.append(
             HiCacheAck(
                 ack_start_event,
@@ -713,13 +727,16 @@ class HybridCacheController(BaseHiCacheController):
     def move_hybrid_indices(
         self, operation: CacheOperation
     ) -> tuple[torch.Tensor, torch.Tensor, Optional[list[PoolTransfer]]]:
+        device_indices, translated_pool_transfers = (
+            self.translate_hybrid_device_indices(operation)
+        )
         host_indices, device_indices = self.move_indices(
-            operation.host_indices, operation.device_indices
+            operation.host_indices, device_indices
         )
         resolved_pool_transfers = None
-        if operation.pool_transfers:
+        if translated_pool_transfers:
             resolved_pool_transfers = []
-            for transfer in operation.pool_transfers:
+            for transfer in translated_pool_transfers:
                 transfer_host_indices, transfer_device_indices = self.move_indices(
                     transfer.host_indices, transfer.device_indices
                 )
@@ -733,10 +750,70 @@ class HybridCacheController(BaseHiCacheController):
                         device_indices=transfer_device_indices,
                         keys=transfer.keys,
                         hit_policy=transfer.hit_policy,
+                        nodes_to_load=transfer.nodes_to_load,
                         indices_from_pool=transfer.indices_from_pool,
                     )
                 )
         return host_indices, device_indices, resolved_pool_transfers
+
+    def translate_hybrid_device_indices(
+        self, operation: CacheOperation
+    ) -> tuple[torch.Tensor, Optional[list[PoolTransfer]]]:
+        """Translate tree-owned virtual IDs for raw device-pool access.
+
+        Translation happens before ``move_indices`` because unified allocators
+        keep their V2P tables on the accelerator, while the direct-I/O path may
+        subsequently move execution indices to CPU.
+        """
+        device_indices = operation.device_indices
+        anchor_entry = self.mem_pool_host.anchor_entry
+        if anchor_entry.device_index_translate_fn is not None:
+            device_indices = anchor_entry.device_index_translate_fn(device_indices).to(
+                dtype=operation.device_indices.dtype
+            )
+            self._validate_translated_indices(anchor_entry, device_indices)
+
+        translated_pool_transfers = None
+        if operation.pool_transfers:
+            translated_pool_transfers = []
+            for transfer in operation.pool_transfers:
+                transfer_device_indices = transfer.device_indices
+                entry = self.mem_pool_host.entry_map.get(transfer.name)
+                if (
+                    entry is not None
+                    and entry.device_index_translate_fn is not None
+                    and transfer_device_indices is not None
+                ):
+                    transfer_device_indices = entry.device_index_translate_fn(
+                        transfer_device_indices
+                    ).to(dtype=transfer.device_indices.dtype)
+                    self._validate_translated_indices(entry, transfer_device_indices)
+                translated_pool_transfers.append(
+                    PoolTransfer(
+                        name=transfer.name,
+                        host_indices=transfer.host_indices,
+                        device_indices=transfer_device_indices,
+                        keys=transfer.keys,
+                        hit_policy=transfer.hit_policy,
+                        nodes_to_load=transfer.nodes_to_load,
+                        indices_from_pool=transfer.indices_from_pool,
+                    )
+                )
+        return device_indices, translated_pool_transfers
+
+    @staticmethod
+    def _validate_translated_indices(entry, indices: torch.Tensor) -> None:
+        if indices.numel() == 0:
+            return
+        min_index, max_index = torch.aminmax(indices)
+        pool_size = getattr(entry.device_pool, "size", None)
+        min_value, max_value = min_index.item(), max_index.item()
+        if min_value < 0 or (isinstance(pool_size, int) and max_value > pool_size):
+            raise RuntimeError(
+                f"Translated {entry.name} HiCache indices are outside the "
+                f"physical device pool: min={min_value}, max={max_value}, "
+                f"pool_size={pool_size}."
+            )
 
     def _page_transfer(self, operation):
         # KV pools first — determines actual completed page count

@@ -3174,7 +3174,11 @@ class UnifiedRadixCacheSuite:
         cache.sanity_check()
 
     def test_hicache_load_back_restores_data(self):
-        """Loading back an evicted node restores the backed-up cache data."""
+        """KV-triggered eviction restores every backed-up component byte.
+
+        The fixture has explicit KV and Mamba slot counts, so this exercises
+        eviction regardless of the GPU's physical DRAM capacity.
+        """
         if self._skip_unsupported_hicache_test():
             return
         cache, allocator, req_to_token_pool = self._build_hicache_fixture()
@@ -3201,7 +3205,11 @@ class UnifiedRadixCacheSuite:
             )
 
         self._backup_node(cache, node)
-        cache.evict(EvictParams(num_tokens=len(base)))
+        evict_result = cache.evict(EvictParams(num_tokens=len(base)))
+        self.assertGreaterEqual(evict_result.num_tokens_evicted, len(base))
+        if self.cfg.has_mamba:
+            # A Full leaf is atomic: KV pressure must demote its Mamba state too.
+            self.assertGreaterEqual(evict_result.mamba_num_evicted, 1)
         self.assertTrue(node.evicted)
         self._fill_full_kv(allocator, original_device_indices, marker=9)
         if original_mamba_indices is not None:
@@ -3226,6 +3234,73 @@ class UnifiedRadixCacheSuite:
             self.assertEqual(len(loaded_conv), len(expected_conv))
             for actual_conv, expected_conv_buf in zip(loaded_conv, expected_conv):
                 self.assertTrue(torch.equal(actual_conv, expected_conv_buf))
+        cache.sanity_check()
+
+    def test_hicache_mamba_only_eviction_restores_state_without_moving_kv(self):
+        """Mamba pressure tombstones/restores an internal state while KV stays put.
+
+        This is deliberately separate from the KV-triggered leaf test above:
+        Mamba internal checkpoints can be evicted independently of Full KV.
+        Pool sizes come from ``CacheConfig`` rather than available GPU DRAM.
+        """
+        if not self.cfg.has_mamba or self.cfg.has_swa or self.cfg.page_size != 1:
+            self.skipTest("requires page_size=1 Full+Mamba")
+
+        cache, allocator, req_to_token_pool = self._build_hicache_fixture()
+        chain = self._build_chain_pages(cache, allocator, req_to_token_pool, 3)
+        if len(chain) < 3:
+            self.skipTest("chain too short")
+
+        target = chain[0]
+        self.assertNotIn(target, cache.tree_core.evictable_device_leaves)
+        full_indices = target.component_data[ComponentType.FULL].value.clone()
+        mamba_indices = target.component_data[ComponentType.MAMBA].value.clone()
+
+        self._fill_full_kv(allocator, full_indices, marker=3)
+        expected_k, expected_v = self._snapshot_full_kv(allocator, full_indices)
+        self._fill_mamba_state(req_to_token_pool, mamba_indices, marker=11)
+        expected_temporal, expected_conv = self._snapshot_mamba_state(
+            req_to_token_pool, mamba_indices
+        )
+
+        self._backup_node(cache, chain[-1])
+        self.assertIsNotNone(target.component_data[ComponentType.MAMBA].host_value)
+
+        evict_result = cache.evict(EvictParams(num_tokens=0, mamba_num=1))
+
+        self.assertEqual(evict_result.num_tokens_evicted, 0)
+        self.assertEqual(evict_result.mamba_num_evicted, 1)
+        self.assertIsNone(target.component_data[ComponentType.MAMBA].value)
+        torch.testing.assert_close(
+            target.component_data[ComponentType.FULL].value, full_indices
+        )
+        actual_k, actual_v = self._snapshot_full_kv(allocator, full_indices)
+        torch.testing.assert_close(actual_k, expected_k)
+        torch.testing.assert_close(actual_v, expected_v)
+
+        # Poison the released row. A successful assertion below therefore
+        # proves that H2D copied the L2 state instead of reusing stale bytes.
+        self._fill_mamba_state(req_to_token_pool, mamba_indices, marker=29)
+        self.assertTrue(cache.load_back(target.id))
+        self._finish_pending_loads(cache)
+
+        restored_indices = target.component_data[ComponentType.MAMBA].value
+        self.assertIsNotNone(restored_indices)
+        actual_temporal, actual_conv = self._snapshot_mamba_state(
+            req_to_token_pool, restored_indices
+        )
+        torch.testing.assert_close(actual_temporal, expected_temporal)
+        self.assertEqual(len(actual_conv), len(expected_conv))
+        for actual, expected in zip(actual_conv, expected_conv):
+            torch.testing.assert_close(actual, expected)
+
+        # The Mamba-only round trip must not relocate or rewrite Full KV.
+        torch.testing.assert_close(
+            target.component_data[ComponentType.FULL].value, full_indices
+        )
+        actual_k, actual_v = self._snapshot_full_kv(allocator, full_indices)
+        torch.testing.assert_close(actual_k, expected_k)
+        torch.testing.assert_close(actual_v, expected_v)
         cache.sanity_check()
 
     def test_hicache_backup_continuity(self):

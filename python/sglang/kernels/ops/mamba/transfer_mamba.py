@@ -46,6 +46,7 @@ def transfer_kv_mamba_pf_lf(
     layer_id: int,
     item_size: int,
     src_layout_dim: int,
+    dst_stride: int,
     num_warps_per_item: int = 32,
 ):
     module = _jit_transfer_mamba_module()
@@ -57,6 +58,7 @@ def transfer_kv_mamba_pf_lf(
         layer_id,
         item_size,
         src_layout_dim,
+        dst_stride,
     )
 
 
@@ -69,6 +71,7 @@ def transfer_kv_mamba_lf_pf(
     item_size: int,
     dst_layout_dim: int,
     num_layers: int,
+    src_stride: int,
     num_warps_per_item: int = 32,
 ):
     module = _jit_transfer_mamba_module()
@@ -80,4 +83,5 @@ def transfer_kv_mamba_lf_pf(
         item_size,
         dst_layout_dim,
         num_layers,
+        src_stride,
     )

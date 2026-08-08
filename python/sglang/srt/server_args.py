@@ -8071,13 +8071,37 @@ class ServerArgs:
                 "not translate speculative verify indices to the unified "
                 "pool's dense space yet."
             )
-        assert not (self.enable_hierarchical_cache or self.enable_lmcache), (
-            "--enable-unified-memory is not yet compatible with hierarchical / "
-            "host-tiered KV cache (--enable-hierarchical-cache / --enable-lmcache): "
-            "the unified-memory-pool init wires up no host pools, and its device mamba / "
-            "full-attention slots are VIRTUAL — the host-offload path does not "
-            "translate them to physical."
-        )
+        assert (
+            not self.enable_lmcache
+        ), "--enable-unified-memory is not yet compatible with --enable-lmcache."
+        if self.enable_hierarchical_cache:
+            assert self.disaggregation_mode == "null", (
+                "--enable-unified-memory with HiCache is not yet compatible with "
+                "PD disaggregation; the remote transfer move gate and local "
+                "HiCache transfer lifetime have not been jointly qualified."
+            )
+            assert self.speculative_algorithm is None, (
+                "--enable-unified-memory with HiCache is not yet compatible with "
+                "speculative decoding; HiCache backup/load-back of speculative "
+                "Mamba tracking state has not been audited."
+            )
+            assert self.hicache_io_backend == "kernel", (
+                "--enable-unified-memory with HiCache currently requires "
+                "--hicache-io-backend kernel because direct I/O assumes "
+                "contiguous device-pool rows."
+            )
+            assert self.hicache_write_policy in ("write_through", "write_back"), (
+                "--enable-unified-memory currently supports HiCache with "
+                "--hicache-write-policy write_through or write_back."
+            )
+            assert self.hicache_storage_backend is None, (
+                "--enable-unified-memory currently supports only the L2 host tier; "
+                "an L3 --hicache-storage-backend is not yet supported."
+            )
+            assert self.page_size == 1, (
+                "--enable-unified-memory currently supports HiCache only with "
+                "--page-size 1."
+            )
         assert self.dcp_size == 1, (
             "--enable-unified-memory is not yet compatible with decode context "
             "parallelism (--dcp-size > 1): the pool has no DCP-aware masked write "
