@@ -5,7 +5,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sglang.srt.mem_cache.multi_ended_allocator import MultiEndedAllocator
 from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
+from sglang.srt.mem_cache.unified_memory_pool import (
+    MambaSubPoolSpec,
+    MHASubPoolSpec,
+    UnifiedKVPool,
+)
 from sglang.test.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(est_time=15, stage="base-b-kernel-unit", runner_config="1-gpu-large")
@@ -159,3 +165,127 @@ def test_unified_mha_strided_backup_load_roundtrip(dtype):
             device_pool.v_buffer[layer_id][restore_indices], expected_v[layer_id]
         )
     torch.testing.assert_close(device_pool._backing[:, :, [0, 2]], untouched_envelope)
+
+
+class _CudaMarkerPool:
+    """Minimal physical-row store used to observe compaction ordering."""
+
+    def __init__(self, size: int):
+        self.buffer = torch.full((size,), -1, dtype=torch.int64, device=DEVICE)
+
+    def move_kv_cache(self, dst_loc: torch.Tensor, src_loc: torch.Tensor) -> None:
+        self.buffer[dst_loc] = self.buffer[src_loc].clone()
+
+
+def _make_cuda_allocator(*, lazy_compaction: bool):
+    full = MHASubPoolSpec(
+        name="full",
+        layer_num=1,
+        head_num=1,
+        head_dim=8,
+        store_dtype=torch.float16,
+        grow_direction="up",
+    )
+    mamba = MambaSubPoolSpec(
+        name="mamba",
+        layer_num=1,
+        conv_state_shapes=((4, 3),),
+        conv_dtype=torch.float32,
+        temporal_state_shape=(2, 2, 2),
+        temporal_dtype=torch.float32,
+        grow_direction="down",
+    )
+    pool = UnifiedKVPool(
+        total_bytes=full.entry_bytes() * 64 + mamba.entry_bytes() * 16,
+        sub_pool_specs=[full, mamba],
+        device=DEVICE,
+        enable_memory_saver=False,
+    )
+    marker_pool = _CudaMarkerPool(pool.max_slots("full"))
+    allocator = MultiEndedAllocator(
+        kvcache=marker_pool,
+        unified_buffer=pool,
+        sub_pool_name="full",
+        device=DEVICE,
+        is_id_owner=True,
+        lazy_compaction=lazy_compaction,
+    )
+    return allocator, marker_pool
+
+
+@pytest.mark.skipif(
+    not hasattr(torch.cuda, "_sleep"),
+    reason="CUDA sleep is required for race coverage.",
+)
+def test_external_transfer_event_orders_eager_relocation():
+    """A delayed external reader must observe the pre-compaction physical row.
+
+    Freeing the first slot moves the last survivor into that hole. The transfer
+    intentionally reads the survivor after a delay; allocator event fencing must
+    order the move after that read without calling ``Event.synchronize()`` in the
+    controller.
+    """
+    allocator, marker_pool = _make_cuda_allocator(lazy_compaction=False)
+    virtual = allocator.alloc(4)
+    physical = allocator.virtual_to_physical[virtual]
+    marker_pool.buffer[physical] = virtual
+    survivor_virtual = virtual[-1].clone()
+    survivor_physical = physical[-1].clone()
+    captured = torch.full((), -1, dtype=torch.int64, device=DEVICE)
+
+    transfer_stream = torch.cuda.Stream()
+    layout_ready = torch.cuda.Event()
+    transfer_done = torch.cuda.Event()
+    layout_ready.record()
+    with torch.cuda.stream(transfer_stream):
+        transfer_stream.wait_event(layout_ready)
+        torch.cuda._sleep(20_000_000)
+        captured.copy_(marker_pool.buffer[survivor_physical])
+        transfer_done.record()
+
+    allocator.register_external_transfer_event(transfer_done)
+    assert not transfer_done.query()
+    allocator.free(virtual[:1])
+    torch.cuda.synchronize()
+
+    assert captured.item() == survivor_virtual.item()
+    relocated = allocator.virtual_to_physical[survivor_virtual]
+    assert relocated.item() == physical[0].item()
+    assert marker_pool.buffer[relocated].item() == survivor_virtual.item()
+
+
+@pytest.mark.skipif(
+    not hasattr(torch.cuda, "_sleep"),
+    reason="CUDA sleep is required for race coverage.",
+)
+def test_external_transfer_event_orders_lazy_hole_reuse():
+    """A delayed D2H-like reader must finish before a freed row is reused."""
+    allocator, marker_pool = _make_cuda_allocator(lazy_compaction=True)
+    virtual = allocator.alloc(4)
+    physical = allocator.virtual_to_physical[virtual]
+    marker_pool.buffer[physical] = virtual
+    freed_virtual = virtual[0].clone()
+    freed_physical = physical[0].clone()
+    captured = torch.full((), -1, dtype=torch.int64, device=DEVICE)
+
+    transfer_stream = torch.cuda.Stream()
+    layout_ready = torch.cuda.Event()
+    transfer_done = torch.cuda.Event()
+    layout_ready.record()
+    with torch.cuda.stream(transfer_stream):
+        transfer_stream.wait_event(layout_ready)
+        torch.cuda._sleep(20_000_000)
+        captured.copy_(marker_pool.buffer[freed_physical])
+        transfer_done.record()
+
+    allocator.register_external_transfer_event(transfer_done)
+    assert not transfer_done.query()
+    allocator.free(virtual[:1])
+    replacement = allocator.alloc(1)
+    replacement_physical = allocator.virtual_to_physical[replacement]
+    marker_pool.buffer[replacement_physical] = 9999
+    torch.cuda.synchronize()
+
+    assert captured.item() == freed_virtual.item()
+    assert replacement_physical.item() == freed_physical.item()
+    assert marker_pool.buffer[replacement_physical].item() == 9999

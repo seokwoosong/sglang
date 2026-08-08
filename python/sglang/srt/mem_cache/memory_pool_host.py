@@ -1577,6 +1577,9 @@ class PoolEntry:
     # D<->H transfer. Tree nodes and allocators continue to own virtual IDs;
     # only raw device-pool tensor accesses consume the translated IDs.
     device_index_translate_fn: Optional[Callable] = None
+    # Optional row-aware fence registration. Unified allocators use it to pin
+    # only the translated physical rows touched by an asynchronous D<->H copy.
+    device_transfer_fence_fn: Optional[Callable] = None
 
 
 class HostPoolGroup:

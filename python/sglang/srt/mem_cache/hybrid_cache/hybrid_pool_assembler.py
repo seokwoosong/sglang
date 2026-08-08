@@ -150,6 +150,7 @@ def build_pool_entry(
     device_alloc_fn: Optional[Callable[[int], Any]] = None,
     device_free_fn: Optional[Callable[[Any], Any]] = None,
     device_index_translate_fn: Optional[Callable[[Any], Any]] = None,
+    device_transfer_fence_fn: Optional[Callable[[Any, Any], Any]] = None,
 ) -> PoolEntry:
     return PoolEntry(
         name=name,
@@ -162,6 +163,7 @@ def build_pool_entry(
         device_alloc_fn=device_alloc_fn,
         device_free_fn=device_free_fn,
         device_index_translate_fn=device_index_translate_fn,
+        device_transfer_fence_fn=device_transfer_fence_fn,
     )
 
 
@@ -656,6 +658,25 @@ def build_hybrid_mamba_stack(
     mamba_index_translate_fn = getattr(
         params.req_to_token_pool, "translate_mamba_indices", None
     )
+    full_transfer_fence_fn = None
+    mamba_transfer_fence_fn = None
+    is_unified_mamba = hasattr(kv_pool, "_unified_buffer") and getattr(
+        mamba_pool, "_unified_buffer", None
+    ) is getattr(kv_pool, "_unified_buffer", None)
+    if is_unified_mamba:
+        full_allocator = getattr(
+            params.token_to_kv_pool_allocator, "full_attn_allocator", None
+        )
+        shared_mamba_allocator = getattr(
+            params.token_to_kv_pool_allocator, "mamba_allocator", None
+        )
+        full_transfer_fence_fn = getattr(
+            full_allocator, "register_external_transfer", None
+        )
+        mamba_transfer_fence_fn = getattr(
+            shared_mamba_allocator, "register_external_transfer", None
+        )
+
     kv_host_pool = build_kv_host_pool(
         kv_pool=kv_pool,
         page_size=params.page_size,
@@ -687,6 +708,7 @@ def build_hybrid_mamba_stack(
             transfer_layer_num=transfer_layer_num + len(mtp_draft_device_pools),
             is_anchor=True,
             device_index_translate_fn=full_index_translate_fn,
+            device_transfer_fence_fn=full_transfer_fence_fn,
         ),
         build_pool_entry(
             name=PoolName.MAMBA,
@@ -699,6 +721,7 @@ def build_hybrid_mamba_stack(
             device_alloc_fn=mamba_allocator.alloc,
             device_free_fn=mamba_allocator.free,
             device_index_translate_fn=mamba_index_translate_fn,
+            device_transfer_fence_fn=mamba_transfer_fence_fn,
         ),
     ]
     host_pool_group = HostPoolGroup(entries)

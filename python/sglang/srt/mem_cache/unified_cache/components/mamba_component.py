@@ -482,8 +482,49 @@ class MambaComponent(TreeComponent):
         """Allocate one mamba pool slot, evicting if necessary."""
         slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
         if slot is None:
-            self.cache.evict(self._mamba_slot_eviction_params())
+            params = self._mamba_slot_eviction_params()
+            self.cache.evict(params)
             slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
+            if slot is None and params.num_tokens == 0:
+                # An evicted Mamba row can remain transfer-fenced until its
+                # write-through completes. Fall back to moving the Full
+                # frontier so allocation can use fresh shared-gap bytes now.
+                full_token_cost_fn = getattr(
+                    self.cache.token_to_kv_pool_allocator,
+                    "mamba_slot_full_token_cost",
+                    None,
+                )
+                if full_token_cost_fn is not None:
+                    self.cache.evict(EvictParams(num_tokens=full_token_cost_fn()))
+                    slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
+            if slot is None and hasattr(self.cache, "writing_check"):
+                # Virtual IDs of write-through-demoted nodes are released only
+                # when their D2H acknowledgements are reaped. At absolute slot
+                # exhaustion there is no independent ID for overlap, so this
+                # exceptional slow path must finish pending writes before retry.
+                self.cache.writing_check(write_back=True)
+                slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
+                if slot is None:
+                    # The completed write releases the backup lock, making its
+                    # checkpoint evictable only now. Evict once more to obtain
+                    # a virtual Mamba ID; Full-byte eviction alone cannot grow
+                    # that finite ID namespace.
+                    full_token_cost_fn = getattr(
+                        self.cache.token_to_kv_pool_allocator,
+                        "mamba_slot_full_token_cost",
+                        None,
+                    )
+                    self.cache.evict(
+                        EvictParams(
+                            num_tokens=(
+                                full_token_cost_fn()
+                                if full_token_cost_fn is not None
+                                else 0
+                            ),
+                            mamba_num=1,
+                        )
+                    )
+                    slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
             if slot is None:
                 allocator = self.cache.req_to_token_pool.mamba_allocator
                 raise AssertionError(
@@ -492,6 +533,8 @@ class MambaComponent(TreeComponent):
                     f"schedulable={allocator.schedulable_available_size()}, "
                     f"mamba_evictable={self.cache.mamba_evictable_size()}, "
                     f"mamba_protected={self.cache.mamba_protected_size()}, "
+                    "ongoing_writes="
+                    f"{len(getattr(self.cache, 'ongoing_write_through', ()))}, "
                     f"allocator={allocator.allocator_state_str()}, "
                     f"cache={self.cache.available_and_evictable_str()}"
                 )
