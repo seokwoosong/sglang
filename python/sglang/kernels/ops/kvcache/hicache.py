@@ -327,16 +327,14 @@ def transfer_hicache_all_layer_staged_lf_pf(
     *,
     page_size: int,
     src_stride_bytes: int | None = None,
+    src_is_page_major: bool = False,
     element_size: int | None = None,
     unroll: int | None = None,
     block_quota: int | None = None,
 ) -> None:
     element_dim = staging_k[0, 0].numel()
     element_size = element_size or (element_dim * staging_k.element_size())
-    # relayout.cuh addresses a source as (page, token-within-page). Dense
-    # layer-first sources therefore advance by one complete page here; unified
-    # page-envelope callers pass their larger physical stride(0) explicitly.
-    src_stride_bytes = src_stride_bytes or (element_size * page_size)
+    src_stride_bytes = src_stride_bytes or element_size
     block_quota = block_quota or DEFAULT_BLOCK_QUOTA
     unroll = unroll or _default_unroll(element_size)
     src_page_indices = src_indices[::page_size].contiguous()
@@ -366,6 +364,7 @@ def transfer_hicache_all_layer_staged_lf_pf(
             v_ptr_src,
             page_size,
             src_stride_bytes,
+            src_is_page_major,
         )
 
 
@@ -385,8 +384,7 @@ def transfer_hicache_all_layer_mla_staged_lf_pf(
 ) -> None:
     element_dim = staging[0, 0].numel()
     element_size = element_size or (element_dim * staging.element_size())
-    # See transfer_hicache_all_layer_staged_lf_pf: this is a source-page stride.
-    src_stride_bytes = src_stride_bytes or (element_size * page_size)
+    src_stride_bytes = src_stride_bytes or element_size
     block_quota = block_quota or DEFAULT_BLOCK_QUOTA
     unroll = unroll or _default_unroll(element_size)
     src_page_indices = src_indices[::page_size].contiguous()

@@ -230,7 +230,8 @@ struct HiCacheStagedWriteBackKernel {
       const tvm::ffi::TensorView k_ptr_src,
       const tvm::ffi::TensorView v_ptr_src,
       const int64_t page_size,
-      const int64_t src_stride_bytes) {
+      const int64_t src_stride_bytes,
+      const bool src_is_page_major) {
     using namespace host;
 
     auto T = SymbolicSize{"num_tokens"};
@@ -301,6 +302,7 @@ struct HiCacheStagedWriteBackKernel {
         .num_pages = static_cast<uint32_t>(P.unwrap()),
         .num_layers = static_cast<uint32_t>(N.unwrap()),
         .page_size = static_cast<uint32_t>(page_size),
+        .src_is_page_major = static_cast<uint32_t>(src_is_page_major),
         .src_stride_bytes = src_stride_bytes,
     };
     const auto device = device_.unwrap();
@@ -340,7 +342,8 @@ struct HiCacheStagedWriteBackKernel {
       const tvm::ffi::TensorView k_ptr_src,
       const tvm::ffi::TensorView v_ptr_src,
       const int64_t page_size,
-      const int64_t src_stride_bytes) {
+      const int64_t src_stride_bytes,
+      const bool src_is_page_major) {
     run_staged_impl<false>(
         k_cache_dst,
         v_cache_dst,
@@ -351,7 +354,8 @@ struct HiCacheStagedWriteBackKernel {
         k_ptr_src,
         v_ptr_src,
         page_size,
-        src_stride_bytes);
+        src_stride_bytes,
+        src_is_page_major);
   }
 
   static void run_all_mla_lf_pf_staged(
@@ -372,7 +376,8 @@ struct HiCacheStagedWriteBackKernel {
         ptr_src,
         ptr_src,
         page_size,
-        src_stride_bytes);
+        src_stride_bytes,
+        false);
   }
 };
 

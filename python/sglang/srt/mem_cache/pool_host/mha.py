@@ -402,6 +402,7 @@ class MHATokenToKVPoolHost(HostKVCache):
                             device_pool.k_buffer[0].stride(0)
                             * device_pool.k_buffer[0].dtype.itemsize
                         ),
+                        src_is_page_major=device_pool.k_buffer[0].ndim == 4,
                     )
                 elif self.can_use_write_back_jit:
                     jit_transfer_hicache_all_layer_staged_lf_pf(
