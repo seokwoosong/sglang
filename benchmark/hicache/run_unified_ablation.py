@@ -31,7 +31,7 @@ DEFAULT_MODEL = Path(
     "models--Qwen--Qwen3.5-0.8B/snapshots/"
     "2fc06364715b967f1860aea9cf38778875588b17"
 )
-EVAL_SERVER_SHA = "936a38b31b99e75e27974ccdf84767a1cee39adb"
+EVAL_SERVER_SHA = "7e41fa422723dda60232d425f8b8d98b30eea91d"
 EVAL_SERVER_WORKTREE = Path("/home/sukwoo24/sglang-eval-worktrees/qwen08-eval-server")
 
 VARIANTS = {
