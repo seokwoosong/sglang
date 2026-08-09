@@ -2296,6 +2296,15 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
     def get_kvcache(self):
         return self._kvcache
 
+    def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor) -> None:
+        """Move full-attention KV addressed by public (virtual) token IDs."""
+        if tgt_loc.numel() == 0:
+            return
+        with record_function("UnifiedMambaAlloc.move_kv_cache"):
+            tgt_physical = self.translate_kv_loc(tgt_loc)
+            src_physical = self.translate_kv_loc(src_loc)
+            self._kvcache.move_kv_cache(tgt_physical, src_physical)
+
     def alloc(self, need_size: int) -> Optional[torch.Tensor]:
         with record_function("UnifiedMambaAlloc.alloc"):
             return self.full_attn_allocator.alloc(need_size)

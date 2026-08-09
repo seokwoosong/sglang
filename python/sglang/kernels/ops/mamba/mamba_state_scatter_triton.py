@@ -6,9 +6,27 @@ This kernel replaces the expensive advanced indexing operations in
 avoiding multiple `index_elementwise_kernel` launches.
 """
 
+import math
+
 import torch
 import triton
 import triton.language as tl
+
+
+def _has_compact_trailing_dims(tensor: torch.Tensor, start_dim: int) -> bool:
+    """Return whether ``tensor[start_dim:]`` is dense row-major storage.
+
+    The unified Mamba pool deliberately has non-contiguous layer and cache-slot
+    axes because every slot is embedded in a page-first state envelope.  The
+    scatter kernels receive those outer strides explicitly, so only the state
+    payload within one ``(layer, slot)`` row needs to be compact.
+    """
+    expected_stride = 1
+    for dim in range(tensor.ndim - 1, start_dim - 1, -1):
+        if tensor.shape[dim] > 1 and tensor.stride(dim) != expected_stride:
+            return False
+        expected_stride *= tensor.shape[dim]
+    return True
 
 
 @triton.jit
@@ -258,7 +276,7 @@ def fused_mamba_state_scatter_with_mask(
     dst_req_size = dst.shape[1]
 
     # Flatten trailing dimensions: number of elements per (layer, cache_line) entry.
-    elem_per_entry = dst.numel() // (dst.shape[0] * dst.shape[1])
+    elem_per_entry = math.prod(dst.shape[2:])
 
     # Get strides (in elements, not bytes)
     src_layer_stride = src.stride(0)
@@ -271,11 +289,13 @@ def fused_mamba_state_scatter_with_mask(
     dst_indices_raw = dst_indices_raw.to(torch.int32).contiguous()
     step_indices_raw = step_indices_raw.to(torch.int32).contiguous()
 
-    # Ensure tensors are contiguous
-    if not dst.is_contiguous():
-        raise ValueError("dst tensor must be contiguous")
-    if not src.is_contiguous():
-        raise ValueError("src tensor must be contiguous")
+    # Layer/request axes may be strided (the unified page-first Mamba
+    # envelope). The kernel receives those strides explicitly and flat-copies
+    # only the compact state payload after them.
+    if not _has_compact_trailing_dims(dst, 2):
+        raise ValueError("dst state payload dimensions must be contiguous")
+    if not _has_compact_trailing_dims(src, 3):
+        raise ValueError("src state payload dimensions must be contiguous")
 
     # Block size for copying elements
     BLOCK_SIZE = 1024
@@ -373,7 +393,7 @@ def _fused_conv_window_scatter_with_mask_kernel(
 
 
 def fused_conv_window_scatter_with_mask(
-    dst: torch.Tensor,  # conv_states [num_layers, cache_size, dim, K-1] (contiguous)
+    dst: torch.Tensor,  # conv_states [num_layers, cache_size, dim, K-1]
     src: torch.Tensor,  # deduped conv-window view [num_layers, spec_size, draft_tokens, dim, K-1]
     dst_indices_raw: torch.Tensor,  # [total_requests]
     step_indices_raw: torch.Tensor,  # [total_requests], entry >= 0 means valid
@@ -384,8 +404,8 @@ def fused_conv_window_scatter_with_mask(
     overlapping ``as_strided`` view over a shared ``[..., dim, D+K-2]`` buffer,
     so its per-step windows are intentionally non-contiguous. This kernel indexes
     ``(dim, win)`` elements through the view's strides instead of flat-copying.
-    ``dst`` (the real conv-state pool) is the usual contiguous
-    ``[layers, cache, dim, K-1]``.
+    ``dst`` may have strided layer/cache axes (as in the unified page-first
+    Mamba envelope), but each ``[dim, K-1]`` state payload must be compact.
     """
     total_requests = step_indices_raw.shape[0]
     if total_requests == 0:
@@ -420,12 +440,11 @@ def fused_conv_window_scatter_with_mask(
     src_step_size = src.shape[2]
     dst_req_size = dst.shape[1]
 
-    # `dst` stays contiguous; `src` is an intentionally non-contiguous (overlapping)
-    # view, so we do NOT assert src contiguity here (unlike the dense scatter).
-    if not dst.is_contiguous():
-        raise ValueError(
-            "dst tensor in fused_conv_window_scatter_with_mask must be contiguous"
-        )
+    # `src` is an intentionally non-contiguous (overlapping) view. The kernel
+    # indexes it through every explicit stride. `dst` is flat-indexed only
+    # within one conv state row, so its two trailing axes must stay compact.
+    if not _has_compact_trailing_dims(dst, 2):
+        raise ValueError("dst conv-state payload dimensions must be contiguous")
 
     dst_indices_raw = dst_indices_raw.to(torch.int32).contiguous()
     step_indices_raw = step_indices_raw.to(torch.int32).contiguous()

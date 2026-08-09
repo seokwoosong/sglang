@@ -9,6 +9,7 @@ import torch
 
 try:
     from sglang.kernels.ops.mamba.mamba_state_scatter_triton import (
+        fused_conv_window_scatter_with_mask,
         fused_mamba_state_scatter_with_mask,
     )
 
@@ -211,6 +212,102 @@ class TestMambaStateScatterCorrectness(unittest.TestCase):
 
         torch.testing.assert_close(ssm_fused, ssm_ref)
         torch.testing.assert_close(conv_fused, conv_ref)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA is required for this test.")
+    def test_fused_scatter_supports_unified_envelope_strides(self):
+        """Speculative verify must commit into page-first unified Mamba views.
+
+        Their layer and cache-slot axes are not contiguous: each physical slot
+        contains every Mamba layer's conv and SSM state in one envelope.  The
+        payload axes within a state row remain compact, which is the contract
+        supported by the scatter kernels.
+        """
+        if fused_mamba_state_scatter_with_mask is None:
+            self.skipTest(
+                f"fused_mamba_state_scatter_with_mask import failed: {_FUSED_IMPORT_ERROR}"
+            )
+
+        device = torch.device("cuda")
+        dtype = torch.bfloat16
+        num_layers, cache_size = 3, 7
+        batch_size, draft_steps = 3, 4
+        temporal_shape = (2, 3)
+        conv_shape = (4, 3)
+        temporal_elems = 6
+        conv_elems = 12
+        envelope_elems = 64
+
+        raw = torch.full(
+            (cache_size * envelope_elems,), -99, device=device, dtype=dtype
+        )
+        conv_dst = raw.as_strided(
+            (num_layers, cache_size, *conv_shape),
+            (conv_elems, envelope_elems, conv_shape[1], 1),
+        )
+        temporal_dst = raw.as_strided(
+            (num_layers, cache_size, *temporal_shape),
+            (temporal_elems, envelope_elems, temporal_shape[1], 1),
+            storage_offset=num_layers * conv_elems,
+        )
+        conv_dst.zero_()
+        temporal_dst.zero_()
+        self.assertFalse(conv_dst.is_contiguous())
+        self.assertFalse(temporal_dst.is_contiguous())
+
+        temporal_src = (
+            torch.arange(
+                num_layers * batch_size * draft_steps * temporal_elems,
+                device=device,
+                dtype=torch.float32,
+            )
+            .reshape(num_layers, batch_size, draft_steps, *temporal_shape)
+            .to(dtype)
+        )
+        conv_src = (
+            torch.arange(
+                num_layers * batch_size * draft_steps * conv_elems,
+                device=device,
+                dtype=torch.float32,
+            )
+            .reshape(num_layers, batch_size, draft_steps, *conv_shape)
+            .to(dtype)
+            + 1000
+        )
+
+        state_indices = torch.tensor([1, 5, 3], device=device, dtype=torch.int32)
+        accepted_steps = torch.tensor([2, -1, 0], device=device, dtype=torch.int32)
+        track_indices = torch.tensor([6, 4, 0], device=device, dtype=torch.int32)
+        track_steps = torch.tensor([1, 3, -1], device=device, dtype=torch.int32)
+
+        temporal_ref = torch.zeros(
+            temporal_dst.shape, device=device, dtype=temporal_dst.dtype
+        )
+        conv_ref = torch.zeros(conv_dst.shape, device=device, dtype=conv_dst.dtype)
+        for request_idx in range(batch_size):
+            for dst_indices, step_indices in (
+                (state_indices, accepted_steps),
+                (track_indices, track_steps),
+            ):
+                step = int(step_indices[request_idx].item())
+                if step < 0:
+                    continue
+                dst_idx = int(dst_indices[request_idx].item())
+                temporal_ref[:, dst_idx] = temporal_src[:, request_idx, step]
+                conv_ref[:, dst_idx] = conv_src[:, request_idx, step]
+
+        for dst_indices, step_indices in (
+            (state_indices, accepted_steps),
+            (track_indices, track_steps),
+        ):
+            fused_mamba_state_scatter_with_mask(
+                temporal_dst, temporal_src, dst_indices, step_indices
+            )
+            fused_conv_window_scatter_with_mask(
+                conv_dst, conv_src, dst_indices, step_indices
+            )
+
+        torch.testing.assert_close(temporal_dst.contiguous(), temporal_ref)
+        torch.testing.assert_close(conv_dst.contiguous(), conv_ref)
 
 
 if __name__ == "__main__":  # pragma: no cover

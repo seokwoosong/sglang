@@ -7886,10 +7886,17 @@ class ServerArgs:
         assert self.disaggregation_mode == "null", (
             "--enable-unified-memory is not yet compatible with PD " "disaggregation."
         )
-        assert self.speculative_algorithm is None, (
-            "--enable-unified-memory is not yet compatible with speculative "
-            "decoding."
+        unified_spec_allowlist = {None, "NGRAM"}
+        assert self.speculative_algorithm in unified_spec_allowlist, (
+            "--enable-unified-memory currently supports speculative decoding "
+            "only with NGRAM; got "
+            f"{self.speculative_algorithm}."
         )
+        if self.speculative_algorithm is not None:
+            assert self.page_size == 1, (
+                "--enable-unified-memory with speculative decoding currently "
+                f"requires --page-size 1; got {self.page_size}."
+            )
         assert (
             not self.enable_lmcache
         ), "--enable-unified-memory is not yet compatible with --enable-lmcache."

@@ -744,9 +744,10 @@ def move_accept_tokens_to_target_kvcache(
         accept_out_cache_loc,
         size,
     )
-    token_to_kv_pool_allocator.get_kvcache().move_kv_cache(
-        tgt_cache_loc, accept_out_cache_loc
-    )
+    # Locations above live in the allocator's public address space: physical for
+    # static pools and virtual for unified memory. Let the allocator resolve the
+    # latter before the storage-level move.
+    token_to_kv_pool_allocator.move_kv_cache(tgt_cache_loc, accept_out_cache_loc)
 
 
 def prepare_mamba_track_for_verify(batch: ScheduleBatch) -> None:
@@ -855,6 +856,9 @@ def commit_mamba_states_after_verify(
     # ring is allocated only then; KDA never allocates the cursors.
     req_pool = model_runner.req_to_token_pool
     mamba_pool = getattr(req_pool, "mamba_pool", None)
+    mamba_track_indices = batch.mamba_track_indices
+    if mamba_track_indices is not None:
+        mamba_track_indices = req_pool.translate_mamba_indices(mamba_track_indices)
 
     # Fold-every-commit: replay the accepted prefix from the ring into
     # `temporal`; the same fold stores the interval-crossing state to the
@@ -871,7 +875,9 @@ def commit_mamba_states_after_verify(
         )
 
         spec_state = req_pool.get_speculative_mamba2_params_all_layers()
-        state_batch_indices = req_pool.get_mamba_indices(batch.req_pool_indices)
+        state_batch_indices = req_pool.translate_mamba_indices(
+            req_pool.get_mamba_indices(batch.req_pool_indices)
+        )
         last_correct_step_indices, mamba_steps_to_track = _verify_commit_step_indices(
             batch=batch,
             accept_index=accept_index,
@@ -883,7 +889,7 @@ def commit_mamba_states_after_verify(
             state_batch_indices=state_batch_indices,
             accept_lens=accept_lens,
             last_correct_step_indices=last_correct_step_indices,
-            mamba_track_indices=batch.mamba_track_indices,
+            mamba_track_indices=mamba_track_indices,
             mamba_steps_to_track=mamba_steps_to_track,
             null_block_id=-1,
         )
@@ -905,7 +911,9 @@ def commit_mamba_states_after_verify(
 
         spec_state = req_pool.get_speculative_mamba2_params_all_layers()
         bs = accept_lens.shape[0]
-        state_batch_indices = req_pool.get_mamba_indices(batch.req_pool_indices)
+        state_batch_indices = req_pool.translate_mamba_indices(
+            req_pool.get_mamba_indices(batch.req_pool_indices)
+        )
         # Advance the per-slot circular cursors by the accepted count (incl. the
         # bonus token). max_cache_len = ring length L = replayssm_d.shape[-2].
         commit_gdn_replayssm_spec(
@@ -958,7 +966,9 @@ def commit_mamba_states_after_verify(
 
         spec_state = req_pool.get_speculative_mamba2_params_all_layers()
         bs = accept_lens.shape[0]
-        state_batch_indices = req_pool.get_mamba_indices(batch.req_pool_indices)
+        state_batch_indices = req_pool.translate_mamba_indices(
+            req_pool.get_mamba_indices(batch.req_pool_indices)
+        )
         accept_indices_offset = torch.arange(
             0,
             bs * draft_token_num,
@@ -975,7 +985,6 @@ def commit_mamba_states_after_verify(
         # the track ping-pong slot (mirrors the regular commit's
         # mamba_steps_to_track); commit_kda_replayssm_spec folds it in one pass, so
         # `temporal` stays current and no device-side force-flush is needed.
-        mamba_track_indices = batch.mamba_track_indices
         mamba_steps_to_track = None
         if mamba_track_indices is not None:
             ti = get_exec().mamba.mamba_track_interval
@@ -1016,7 +1025,7 @@ def commit_mamba_states_after_verify(
         if hasattr(attn_backend, "update_mamba_state_after_mtp_verify"):
             attn_backend.update_mamba_state_after_mtp_verify(
                 last_correct_step_indices=last_correct_step_indices,
-                mamba_track_indices=batch.mamba_track_indices,
+                mamba_track_indices=mamba_track_indices,
                 mamba_steps_to_track=mamba_steps_to_track,
                 model=model_runner.model,
                 req_pool_indices=batch.req_pool_indices[:bs],

@@ -185,6 +185,29 @@ class TestMultiEndedAllocator(unittest.TestCase):
         mamba_alloc.bind_peer(full_alloc)
         return pool, full_alloc, mamba_alloc, full_kv, mamba_kv
 
+    def test_unified_speculative_kv_move_translates_public_ids(self):
+        """Accepted speculative tokens are addressed by virtual token IDs."""
+        from sglang.srt.mem_cache.multi_ended_allocator import (
+            UnifiedMambaTokenToKVPoolAllocator,
+        )
+
+        allocator = UnifiedMambaTokenToKVPoolAllocator.__new__(
+            UnifiedMambaTokenToKVPoolAllocator
+        )
+        allocator.full_attn_allocator = MagicMock()
+        allocator.full_attn_allocator.translate_kv_loc.side_effect = (
+            lambda loc, out=None: loc + 100
+        )
+        allocator._kvcache = MagicMock()
+
+        target_virtual = torch.tensor([7, 9], dtype=torch.int64)
+        source_virtual = torch.tensor([21, 22], dtype=torch.int64)
+        allocator.move_kv_cache(target_virtual, source_virtual)
+
+        moved_target, moved_source = allocator._kvcache.move_kv_cache.call_args.args
+        torch.testing.assert_close(moved_target, torch.tensor([107, 109]))
+        torch.testing.assert_close(moved_source, torch.tensor([121, 122]))
+
     def _check_invariants(self, alloc: MultiEndedAllocator, kv: _FakeKVCache):
         v2p = alloc.virtual_to_physical
         p2v = alloc.physical_to_virtual

@@ -60,6 +60,15 @@ class BaseTokenToKVPoolAllocator(abc.ABC):
     def get_kvcache(self):
         return self._kvcache
 
+    def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor) -> None:
+        """Move KV rows addressed in this allocator's public location space.
+
+        Static allocators expose physical locations, so the default implementation
+        delegates directly to the pool. Allocators whose public IDs are virtual
+        override this method and resolve both sides before touching storage.
+        """
+        self.get_kvcache().move_kv_cache(tgt_loc, src_loc)
+
     def free_group_begin(self):
         self.is_not_in_free_group = False
         self.free_group = []

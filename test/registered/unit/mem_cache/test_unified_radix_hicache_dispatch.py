@@ -874,6 +874,40 @@ class TestUnifiedMHAHostLoad(unittest.TestCase):
 
 
 class TestUnifiedHiCacheServerArgs(unittest.TestCase):
+    def test_ngram_speculative_decoding_is_accepted_at_page_size_one(self):
+        from sglang.srt.server_args import ServerArgs
+
+        args = ServerArgs(
+            model_path="dummy",
+            enable_unified_memory=True,
+            speculative_algorithm="NGRAM",
+            page_size=1,
+        )
+
+        args._handle_unified_memory_pool()
+
+    def test_unsupported_speculative_algorithm_is_rejected(self):
+        from sglang.srt.server_args import ServerArgs
+
+        with self.assertRaisesRegex(AssertionError, "only with NGRAM"):
+            ServerArgs(
+                model_path="dummy",
+                enable_unified_memory=True,
+                speculative_algorithm="EAGLE",
+                page_size=1,
+            )._handle_unified_memory_pool()
+
+    def test_unified_speculative_decoding_requires_page_size_one(self):
+        from sglang.srt.server_args import ServerArgs
+
+        with self.assertRaisesRegex(AssertionError, "requires --page-size 1"):
+            ServerArgs(
+                model_path="dummy",
+                enable_unified_memory=True,
+                speculative_algorithm="NGRAM",
+                page_size=2,
+            )._handle_unified_memory_pool()
+
     def test_write_back_is_accepted(self):
         from sglang.srt.server_args import ServerArgs
 
