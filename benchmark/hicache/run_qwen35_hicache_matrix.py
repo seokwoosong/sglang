@@ -53,6 +53,8 @@ VARIANT_POLICIES = {
     "eval-u2": ("write_back", "write_through"),
     "eval-u3": ("write_back", "write_through"),
 }
+GRAPH_VARIANTS = ("eval-s1", "eval-u0", "eval-u3")
+GRAPH_WORKLOADS = ("short-3k", "long-50k")
 
 
 def task_completed(artifact_root: Path, run_name: str, variant: str) -> bool:
@@ -286,9 +288,103 @@ def run_parity(args: argparse.Namespace) -> None:
             run_task(args, command=command, run_name=run_name, variant=variant)
 
 
+def graph_variant_order(args: argparse.Namespace) -> list[str]:
+    selected = set(args.variants)
+    variants = [variant for variant in GRAPH_VARIANTS if variant in selected]
+    if not variants:
+        raise ValueError(f"Graph stages require one of {GRAPH_VARIANTS}")
+    offset = (args.repetition - 1) % len(variants)
+    return variants[offset:] + variants[:offset]
+
+
+def graph_mode_order(args: argparse.Namespace) -> list[str]:
+    modes = list(args.cuda_graph_modes)
+    return list(reversed(modes)) if args.repetition % 2 == 0 else modes
+
+
+def run_graph(args: argparse.Namespace) -> None:
+    workloads = [item for item in WORKLOADS if item.label in args.graph_workloads]
+    if args.repetition % 2 == 0:
+        workloads.reverse()
+    for variant in graph_variant_order(args):
+        policy = "none" if variant == "eval-u0" else "write_back"
+        for workload in workloads:
+            concurrency = (
+                args.long_concurrency
+                if workload.label == "long-50k"
+                else workload.concurrency
+            )
+            for cuda_graph_mode in graph_mode_order(args):
+                run_name = (
+                    f"graph-r{args.repetition}-{args.model_size}-{workload.label}-"
+                    f"p{args.pages[0]}-{policy}-cg-{cuda_graph_mode}"
+                )
+                command = common_command(
+                    args,
+                    variant=variant,
+                    policy=policy,
+                    page_size=args.pages[0],
+                    run_name=run_name,
+                    scenario="steady",
+                    input_len=workload.input_len,
+                    output_len=workload.output_len,
+                    cuda_graph_mode=cuda_graph_mode,
+                    profile=False,
+                )
+                command.extend(
+                    [
+                        "--groups",
+                        str(workload.groups),
+                        "--rounds",
+                        str(workload.rounds),
+                        "--shared-ratio",
+                        "0.95",
+                        "--prime-output-len",
+                        "1",
+                        "--prime-repeats",
+                        "1",
+                        "--max-concurrency",
+                        str(concurrency),
+                        "--reverse-group-order",
+                        "--require-eviction",
+                    ]
+                )
+                if variant != "eval-u0":
+                    command.extend(
+                        ["--require-loadback", "--require-backup", "--require-host-hit"]
+                    )
+                run_task(args, command=command, run_name=run_name, variant=variant)
+
+
+def run_graph_parity(args: argparse.Namespace) -> None:
+    for variant in graph_variant_order(args):
+        policy = "none" if variant == "eval-u0" else "write_back"
+        for cuda_graph_mode in graph_mode_order(args):
+            run_name = (
+                f"graph-parity-r{args.repetition}-{args.model_size}-"
+                f"p{args.pages[0]}-{policy}-cg-{cuda_graph_mode}"
+            )
+            command = common_command(
+                args,
+                variant=variant,
+                policy=policy,
+                page_size=args.pages[0],
+                run_name=run_name,
+                scenario="parity",
+                input_len=10000,
+                output_len=64,
+                cuda_graph_mode=cuda_graph_mode,
+                profile=False,
+            )
+            command.extend(["--pressure-requests", "40", "--logprob-atol", "0.02"])
+            run_task(args, command=command, run_name=run_name, variant=variant)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=["clean", "profile", "parity"])
+    parser.add_argument(
+        "stage", choices=["clean", "profile", "parity", "graph", "graph-parity"]
+    )
     parser.add_argument("--model-size", choices=sorted(MODELS), default="0.8b")
     parser.add_argument("--pages", type=int, nargs="+", default=[1, 8, 32])
     parser.add_argument(
@@ -313,6 +409,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--hicache-size", type=int, default=12)
     parser.add_argument("--mem-fraction-static", type=float, default=0.27)
+    parser.add_argument(
+        "--cuda-graph-modes",
+        nargs="+",
+        choices=["enabled", "disabled"],
+        default=["enabled", "disabled"],
+        help="CUDA graph modes used by the graph ablation stages.",
+    )
+    parser.add_argument(
+        "--graph-workloads",
+        nargs="+",
+        choices=list(GRAPH_WORKLOADS),
+        default=list(GRAPH_WORKLOADS),
+    )
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     return parser
 
@@ -321,7 +430,15 @@ def main() -> None:
     args = build_parser().parse_args()
     args.artifact_root = args.artifact_root.resolve()
     started = time.monotonic()
-    {"clean": run_clean, "profile": run_profile, "parity": run_parity}[args.stage](args)
+    if args.stage in {"graph", "graph-parity"} and len(args.pages) != 1:
+        raise ValueError("Graph ablation stages require exactly one page size")
+    {
+        "clean": run_clean,
+        "profile": run_profile,
+        "parity": run_parity,
+        "graph": run_graph,
+        "graph-parity": run_graph_parity,
+    }[args.stage](args)
     print(f"matrix elapsed={time.monotonic() - started:.1f}s", flush=True)
 
 
