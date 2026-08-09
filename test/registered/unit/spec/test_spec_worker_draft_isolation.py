@@ -126,5 +126,46 @@ class TestSchedulerDraftServerArgs(CustomTestCase):
         self.assertEqual(server_args.load_format, "auto")
 
 
+class TestDraftKVLocationSpace(unittest.TestCase):
+    @staticmethod
+    def _runner(*, is_draft_worker, is_frozen_kv_mtp):
+        translator = lambda loc: loc + 100
+        allocator = SimpleNamespace(translate_kv_loc=translator)
+        return (
+            SimpleNamespace(
+                is_draft_worker=is_draft_worker,
+                spec_algorithm=SimpleNamespace(
+                    is_frozen_kv_mtp=lambda: is_frozen_kv_mtp
+                ),
+                token_to_kv_pool_allocator=allocator,
+            ),
+            translator,
+        )
+
+    def test_eagle_draft_uses_shared_virtual_ids_without_target_translation(self):
+        from sglang.srt.layers.attention.unified_mem_hooks import (
+            unified_kv_loc_translator,
+        )
+
+        runner, _ = self._runner(is_draft_worker=True, is_frozen_kv_mtp=False)
+        self.assertIsNone(unified_kv_loc_translator(runner))
+
+    def test_target_and_frozen_kv_draft_keep_target_translation(self):
+        from sglang.srt.layers.attention.unified_mem_hooks import (
+            unified_kv_loc_translator,
+        )
+
+        for is_draft_worker, is_frozen_kv_mtp in ((False, False), (True, True)):
+            with self.subTest(
+                is_draft_worker=is_draft_worker,
+                is_frozen_kv_mtp=is_frozen_kv_mtp,
+            ):
+                runner, translator = self._runner(
+                    is_draft_worker=is_draft_worker,
+                    is_frozen_kv_mtp=is_frozen_kv_mtp,
+                )
+                self.assertIs(unified_kv_loc_translator(runner), translator)
+
+
 if __name__ == "__main__":
     unittest.main()

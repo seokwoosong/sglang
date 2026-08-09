@@ -7886,12 +7886,18 @@ class ServerArgs:
         assert self.disaggregation_mode == "null", (
             "--enable-unified-memory is not yet compatible with PD " "disaggregation."
         )
-        unified_spec_allowlist = {None, "NGRAM"}
+        unified_spec_allowlist = {None, "NGRAM", "EAGLE"}
         assert self.speculative_algorithm in unified_spec_allowlist, (
             "--enable-unified-memory currently supports speculative decoding "
-            "only with NGRAM; got "
+            "only with NGRAM or built-in MTP (EAGLE); got "
             f"{self.speculative_algorithm}."
         )
+        if self.speculative_algorithm == "EAGLE":
+            assert self.speculative_draft_model_path is None, (
+                "--enable-unified-memory currently supports EAGLE only through "
+                "the target model's built-in MTP layers; an external "
+                "--speculative-draft-model-path is not yet supported."
+            )
         if self.speculative_algorithm is not None:
             assert self.page_size == 1, (
                 "--enable-unified-memory with speculative decoding currently "

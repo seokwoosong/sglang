@@ -165,9 +165,11 @@ class TritonAttnBackend(AttentionBackend):
         # dense-view MLA pool (translate_kv_loc_dense falls back to the physical
         # translate when kernel_page_multiplier == 1, so preferring it is exact for
         # both). Applied eagerly so the captured graph has no translate.
-        self._translate_kv_loc = getattr(
-            self.token_to_kv_pool_allocator, "translate_kv_loc_dense", None
-        ) or getattr(self.token_to_kv_pool_allocator, "translate_kv_loc", None)
+        from sglang.srt.layers.attention.unified_mem_hooks import (
+            unified_kv_loc_translator,
+        )
+
+        self._translate_kv_loc = unified_kv_loc_translator(model_runner)
         self.num_draft_tokens = get_spec().speculative_num_draft_tokens
         self.speculative_num_steps = get_spec().speculative_num_steps
         self.topk = get_spec().speculative_eagle_topk or 0
@@ -835,6 +837,12 @@ class TritonAttnBackend(AttentionBackend):
                 forward_batch.req_pool_indices,
                 kv_indices,
             )
+            # Unified memory keeps public (virtual) token ids in req_to_token,
+            # while the attention kernels read the physical KV pool. Decode and
+            # extend translate this buffer above/below; TARGET_VERIFY must do the
+            # same before its first full-attention layer consumes it.
+            if self._translate_kv_loc is not None:
+                kv_indices = self._translate_kv_loc(kv_indices)
 
             if self.sliding_window_size is not None and self.sliding_window_size > 0:
                 # window_kv_offsets gives the start position in custom mask

@@ -886,14 +886,39 @@ class TestUnifiedHiCacheServerArgs(unittest.TestCase):
 
         args._handle_unified_memory_pool()
 
-    def test_unsupported_speculative_algorithm_is_rejected(self):
+    def test_builtin_mtp_eagle_is_accepted_at_page_size_one(self):
         from sglang.srt.server_args import ServerArgs
 
-        with self.assertRaisesRegex(AssertionError, "only with NGRAM"):
+        args = ServerArgs(
+            model_path="dummy",
+            enable_unified_memory=True,
+            speculative_algorithm="EAGLE",
+            speculative_draft_model_path=None,
+            page_size=1,
+        )
+
+        args._handle_unified_memory_pool()
+
+    def test_external_eagle_draft_model_is_rejected(self):
+        from sglang.srt.server_args import ServerArgs
+
+        with self.assertRaisesRegex(AssertionError, "built-in MTP"):
             ServerArgs(
                 model_path="dummy",
                 enable_unified_memory=True,
                 speculative_algorithm="EAGLE",
+                speculative_draft_model_path="external/draft-model",
+                page_size=1,
+            )._handle_unified_memory_pool()
+
+    def test_unsupported_speculative_algorithm_is_rejected(self):
+        from sglang.srt.server_args import ServerArgs
+
+        with self.assertRaisesRegex(AssertionError, "only with NGRAM or built-in MTP"):
+            ServerArgs(
+                model_path="dummy",
+                enable_unified_memory=True,
+                speculative_algorithm="EAGLE3",
                 page_size=1,
             )._handle_unified_memory_pool()
 
