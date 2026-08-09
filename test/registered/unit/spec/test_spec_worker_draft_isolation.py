@@ -156,6 +156,7 @@ class TestDraftKVLocationSpace(unittest.TestCase):
 
     def test_builtin_mtp_draft_sharing_unified_envelope_uses_translation(self):
         from sglang.srt.layers.attention.unified_mem_hooks import (
+            draft_kv_shares_unified_envelope,
             unified_kv_loc_translator,
         )
 
@@ -164,7 +165,16 @@ class TestDraftKVLocationSpace(unittest.TestCase):
             is_frozen_kv_mtp=False,
             shared_draft_pool=True,
         )
+        self.assertTrue(draft_kv_shares_unified_envelope(runner))
         self.assertIs(unified_kv_loc_translator(runner), translator)
+
+    def test_separate_eagle_draft_does_not_share_unified_envelope(self):
+        from sglang.srt.layers.attention.unified_mem_hooks import (
+            draft_kv_shares_unified_envelope,
+        )
+
+        runner, _ = self._runner(is_draft_worker=True, is_frozen_kv_mtp=False)
+        self.assertFalse(draft_kv_shares_unified_envelope(runner))
 
     def test_target_and_frozen_kv_draft_keep_target_translation(self):
         from sglang.srt.layers.attention.unified_mem_hooks import (

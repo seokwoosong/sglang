@@ -24,6 +24,9 @@ from sglang.srt.layers.attention.trtllm_mha_backend import TRTLLMHAAttnBackend
 from sglang.srt.layers.attention.trtllm_mla_backend import (
     TRTLLMMLABackend,
 )
+from sglang.srt.layers.attention.unified_mem_hooks import (
+    draft_kv_shares_unified_envelope,
+)
 from sglang.srt.layers.moe.utils import (
     speculative_moe_a2a_backend_context,
     speculative_moe_backend_context,
@@ -356,7 +359,16 @@ class EagleDraftWorker(EagleDraftWorkerBase):
         # Capture draft
         decode_backend = get_exec().graph.cuda_graph_config.decode.backend
         capture_bs, _ = get_batch_sizes_to_capture(self.draft_runner)
-        if self.speculative_num_steps > 1:
+        draft_uses_unified_envelope = draft_kv_shares_unified_envelope(
+            self.draft_runner
+        )
+        if self.speculative_num_steps > 1 and draft_uses_unified_envelope:
+            log_info_on_rank0(
+                logger,
+                "Skip draft decode CUDA graph because the built-in MTP KV layer "
+                "shares the target unified-memory page envelope.",
+            )
+        if self.speculative_num_steps > 1 and not draft_uses_unified_envelope:
             tic = time.perf_counter()
             before_mem = get_available_gpu_memory(self.device, self.gpu_id)
             log_info_on_rank0(

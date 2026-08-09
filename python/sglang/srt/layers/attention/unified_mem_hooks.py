@@ -70,6 +70,15 @@ def unified_mla_hooks(allocator) -> UnifiedMLAHooks:
     )
 
 
+def draft_kv_shares_unified_envelope(model_runner) -> bool:
+    """Whether a draft worker's KV is a layer view of the target unified pool."""
+    if not model_runner.is_draft_worker:
+        return False
+    token_pool = getattr(model_runner, "token_to_kv_pool", None)
+    full_pool = getattr(token_pool, "full_kv_pool", None)
+    return getattr(full_pool, "_unified_buffer", None) is not None
+
+
 def unified_kv_loc_translator(model_runner):
     """Return the active pool's virtual-location translator, if any.
 
@@ -85,9 +94,7 @@ def unified_kv_loc_translator(model_runner):
             # public virtual ids. Built-in MTP under unified memory instead
             # aliases an appended layer view in the target's physical page
             # envelope, so it must follow the target v2p mapping as well.
-            token_pool = getattr(model_runner, "token_to_kv_pool", None)
-            full_pool = getattr(token_pool, "full_kv_pool", None)
-            if getattr(full_pool, "_unified_buffer", None) is None:
+            if not draft_kv_shares_unified_envelope(model_runner):
                 return None
 
     allocator = model_runner.token_to_kv_pool_allocator

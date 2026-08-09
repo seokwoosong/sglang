@@ -97,6 +97,25 @@ class TestTritonUnifiedTargetVerify(unittest.TestCase):
         )
         self.assertIsNone(backend.forward_metadata.out_cache_loc_full_physical)
 
+    def test_graph_replay_uses_verify_length_instead_of_stale_batch_length(self):
+        backend = self._make_backend(lambda loc: loc + 100)
+        backend.cuda_graph_kv_indices = torch.tensor([7, 8, 9, 0], dtype=torch.int64)
+        backend.cuda_graph_out_cache_loc_full_physical = torch.zeros(
+            4, dtype=torch.int64
+        )
+        backend.kv_indptr = torch.tensor([0, 3], dtype=torch.int32)
+        forward_batch = self._make_forward_batch()
+        forward_batch.seq_lens_sum = 1
+        forward_batch.spec_info.seq_lens_sum = 3
+        forward_batch.num_padding = 0
+
+        backend._translate_cuda_graph_shared_pool_locs(forward_batch, bs=1)
+
+        torch.testing.assert_close(
+            backend.cuda_graph_kv_indices,
+            torch.tensor([107, 108, 109, 0], dtype=torch.int64),
+        )
+
 
 class _FakeDraftIndicesKernel:
     def __getitem__(self, _grid):

@@ -676,11 +676,28 @@ class TritonAttnBackend(AttentionBackend):
         # per-step D2H `.item()` on the indptr.
         have_cpu_mirror = forward_batch.seq_lens_sum is not None
         # Full-attention read path. kv_indptr[bs] == seq_lens_sum.
-        n_kv = (
-            forward_batch.seq_lens_sum
-            if have_cpu_mirror
-            else int(self.kv_indptr[bs].item())
+        # TARGET_VERIFY owns a separate, per-iteration sequence-length mirror.
+        # ScheduleBatch.seq_lens_sum can still describe the preceding draft
+        # phase, which would leave the tail of kv_indices untranslated when the
+        # unified pool's virtual and physical rows differ.
+        verify_seq_lens_sum = (
+            getattr(forward_batch.spec_info, "seq_lens_sum", None)
+            if forward_batch.forward_mode.is_target_verify()
+            and forward_batch.spec_info is not None
+            else None
         )
+        if verify_seq_lens_sum is not None:
+            n_kv = (
+                verify_seq_lens_sum
+                + getattr(forward_batch, "num_padding", 0)
+                * self.get_cuda_graph_seq_len_fill_value()
+            )
+        else:
+            n_kv = (
+                forward_batch.seq_lens_sum
+                if have_cpu_mirror
+                else int(self.kv_indptr[bs].item())
+            )
         if n_kv > 0:
             self.cuda_graph_kv_indices[:n_kv] = self._translate_kv_loc(
                 self.cuda_graph_kv_indices[:n_kv]
