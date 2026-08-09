@@ -483,6 +483,18 @@ class KVCacheConfigurator:
             for i in config.full_attention_layer_ids
             if self.layer_info.start_layer <= i < self.layer_info.end_layer
         ]
+        draft_full_attention_layers = 0
+        if (
+            self.spec_algorithm.is_eagle()
+            and self.server_args.speculative_draft_model_path is None
+        ):
+            draft_full_attention_layers = int(
+                self.spec_aux_config.eagle_draft_num_layers or 0
+            )
+            assert not self.use_mla_backend or draft_full_attention_layers == 0, (
+                "built-in MTP draft KV sharing is not supported for MLA unified "
+                "memory yet"
+            )
 
         bundle = init_unified_mamba_pools(
             device=self.device,
@@ -502,6 +514,7 @@ class KVCacheConfigurator:
             ),
             mamba_layer_ids=mamba_layer_ids,
             full_attention_layer_ids=full_attention_layer_ids,
+            draft_full_attention_layers=draft_full_attention_layers,
             mamba2_cache_params=config.mamba2_cache_params,
             model_context_len=self.model_config.context_len,
             extra_max_context_len=extra_max_context_len,
@@ -1379,9 +1392,24 @@ class KVCacheConfigurator:
             if self.kv_cache_dtype_str == "mxfp8" and not self.use_mla_backend
             else mha_pool_class
         )
+        shared_draft_full_kv_pool = None
+        pool_size = max_total_num_tokens
+        if (
+            self.is_draft_worker
+            and self.server_args.speculative_draft_model_path is None
+            and hasattr(self.token_to_kv_pool_allocator, "make_draft_full_kv_pool")
+        ):
+            shared_draft_full_kv_pool = (
+                self.token_to_kv_pool_allocator.make_draft_full_kv_pool(
+                    self.draft_model_idx or 0
+                )
+            )
+            if shared_draft_full_kv_pool is not None:
+                pool_size = shared_draft_full_kv_pool.size
+
         token_to_kv_pool = HybridLinearKVPool(
             page_size=self.pool_page_size,
-            size=max_total_num_tokens,
+            size=pool_size,
             dtype=self.kv_cache_dtype,
             head_num=self.model_config.get_num_kv_heads(get_parallel().attn_tp_size),
             head_dim=self.model_config.head_dim,
@@ -1396,6 +1424,7 @@ class KVCacheConfigurator:
             full_kv_pool_class=full_pool_class,
             quant_method=quant_method,
             post_capture_active=self.post_capture_kv_active and quant_method is None,
+            full_kv_pool=shared_draft_full_kv_pool,
             **extra_args,
         )
         return token_to_kv_pool

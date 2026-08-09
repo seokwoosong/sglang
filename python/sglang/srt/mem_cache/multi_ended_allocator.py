@@ -2168,6 +2168,8 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
         forward_stream: Optional[torch.cuda.Stream] = None,
         lazy_compaction: bool = False,
         full_kernel_page_multiplier: int = 1,
+        target_full_layer_num: int = 0,
+        draft_full_layer_num: int = 0,
     ):
         full_max = unified_buffer.max_slots("full")
         super().__init__(
@@ -2182,6 +2184,8 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
         self._kvcache = kvcache
         self.page_size = page_size
         self.lazy_compaction = lazy_compaction
+        self.target_full_layer_num = target_full_layer_num
+        self.draft_full_layer_num = draft_full_layer_num
 
         # FULL is page-aware; MAMBA stays page_size=1 (state is per-request,
         # orthogonal to the full side's per-token paging).
@@ -2236,6 +2240,29 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
             self.mamba_allocator.min_slot_index,
             self.full_attn_allocator.available_size(),
             self.mamba_allocator.available_size(),
+        )
+
+    def make_draft_full_kv_pool(self, draft_layer_index: int = 0):
+        """Return the draft layer's view into the unified full-page envelope.
+
+        Built-in MTP shares the target's public token ids. Keeping its KV layer
+        in the same physical envelope makes compaction relocate target and draft
+        KV atomically and lets both sides use the same live v2p mapping.
+        """
+        if not (0 <= draft_layer_index < self.draft_full_layer_num):
+            return None
+        from sglang.srt.mem_cache.unified_memory_pool import (
+            UnifiedMHATokenToKVPool,
+        )
+
+        return UnifiedMHATokenToKVPool(
+            unified_buffer=self.unified_buffer,
+            sub_pool_name="full",
+            page_size=self.page_size,
+            start_layer=0,
+            end_layer=1,
+            view_layer_start=self.target_full_layer_num + draft_layer_index,
+            view_layer_count=1,
         )
 
     # -- size: dynamic --

@@ -1952,14 +1952,24 @@ class TritonMultiStepDraftBackend:
             self.page_size,
         )
 
-        if call_fn is None:
-            return
-
         for i in range(self.speculative_num_steps - 1):
-            forward_batch.spec_info.kv_indptr = self.kv_indptr[i, : bs + 1]
-            forward_batch.spec_info.kv_indices = kv_indices_buffer[i][
+            kv_indices = kv_indices_buffer[i][
                 : draft_kv_indices_used_len(seq_lens_sum, self.topk, bs, i + 1)
             ]
+            translate_kv_loc = self.attn_backends[i]._translate_kv_loc
+            if translate_kv_loc is not None and kv_indices.numel() > 0:
+                # The multi-step draft kernel reads public token ids from the
+                # shared req_to_token table. A built-in MTP layer appended to
+                # the unified physical page envelope must instead read physical
+                # ids. Translate in place so CUDA graph replay keeps the same
+                # capture-stable buffer address.
+                translate_kv_loc(kv_indices, out=kv_indices)
+
+            if call_fn is None:
+                continue
+
+            forward_batch.spec_info.kv_indptr = self.kv_indptr[i, : bs + 1]
+            forward_batch.spec_info.kv_indices = kv_indices
             call_fn(i, forward_batch)
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):

@@ -453,15 +453,30 @@ class UnifiedMHATokenToKVPool(MHATokenToKVPool):
         start_layer: Optional[int] = None,
         end_layer: Optional[int] = None,
         enable_alt_stream: bool = True,
+        view_layer_start: int = 0,
+        view_layer_count: Optional[int] = None,
+        move_all_layers: bool = False,
     ):
         spec = unified_buffer.mha_spec(sub_pool_name)
-        k_buffer, v_buffer = unified_buffer.mha_views_for(sub_pool_name)
+        all_k_buffer, all_v_buffer = unified_buffer.mha_views_for(sub_pool_name)
         max_slots = unified_buffer.max_slots(sub_pool_name)
+
+        if view_layer_count is None:
+            view_layer_count = spec.layer_num - view_layer_start
+        view_layer_end = view_layer_start + view_layer_count
+        assert 0 <= view_layer_start < view_layer_end <= spec.layer_num, (
+            f"invalid unified MHA layer view [{view_layer_start}, {view_layer_end}) "
+            f"for {spec.layer_num} backing layers"
+        )
+        k_buffer = all_k_buffer[view_layer_start:view_layer_end]
+        v_buffer = all_v_buffer[view_layer_start:view_layer_end]
 
         self._unified_buffer = unified_buffer
         self._sub_pool_name = sub_pool_name
         self._k_views = k_buffer
         self._v_views = v_buffer
+        self._move_k_views = all_k_buffer if move_all_layers else k_buffer
+        self._move_v_views = all_v_buffer if move_all_layers else v_buffer
         self._page_size = page_size
 
         super().__init__(
@@ -470,7 +485,7 @@ class UnifiedMHATokenToKVPool(MHATokenToKVPool):
             dtype=spec.store_dtype,
             head_num=spec.head_num,
             head_dim=spec.head_dim,
-            layer_num=spec.layer_num,
+            layer_num=view_layer_count,
             device=unified_buffer.device,
             enable_memory_saver=False,  # buffer owned by UnifiedKVPool
             v_head_dim=spec.v_head_dim,
@@ -510,8 +525,8 @@ class UnifiedMHATokenToKVPool(MHATokenToKVPool):
             return
         with record_function("UnifiedMHA.move_kv_cache"):
             move_kv_cache_native(
-                self.k_buffer,
-                self.v_buffer,
+                self._move_k_views,
+                self._move_v_views,
                 tgt_loc,
                 src_loc,
                 page_size=self._page_size,
@@ -1019,6 +1034,7 @@ def init_unified_mamba_pools(
     qk_rope_head_dim: Optional[int] = None,
     mamba_layer_ids: List[int],
     full_attention_layer_ids: List[int],
+    draft_full_attention_layers: int,
     mamba2_cache_params,
     model_context_len: int,
     extra_max_context_len: int,
@@ -1044,6 +1060,8 @@ def init_unified_mamba_pools(
     assert page_size >= 1, f"page_size must be >= 1, got {page_size}"
 
     store_dtype = _store_dtype_for(kv_cache_dtype)
+    target_full_layer_num = len(full_attention_layer_ids)
+    shared_full_layer_num = target_full_layer_num + draft_full_attention_layers
     # full-attn at the high-byte end (grow-down), mamba at the low-byte end (grow-up).
     if use_mla_backend:
         assert kv_lora_rank and qk_rope_head_dim, (
@@ -1065,7 +1083,7 @@ def init_unified_mamba_pools(
     else:
         full_spec = MHASubPoolSpec(
             name="full",
-            layer_num=len(full_attention_layer_ids),
+            layer_num=shared_full_layer_num,
             head_num=head_num,
             head_dim=head_dim,
             store_dtype=store_dtype,
@@ -1128,6 +1146,10 @@ def init_unified_mamba_pools(
             page_size=page_size,
             start_layer=start_layer,
             end_layer=end_layer,
+            view_layer_count=target_full_layer_num,
+            # The target allocator owns compaction. Relocate the appended draft
+            # layer views with the target layers as one physical page envelope.
+            move_all_layers=True,
         )
     full_attn_layer_ids_for_pool = (
         [0] if is_draft_worker else list(full_attention_layer_ids)
@@ -1157,6 +1179,8 @@ def init_unified_mamba_pools(
         full_kernel_page_multiplier=(
             len(full_attention_layer_ids) if use_mla_backend else 1
         ),
+        target_full_layer_num=target_full_layer_num,
+        draft_full_layer_num=draft_full_attention_layers,
     )
 
     # Wrap the composite's mamba MultiEndedAllocator in a slot allocator (PHYSICAL view).
@@ -1197,11 +1221,12 @@ def init_unified_mamba_pools(
     else:
         logger.info(
             "[unified-memory-pool]   full_layers=%d, mamba_layers=%d, head_num=%d, head_dim=%d, "
-            "page_size=%d, is_draft_worker=%s",
+            "draft_full_layers=%d, page_size=%d, is_draft_worker=%s",
             len(full_attention_layer_ids),
             len(mamba_layer_ids),
             head_num,
             head_dim,
+            draft_full_attention_layers,
             page_size,
             is_draft_worker,
         )

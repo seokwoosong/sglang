@@ -73,15 +73,22 @@ def unified_mla_hooks(allocator) -> UnifiedMLAHooks:
 def unified_kv_loc_translator(model_runner):
     """Return the active pool's virtual-location translator, if any.
 
-    EAGLE-like draft workers share the target allocator only for token-ID
-    ownership, while their separately allocated KV pool is indexed directly by
-    those public virtual IDs. Translating with the target's v2p table would turn
-    a valid draft location into a target physical row and write out of bounds.
-    Frozen-KV MTP is the exception because it intentionally reads target KV.
+    EAGLE-like draft workers normally share the target allocator only for
+    token-ID ownership, while their separately allocated KV pool is indexed
+    directly by those public virtual IDs. Built-in MTP under unified memory
+    appends its draft KV layer to the target's physical page envelope and thus
+    shares the target v2p mapping. Frozen-KV MTP also reads target KV directly.
     """
     if model_runner.is_draft_worker:
         if not model_runner.spec_algorithm.is_frozen_kv_mtp():
-            return None
+            # A conventional draft pool is indexed directly by the target's
+            # public virtual ids. Built-in MTP under unified memory instead
+            # aliases an appended layer view in the target's physical page
+            # envelope, so it must follow the target v2p mapping as well.
+            token_pool = getattr(model_runner, "token_to_kv_pool", None)
+            full_pool = getattr(token_pool, "full_kv_pool", None)
+            if getattr(full_pool, "_unified_buffer", None) is None:
+                return None
 
     allocator = model_runner.token_to_kv_pool_allocator
     return getattr(allocator, "translate_kv_loc_dense", None) or getattr(

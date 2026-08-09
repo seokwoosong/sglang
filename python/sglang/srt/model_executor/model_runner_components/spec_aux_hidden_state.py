@@ -34,6 +34,7 @@ def resolve_spec_aux_hidden_state_config(
     _resolve_eagle_aux_hidden_state(
         config=config,
         server_args=server_args,
+        model_config=model_config,
         spec_algorithm=spec_algorithm,
         is_draft_worker=is_draft_worker,
     )
@@ -51,14 +52,17 @@ def _resolve_eagle_aux_hidden_state(
     *,
     config: SpecAuxHiddenStateConfig,
     server_args: ServerArgs,
+    model_config: ModelConfig,
     spec_algorithm: SpeculativeAlgorithm,
     is_draft_worker: bool,
 ) -> None:
-    if (
+    if not (
         (spec_algorithm.is_eagle() or spec_algorithm.is_standalone())
         and not is_draft_worker
-        and server_args.speculative_draft_model_path
     ):
+        return
+
+    if server_args.speculative_draft_model_path:
         # Load draft config to get layer count for KV cache sizing
         draft_model_config = ModelConfig.from_server_args(
             server_args,
@@ -92,6 +96,15 @@ def _resolve_eagle_aux_hidden_state(
             except:
                 # if there is no aux layer, set to None
                 config.eagle_aux_hidden_state_layer_ids = None
+    else:
+        # Built-in MTP loads its draft block from the target checkpoint, so
+        # there is no draft model path to inspect. Hybrid models such as Qwen3.5
+        # publish the number of bundled MTP blocks on the text config.
+        num_layers = getattr(model_config.hf_text_config, "mtp_num_hidden_layers", None)
+        if num_layers is None:
+            num_layers = model_config.num_nextn_predict_layers
+        if num_layers is not None:
+            config.eagle_draft_num_layers = int(num_layers)
 
 
 def _resolve_dflash_aux_hidden_state(

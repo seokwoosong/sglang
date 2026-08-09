@@ -128,15 +128,19 @@ class TestSchedulerDraftServerArgs(CustomTestCase):
 
 class TestDraftKVLocationSpace(unittest.TestCase):
     @staticmethod
-    def _runner(*, is_draft_worker, is_frozen_kv_mtp):
+    def _runner(*, is_draft_worker, is_frozen_kv_mtp, shared_draft_pool=False):
         translator = lambda loc: loc + 100
         allocator = SimpleNamespace(translate_kv_loc=translator)
+        full_kv_pool = SimpleNamespace()
+        if shared_draft_pool:
+            full_kv_pool._unified_buffer = object()
         return (
             SimpleNamespace(
                 is_draft_worker=is_draft_worker,
                 spec_algorithm=SimpleNamespace(
                     is_frozen_kv_mtp=lambda: is_frozen_kv_mtp
                 ),
+                token_to_kv_pool=SimpleNamespace(full_kv_pool=full_kv_pool),
                 token_to_kv_pool_allocator=allocator,
             ),
             translator,
@@ -149,6 +153,18 @@ class TestDraftKVLocationSpace(unittest.TestCase):
 
         runner, _ = self._runner(is_draft_worker=True, is_frozen_kv_mtp=False)
         self.assertIsNone(unified_kv_loc_translator(runner))
+
+    def test_builtin_mtp_draft_sharing_unified_envelope_uses_translation(self):
+        from sglang.srt.layers.attention.unified_mem_hooks import (
+            unified_kv_loc_translator,
+        )
+
+        runner, translator = self._runner(
+            is_draft_worker=True,
+            is_frozen_kv_mtp=False,
+            shared_draft_pool=True,
+        )
+        self.assertIs(unified_kv_loc_translator(runner), translator)
 
     def test_target_and_frozen_kv_draft_keep_target_translation(self):
         from sglang.srt.layers.attention.unified_mem_hooks import (
@@ -165,6 +181,30 @@ class TestDraftKVLocationSpace(unittest.TestCase):
                     is_frozen_kv_mtp=is_frozen_kv_mtp,
                 )
                 self.assertIs(unified_kv_loc_translator(runner), translator)
+
+
+class TestBuiltInMTPPoolSizing(unittest.TestCase):
+    def test_target_checkpoint_mtp_layers_are_included_without_draft_path(self):
+        from sglang.srt.model_executor.model_runner_components.spec_aux_hidden_state import (
+            SpecAuxHiddenStateConfig,
+            _resolve_eagle_aux_hidden_state,
+        )
+
+        config = SpecAuxHiddenStateConfig()
+        _resolve_eagle_aux_hidden_state(
+            config=config,
+            server_args=SimpleNamespace(speculative_draft_model_path=None),
+            model_config=SimpleNamespace(
+                hf_text_config=SimpleNamespace(mtp_num_hidden_layers=2),
+                num_nextn_predict_layers=None,
+            ),
+            spec_algorithm=SimpleNamespace(
+                is_eagle=lambda: True,
+                is_standalone=lambda: False,
+            ),
+            is_draft_worker=False,
+        )
+        self.assertEqual(config.eagle_draft_num_layers, 2)
 
 
 if __name__ == "__main__":

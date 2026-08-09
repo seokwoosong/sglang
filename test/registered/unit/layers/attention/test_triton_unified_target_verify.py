@@ -15,10 +15,14 @@
 
 import types
 import unittest
+from unittest.mock import patch
 
 import torch
 
-from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
+from sglang.srt.layers.attention.triton_backend import (
+    TritonAttnBackend,
+    TritonMultiStepDraftBackend,
+)
 from sglang.test.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=5, suite="base-a-test-cpu")
@@ -92,6 +96,59 @@ class TestTritonUnifiedTargetVerify(unittest.TestCase):
             torch.tensor([7, 8, 9], dtype=torch.int64),
         )
         self.assertIsNone(backend.forward_metadata.out_cache_loc_full_physical)
+
+
+class _FakeDraftIndicesKernel:
+    def __getitem__(self, _grid):
+        def launch(*args):
+            args[3].fill_(7)
+
+        return launch
+
+
+class TestTritonUnifiedMultiStepDraft(unittest.TestCase):
+    def test_graph_replay_translates_generated_indices_in_place(self):
+        backend = object.__new__(TritonMultiStepDraftBackend)
+        backend.speculative_num_steps = 3
+        backend.topk = 1
+        backend.max_context_len = 8
+        backend.pool_len = 8
+        backend.page_size = 1
+        backend.kv_indptr = torch.zeros((3, 2), dtype=torch.int32)
+        backend.req_to_token_pool = types.SimpleNamespace(
+            req_to_token=torch.zeros((1, 8), dtype=torch.int32)
+        )
+
+        translated_ptrs = []
+
+        def translate(loc, *, out=None):
+            self.assertIs(out, loc)
+            translated_ptrs.append(loc.data_ptr())
+            out.copy_(loc + 100)
+            return out
+
+        backend.attn_backends = [
+            types.SimpleNamespace(_translate_kv_loc=translate),
+            types.SimpleNamespace(_translate_kv_loc=translate),
+        ]
+        kv_indices = torch.zeros((3, 8), dtype=torch.int64)
+        forward_batch = types.SimpleNamespace(
+            batch_size=1,
+            seq_lens_sum=2,
+            req_pool_indices=torch.tensor([0], dtype=torch.int32),
+            seq_lens=torch.tensor([2], dtype=torch.int32),
+            positions=torch.tensor([1], dtype=torch.int64),
+        )
+
+        with patch(
+            "sglang.srt.layers.attention.triton_backend.generate_draft_decode_kv_indices",
+            _FakeDraftIndicesKernel(),
+        ):
+            backend.common_template(forward_batch, kv_indices, call_fn=None)
+
+        self.assertEqual(len(translated_ptrs), 2)
+        torch.testing.assert_close(kv_indices[0, :3], torch.full((3,), 107))
+        torch.testing.assert_close(kv_indices[1, :4], torch.full((4,), 107))
 
 
 if __name__ == "__main__":
