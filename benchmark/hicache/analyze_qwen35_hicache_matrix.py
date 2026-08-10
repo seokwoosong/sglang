@@ -34,6 +34,26 @@ VARIANT_LABELS = {
     "eval-u3": "U3 unified + typed L2",
 }
 
+PROFILE_AGGREGATE_METRICS = (
+    "total_tok_s",
+    "forward_s",
+    "eviction_s",
+    "backup_s",
+    "loadback_s",
+    "allocator_cpu_s",
+    "compaction_cpu_s",
+    "transfer_control_cpu_s",
+    "translation_cpu_s",
+    "row_fence_cpu_s",
+    "row_fence_calls",
+    "d2h_total_gib_s",
+    "h2d_total_gib_s",
+    "kv_d2h_gib_s",
+    "mamba_d2h_gib_s",
+    "kv_h2d_gib_s",
+    "mamba_h2d_gib_s",
+)
+
 
 def read_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as file:
@@ -286,6 +306,7 @@ def profile_summary(
             rows.append(
                 {
                     "model": match["model"],
+                    "repetition": int(match["repeat"]),
                     "page_size": int(match["page"]),
                     "policy": match["policy"],
                     "variant": variant,
@@ -356,6 +377,7 @@ def profile_summary(
         overviews.append(
             {
                 "model": match["model"],
+                "repetition": int(match["repeat"]),
                 "page_size": int(match["page"]),
                 "policy": match["policy"],
                 "variant": variant,
@@ -390,6 +412,45 @@ def profile_summary(
     return rows, overviews, errors
 
 
+def aggregate_profile_overviews(
+    overviews: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, int, str, str, str], list[dict[str, Any]]] = defaultdict(
+        list
+    )
+    for row in overviews:
+        grouped[
+            (
+                str(row["model"]),
+                int(row["page_size"]),
+                str(row["policy"]),
+                str(row["variant"]),
+                str(row["configuration"]),
+            )
+        ].append(row)
+
+    rows: list[dict[str, Any]] = []
+    for (model, page_size, policy, variant, configuration), group in sorted(
+        grouped.items()
+    ):
+        repetitions = sorted(int(row["repetition"]) for row in group)
+        aggregate: dict[str, Any] = {
+            "model": model,
+            "page_size": page_size,
+            "policy": policy,
+            "variant": variant,
+            "configuration": configuration,
+            "runs": len(group),
+            "repetitions": ";".join(map(str, repetitions)),
+        }
+        for metric in PROFILE_AGGREGATE_METRICS:
+            values = [float(row[metric]) for row in group]
+            aggregate[f"{metric}_mean"] = mean(values)
+            aggregate[f"{metric}_std"] = sample_std(values)
+        rows.append(aggregate)
+    return rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -408,10 +469,12 @@ def main() -> None:
     clean, clean_errors = clean_summary(args.artifact_root)
     parity, parity_errors = parity_summary(args.artifact_root)
     profiles, profile_overviews, profile_errors = profile_summary(args.artifact_root)
+    profile_aggregates = aggregate_profile_overviews(profile_overviews)
     write_csv(args.output_dir / "clean_summary.csv", clean)
     write_csv(args.output_dir / "parity_summary.csv", parity)
     write_csv(args.output_dir / "profile_breakdown.csv", profiles)
     write_csv(args.output_dir / "profile_summary.csv", profile_overviews)
+    write_csv(args.output_dir / "profile_aggregate.csv", profile_aggregates)
     errors = clean_errors + parity_errors + profile_errors
     print(
         f"clean_groups={len(clean)} parity_runs={len(parity)} "
