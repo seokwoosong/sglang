@@ -27,6 +27,7 @@ PARITY_RE = re.compile(
     r"p(?P<page>\d+)-(?P<policy>none|write_back|write_through)"
 )
 VARIANT_LABELS = {
+    "eval-s0": "S0 static only",
     "eval-s1": "S1 static + HiCache",
     "eval-u0": "U0 unified only",
     "eval-u2": "U2 unified + split L2",
@@ -166,6 +167,16 @@ def clean_summary(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
 def parity_summary(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
+    canonical: dict[tuple[str, int, int], tuple[tuple[Any, ...], tuple[Any, ...]]] = {}
+    observed: list[
+        tuple[
+            tuple[str, int, int],
+            tuple[Any, ...],
+            tuple[Any, ...],
+            dict[str, Any],
+            Path,
+        ]
+    ] = []
     for match, variant, result, path in latest_valid_results(root, PARITY_RE):
         comparisons = [
             item["comparison"]
@@ -184,20 +195,56 @@ def parity_summary(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
         )
         if not passed or not output_equal or not token_equal:
             errors.append(str(path))
-        rows.append(
-            {
-                "model": match["model"],
-                "page_size": int(match["page"]),
-                "policy": match["policy"],
-                "variant": variant,
-                "configuration": VARIANT_LABELS[variant],
-                "comparisons": len(comparisons),
-                "validation_passed": passed,
-                "output_ids_equal": output_equal,
-                "logprob_token_ids_equal": token_equal,
-                "max_abs_logprob_diff": max_diff,
-            }
+        key = (match["model"], int(match["page"]), int(match["repeat"]))
+        promotions = sorted(
+            result.get("promotions", []), key=lambda item: item["index"]
         )
+        output_fingerprint = tuple(
+            (int(item["index"]), tuple(item["result"]["output_ids"]))
+            for item in promotions
+        )
+        logprob_token_fingerprint = tuple(
+            (int(item["index"]), tuple(item["result"]["logprob_token_ids"]))
+            for item in promotions
+        )
+        row = {
+            "model": match["model"],
+            "page_size": int(match["page"]),
+            "policy": match["policy"],
+            "variant": variant,
+            "configuration": VARIANT_LABELS[variant],
+            "comparisons": len(comparisons),
+            "validation_passed": passed,
+            "output_ids_equal": output_equal,
+            "logprob_token_ids_equal": token_equal,
+            "cross_variant_output_ids_equal": None,
+            "cross_variant_logprob_token_ids_equal": None,
+            "max_abs_logprob_diff": max_diff,
+        }
+        rows.append(row)
+        observed.append((key, output_fingerprint, logprob_token_fingerprint, row, path))
+        if variant == "eval-s0" and match["policy"] == "none":
+            canonical[key] = (output_fingerprint, logprob_token_fingerprint)
+
+    # Older artifact sets predate S0 and retain their original within-run parity
+    # behavior. New four-way matrices include S0 and use it as the exact token-ID
+    # reference for every policy and memory configuration at the same page size.
+    if canonical:
+        for key, output_fingerprint, token_fingerprint, row, path in observed:
+            reference = canonical.get(key)
+            if reference is None:
+                errors.append(f"missing S0 parity reference for {path}")
+                row["cross_variant_output_ids_equal"] = False
+                row["cross_variant_logprob_token_ids_equal"] = False
+                continue
+            row["cross_variant_output_ids_equal"] = output_fingerprint == reference[0]
+            row["cross_variant_logprob_token_ids_equal"] = (
+                token_fingerprint == reference[1]
+            )
+            if not row["cross_variant_output_ids_equal"]:
+                errors.append(f"cross-variant output IDs differ: {path}")
+            if not row["cross_variant_logprob_token_ids_equal"]:
+                errors.append(f"cross-variant logprob token IDs differ: {path}")
     return sorted(rows, key=lambda item: tuple(map(str, item.values()))), errors
 
 
@@ -348,12 +395,12 @@ def main() -> None:
     parser.add_argument(
         "--artifact-root",
         type=Path,
-        default=Path("artifacts/qwen35_hicache_matrix"),
+        default=Path("artifacts/qwen35_unified_hicache_4way"),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("artifacts/qwen35_hicache_matrix/summary"),
+        default=Path("artifacts/qwen35_unified_hicache_4way/summary"),
     )
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)

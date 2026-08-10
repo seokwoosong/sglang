@@ -13,13 +13,14 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ARTIFACT_ROOT = REPO_ROOT / "artifacts/qwen35_cuda_graph_ablation"
-VARIANTS = ("eval-s1", "eval-u0", "eval-u3")
-WORKLOADS = ("short-3k", "long-50k")
+DEFAULT_ARTIFACT_ROOT = REPO_ROOT / "artifacts/qwen35_unified_hicache_4way"
+VARIANTS = ("eval-s0", "eval-s1", "eval-u0", "eval-u3")
+NO_HICACHE_VARIANTS = frozenset(("eval-s0", "eval-u0"))
+WORKLOADS = ("short-3k", "middle-10k", "long-50k")
 MODES = ("disabled", "enabled")
 GRAPH_RUN_RE = re.compile(
     r"graph-r(?P<repetition>\d+)-(?P<model>[^-]+)-"
-    r"(?P<workload>short-3k|long-50k)-p(?P<page_size>\d+)-"
+    r"(?P<workload>short-3k|middle-10k|long-50k)-p(?P<page_size>\d+)-"
     r"(?P<policy>none|write_back)-cg-(?P<mode>enabled|disabled)"
 )
 CAPTURE_RE = re.compile(
@@ -141,7 +142,7 @@ def analyze_performance(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
             or server_info["cuda_graph_backend_decode"] != "disabled"
         ):
             errors.append(f"CUDA graph OFF audit failed: {label}")
-        if result["variant"] != "eval-u0" and (
+        if result["variant"] not in NO_HICACHE_VARIANTS and (
             row["backup_tokens"] <= 0 or row["load_back_tokens"] <= 0
         ):
             errors.append(f"HiCache transfer was not exercised: {label}")
@@ -253,7 +254,8 @@ def paired_speedups(
 def analyze_parity(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
-    references: dict[tuple[str, str], list[int]] = {}
+    fingerprints: dict[tuple[str, str], tuple[tuple[Any, ...], tuple[Any, ...]]] = {}
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for result_path in latest_results(root, "graph-parity-r"):
         result = load_json(result_path)
         manifest = load_json(result_path.parent / "manifest.json")
@@ -262,9 +264,21 @@ def analyze_parity(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
         comparisons = [item["comparison"] for item in result["promotions"]]
         if result.get("restored"):
             comparisons.append(result["restored"]["comparison"])
-            references[(result["variant"], mode)] = result["restored"]["reference"][
-                "output_ids"
-            ]
+        promotions = sorted(result["promotions"], key=lambda item: item["index"])
+        fingerprint = (
+            tuple(
+                (int(item["index"]), tuple(item["result"]["output_ids"]))
+                for item in promotions
+            ),
+            tuple(
+                (
+                    int(item["index"]),
+                    tuple(item["result"]["logprob_token_ids"]),
+                )
+                for item in promotions
+            ),
+        )
+        fingerprints[(result["variant"], mode)] = fingerprint
         row = {
             "variant": result["variant"],
             "cuda_graph_mode": mode,
@@ -277,6 +291,10 @@ def analyze_parity(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
             "logprob_token_ids_equal": all(
                 comparison["logprob_token_ids_equal"] for comparison in comparisons
             ),
+            "cross_mode_output_ids_equal": None,
+            "cross_mode_logprob_token_ids_equal": None,
+            "cross_variant_output_ids_equal": None,
+            "cross_variant_logprob_token_ids_equal": None,
             "max_abs_logprob_diff": max(
                 comparison["max_abs_logprob_diff"] for comparison in comparisons
             ),
@@ -290,6 +308,7 @@ def analyze_parity(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
             "result_path": str(result_path.relative_to(REPO_ROOT)),
         }
         rows.append(row)
+        rows_by_key[(result["variant"], mode)] = row
         if (
             manifest["status"] != "completed"
             or not result["validation"]["passed"]
@@ -298,10 +317,36 @@ def analyze_parity(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
         ):
             errors.append(f"Parity failed: {result['variant']}/{mode}")
     for variant in VARIANTS:
-        if references.get((variant, "enabled")) != references.get(
-            (variant, "disabled")
-        ):
-            errors.append(f"Cross-mode reference output IDs differ: {variant}")
+        enabled = fingerprints.get((variant, "enabled"))
+        disabled = fingerprints.get((variant, "disabled"))
+        if enabled is None or disabled is None:
+            errors.append(f"Missing cross-mode parity result: {variant}")
+            continue
+        output_equal = enabled[0] == disabled[0]
+        token_equal = enabled[1] == disabled[1]
+        for mode in MODES:
+            row = rows_by_key[(variant, mode)]
+            row["cross_mode_output_ids_equal"] = output_equal
+            row["cross_mode_logprob_token_ids_equal"] = token_equal
+        if not output_equal:
+            errors.append(f"Cross-mode output IDs differ: {variant}")
+        if not token_equal:
+            errors.append(f"Cross-mode logprob token IDs differ: {variant}")
+
+    canonical = fingerprints.get(("eval-s0", "disabled"))
+    if canonical is not None:
+        for key, fingerprint in fingerprints.items():
+            row = rows_by_key[key]
+            row["cross_variant_output_ids_equal"] = fingerprint[0] == canonical[0]
+            row["cross_variant_logprob_token_ids_equal"] = (
+                fingerprint[1] == canonical[1]
+            )
+            if not row["cross_variant_output_ids_equal"]:
+                errors.append(f"Cross-variant output IDs differ: {key[0]}/{key[1]}")
+            if not row["cross_variant_logprob_token_ids_equal"]:
+                errors.append(
+                    f"Cross-variant logprob token IDs differ: {key[0]}/{key[1]}"
+                )
     return rows, errors
 
 

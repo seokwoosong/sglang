@@ -48,13 +48,16 @@ WORKLOADS = (
     Workload("long-50k", 50000, 128, 8, 2, 4),
 )
 VARIANT_POLICIES = {
+    "eval-s0": ("none",),
     "eval-s1": ("write_back", "write_through"),
     "eval-u0": ("none",),
     "eval-u2": ("write_back", "write_through"),
     "eval-u3": ("write_back", "write_through"),
 }
-GRAPH_VARIANTS = ("eval-s1", "eval-u0", "eval-u3")
-GRAPH_WORKLOADS = ("short-3k", "long-50k")
+DEFAULT_VARIANTS = ("eval-s0", "eval-s1", "eval-u0", "eval-u3")
+NO_HICACHE_VARIANTS = frozenset(("eval-s0", "eval-u0"))
+GRAPH_VARIANTS = DEFAULT_VARIANTS
+GRAPH_WORKLOADS = ("short-3k", "middle-10k", "long-50k")
 TRANSFER_VARIANTS = ("eval-s1", "eval-u3")
 
 
@@ -210,7 +213,7 @@ def run_clean(args: argparse.Namespace) -> None:
                         "--require-eviction",
                     ]
                 )
-                if variant != "eval-u0":
+                if variant not in NO_HICACHE_VARIANTS:
                     command.extend(
                         ["--require-loadback", "--require-backup", "--require-host-hit"]
                     )
@@ -260,7 +263,7 @@ def run_profile(args: argparse.Namespace) -> None:
                     "--require-eviction",
                 ]
             )
-            if variant != "eval-u0":
+            if variant not in NO_HICACHE_VARIANTS:
                 command.extend(
                     ["--require-loadback", "--require-backup", "--require-host-hit"]
                 )
@@ -358,7 +361,7 @@ def run_graph(args: argparse.Namespace) -> None:
     if args.repetition % 2 == 0:
         workloads.reverse()
     for variant in graph_variant_order(args):
-        policy = "none" if variant == "eval-u0" else "write_back"
+        policy = "none" if variant in NO_HICACHE_VARIANTS else "write_back"
         for workload in workloads:
             concurrency = (
                 args.long_concurrency
@@ -400,7 +403,7 @@ def run_graph(args: argparse.Namespace) -> None:
                         "--require-eviction",
                     ]
                 )
-                if variant != "eval-u0":
+                if variant not in NO_HICACHE_VARIANTS:
                     command.extend(
                         ["--require-loadback", "--require-backup", "--require-host-hit"]
                     )
@@ -409,7 +412,7 @@ def run_graph(args: argparse.Namespace) -> None:
 
 def run_graph_parity(args: argparse.Namespace) -> None:
     for variant in graph_variant_order(args):
-        policy = "none" if variant == "eval-u0" else "write_back"
+        policy = "none" if variant in NO_HICACHE_VARIANTS else "write_back"
         for cuda_graph_mode in graph_mode_order(args):
             run_name = (
                 f"graph-parity-r{args.repetition}-{args.model_size}-"
@@ -443,13 +446,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--variants",
         nargs="+",
         choices=sorted(VARIANT_POLICIES),
-        default=list(VARIANT_POLICIES),
+        default=list(DEFAULT_VARIANTS),
     )
     parser.add_argument("--repetition", type=int, default=1)
     parser.add_argument(
         "--artifact-root",
         type=Path,
-        default=REPO_ROOT / "artifacts/qwen35_hicache_matrix",
+        default=REPO_ROOT / "artifacts/qwen35_unified_hicache_4way",
     )
     parser.add_argument("--max-total-tokens", type=int, default=120000)
     parser.add_argument("--max-running-requests", type=int, default=8)

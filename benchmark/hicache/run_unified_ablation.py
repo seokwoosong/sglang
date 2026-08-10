@@ -31,13 +31,21 @@ DEFAULT_MODEL = Path(
     "models--Qwen--Qwen3.5-0.8B/snapshots/"
     "2fc06364715b967f1860aea9cf38778875588b17"
 )
-EVAL_SERVER_SHA = "16fb67cc9e0840aa8200fd18b9590298dfbbdbfb"
+EVAL_SERVER_SHA = "fcdd52f4e1835bdb4996ac8c87c83d50c3fe55c2"
 EVAL_SERVER_WORKTREE = Path("/home/sukwoo24/sglang-eval-worktrees/qwen08-eval-server")
 
 VARIANTS = {
-    # Fair final-source evaluation: all four variants use the same allocator,
+    # Fair final-source evaluation: all variants use the same allocator,
     # compaction, transfer, and profiling code. Only the advertised memory/L2
     # configuration changes.
+    "eval-s0": {
+        "sha": EVAL_SERVER_SHA,
+        "worktree": EVAL_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": False,
+        "sync_unified_transfers": None,
+        "server_env": {"SGLANG_HICACHE_UNIFIED_TYPED_L2": "1"},
+    },
     "eval-s1": {
         "sha": EVAL_SERVER_SHA,
         "worktree": EVAL_SERVER_WORKTREE,
