@@ -55,6 +55,7 @@ VARIANT_POLICIES = {
 }
 GRAPH_VARIANTS = ("eval-s1", "eval-u0", "eval-u3")
 GRAPH_WORKLOADS = ("short-3k", "long-50k")
+TRANSFER_VARIANTS = ("eval-s1", "eval-u3")
 
 
 def task_completed(artifact_root: Path, run_name: str, variant: str) -> bool:
@@ -266,6 +267,56 @@ def run_profile(args: argparse.Namespace) -> None:
             run_task(args, command=command, run_name=run_name, variant=variant)
 
 
+def run_transfer(args: argparse.Namespace) -> None:
+    """Profile component transfers for static and unified typed HiCache."""
+    workload = next(item for item in WORKLOADS if item.label == "middle-10k")
+    selected = [variant for variant in TRANSFER_VARIANTS if variant in args.variants]
+    if not selected:
+        raise ValueError(f"Transfer profiling requires one of {TRANSFER_VARIANTS}")
+    if args.repetition % 2 == 0:
+        selected.reverse()
+    for page_size in args.pages:
+        for variant in selected:
+            run_name = (
+                f"component-transfer-r{args.repetition}-{args.model_size}-"
+                f"{workload.label}-p{page_size}-write_back"
+            )
+            command = common_command(
+                args,
+                variant=variant,
+                policy="write_back",
+                page_size=page_size,
+                run_name=run_name,
+                scenario="steady",
+                input_len=workload.input_len,
+                output_len=64,
+                cuda_graph_mode="disabled",
+                profile=True,
+            )
+            command.extend(
+                [
+                    "--groups",
+                    str(workload.groups),
+                    "--rounds",
+                    str(workload.rounds),
+                    "--shared-ratio",
+                    "0.95",
+                    "--prime-output-len",
+                    "1",
+                    "--prime-repeats",
+                    "1",
+                    "--max-concurrency",
+                    "4",
+                    "--reverse-group-order",
+                    "--require-eviction",
+                    "--require-loadback",
+                    "--require-backup",
+                    "--require-host-hit",
+                ]
+            )
+            run_task(args, command=command, run_name=run_name, variant=variant)
+
+
 def run_parity(args: argparse.Namespace) -> None:
     for page_size in args.pages:
         for variant, policy in iter_variant_policies(args):
@@ -383,7 +434,8 @@ def run_graph_parity(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "stage", choices=["clean", "profile", "parity", "graph", "graph-parity"]
+        "stage",
+        choices=["clean", "profile", "transfer", "parity", "graph", "graph-parity"],
     )
     parser.add_argument("--model-size", choices=sorted(MODELS), default="0.8b")
     parser.add_argument("--pages", type=int, nargs="+", default=[1, 8, 32])
@@ -435,6 +487,7 @@ def main() -> None:
     {
         "clean": run_clean,
         "profile": run_profile,
+        "transfer": run_transfer,
         "parity": run_parity,
         "graph": run_graph,
         "graph-parity": run_graph_parity,
