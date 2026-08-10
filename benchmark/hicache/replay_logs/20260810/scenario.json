@@ -1,0 +1,107 @@
+{
+  "server": {
+    "max_total_tokens": 12288,
+    "max_mamba_cache_size": 12
+  },
+  "evicted_tokens_delta": 6016.0,
+  "restored_index": 0,
+  "events": [
+    {
+      "step": "pressure",
+      "index": 0,
+      "result": {
+        "output_ids": [
+          1000,
+          1000
+        ],
+        "logprob_token_ids": [
+          1000,
+          1000
+        ],
+        "logprobs": [
+          -0.007794323842972517,
+          -0.007790183648467064
+        ],
+        "cached_tokens": 0
+      }
+    },
+    {
+      "step": "pressure",
+      "index": 1,
+      "result": {
+        "output_ids": [
+          1001,
+          1001
+        ],
+        "logprob_token_ids": [
+          1001,
+          1001
+        ],
+        "logprobs": [
+          -0.0007563352701254189,
+          -0.0007391819381155074
+        ],
+        "cached_tokens": 0
+      }
+    },
+    {
+      "step": "pressure",
+      "index": 2,
+      "result": {
+        "output_ids": [
+          1002,
+          1002
+        ],
+        "logprob_token_ids": [
+          1002,
+          1002
+        ],
+        "logprobs": [
+          -4.303362584323622e-05,
+          -4.8040190449682996e-05
+        ],
+        "cached_tokens": 0
+      }
+    },
+    {
+      "step": "pressure",
+      "index": 3,
+      "result": {
+        "output_ids": [
+          1003,
+          1003
+        ],
+        "logprob_token_ids": [
+          1003,
+          1003
+        ],
+        "logprobs": [
+          -1.6331539882230572e-05,
+          -1.6569954823353328e-05
+        ],
+        "cached_tokens": 0
+      }
+    },
+    {
+      "step": "replay",
+      "index": 0,
+      "load_back_before": 0,
+      "load_back_after": 5954.0,
+      "result": {
+        "output_ids": [
+          1000,
+          1000
+        ],
+        "logprob_token_ids": [
+          1000,
+          1000
+        ],
+        "logprobs": [
+          -0.00778628047555685,
+          -0.007554652169346809
+        ],
+        "cached_tokens": 5952
+      }
+    }
+  ]
+}
