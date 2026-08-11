@@ -483,7 +483,7 @@ class MambaComponent(TreeComponent):
         slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
         if slot is None:
             params = self._mamba_slot_eviction_params()
-            self.cache.evict(params)
+            self._evict_for_mamba_slot(params)
             slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
             if slot is None and params.num_tokens == 0:
                 # An evicted Mamba row can remain transfer-fenced until its
@@ -495,7 +495,9 @@ class MambaComponent(TreeComponent):
                     None,
                 )
                 if full_token_cost_fn is not None:
-                    self.cache.evict(EvictParams(num_tokens=full_token_cost_fn()))
+                    self._evict_for_mamba_slot(
+                        EvictParams(num_tokens=full_token_cost_fn())
+                    )
                     slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
             if slot is None and hasattr(self.cache, "writing_check"):
                 # Virtual IDs of write-through-demoted nodes are released only
@@ -514,7 +516,7 @@ class MambaComponent(TreeComponent):
                         "mamba_slot_full_token_cost",
                         None,
                     )
-                    self.cache.evict(
+                    self._evict_for_mamba_slot(
                         EvictParams(
                             num_tokens=(
                                 full_token_cost_fn()
@@ -539,6 +541,17 @@ class MambaComponent(TreeComponent):
                     f"cache={self.cache.available_and_evictable_str()}"
                 )
         return slot
+
+    def _evict_for_mamba_slot(self, params: EvictParams) -> None:
+        """Evict and make any batch-deferred Full rows available immediately."""
+        self.cache.evict(params)
+        flush_deferred_frees = getattr(
+            self.cache.token_to_kv_pool_allocator,
+            "flush_deferred_frees",
+            None,
+        )
+        if flush_deferred_frees is not None:
+            flush_deferred_frees()
 
     def _mamba_slot_eviction_params(self) -> EvictParams:
         """Evict from the side that can actually supply one shared Mamba row."""

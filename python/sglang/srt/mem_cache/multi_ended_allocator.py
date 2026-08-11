@@ -2660,14 +2660,28 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
         self.is_not_in_free_group = False
         self.free_group = []
 
+    def flush_deferred_frees(self) -> None:
+        """Apply queued Full frees without closing the surrounding free group.
+
+        Mamba checkpoint handoff can need shared-gap bytes while the scheduler is
+        still processing a prefill batch.  An eviction performed in that window
+        queues its Full rows in ``free_group``; leaving them deferred until the
+        batch-level ``free_group_end`` makes the immediately-following Mamba
+        allocation observe no reclaimed bytes.  Drain only the queued rows here
+        and keep ``is_not_in_free_group`` unchanged so later batch frees continue
+        to coalesce normally.
+        """
+        if not self.free_group:
+            return
+        merged = torch.cat(self.free_group)
+        self.free_group = []
+        self.full_attn_allocator.free(merged)
+        self.full_attn_allocator.clear_inverse_history()
+        self.mamba_allocator.clear_inverse_history()
+
     def free_group_end(self) -> None:
         self.is_not_in_free_group = True
-        if self.free_group:
-            merged = torch.cat(self.free_group)
-            self.free_group = []
-            self.full_attn_allocator.free(merged)
-            self.full_attn_allocator.clear_inverse_history()
-            self.mamba_allocator.clear_inverse_history()
+        self.flush_deferred_frees()
 
     def clear(self) -> None:
         self.full_attn_allocator.clear()

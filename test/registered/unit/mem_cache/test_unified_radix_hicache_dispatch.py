@@ -813,6 +813,34 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
         self.assertEqual((second.num_tokens, second.mamba_num), (1590, 1))
         component.cache.writing_check.assert_called_once_with(write_back=True)
 
+    def test_mamba_slot_flushes_batch_deferred_full_eviction_before_retry(self):
+        component = MambaComponent.__new__(MambaComponent)
+        allocated = torch.tensor([9])
+
+        class _Allocator:
+            def __init__(self):
+                self.flushed = False
+
+            def mamba_slot_full_token_cost(self):
+                return 1590
+
+            def flush_deferred_frees(self):
+                self.flushed = True
+
+        token_allocator = _Allocator()
+        mamba_allocator = MagicMock()
+        mamba_allocator.alloc.side_effect = lambda _: (
+            allocated if token_allocator.flushed else None
+        )
+        component.cache = MagicMock()
+        component.cache.token_to_kv_pool_allocator = token_allocator
+        component.cache.req_to_token_pool.mamba_allocator = mamba_allocator
+        component.cache.mamba_evictable_size.return_value = 0
+
+        self.assertIs(component._alloc_mamba_slot(), allocated)
+        component.cache.evict.assert_called_once()
+        self.assertTrue(token_allocator.flushed)
+
     def test_static_pool_does_not_evict_full_tokens(self):
         component = MambaComponent.__new__(MambaComponent)
         component.cache = MagicMock()

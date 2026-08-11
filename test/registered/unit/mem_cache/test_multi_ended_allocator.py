@@ -32,6 +32,7 @@ import torch
 
 from sglang.srt.mem_cache.multi_ended_allocator import (
     MultiEndedAllocator,
+    UnifiedMambaTokenToKVPoolAllocator,
     UnifiedSWATokenToKVPoolAllocator,
 )
 from sglang.srt.mem_cache.unified_memory_pool import (
@@ -96,6 +97,26 @@ class _RejectScalarIndexTensor:
 
     def __setitem__(self, index, value):
         self.tensor[index] = value
+
+
+class TestUnifiedMambaDeferredFree(unittest.TestCase):
+    def test_flush_deferred_frees_keeps_group_open(self):
+        allocator = UnifiedMambaTokenToKVPoolAllocator.__new__(
+            UnifiedMambaTokenToKVPoolAllocator
+        )
+        allocator.is_not_in_free_group = False
+        allocator.free_group = [torch.tensor([3, 4]), torch.tensor([7])]
+        allocator.full_attn_allocator = MagicMock()
+        allocator.mamba_allocator = MagicMock()
+
+        allocator.flush_deferred_frees()
+
+        freed = allocator.full_attn_allocator.free.call_args.args[0]
+        self.assertTrue(torch.equal(freed, torch.tensor([3, 4, 7])))
+        self.assertEqual(allocator.free_group, [])
+        self.assertFalse(allocator.is_not_in_free_group)
+        allocator.full_attn_allocator.clear_inverse_history.assert_called_once()
+        allocator.mamba_allocator.clear_inverse_history.assert_called_once()
 
 
 class TestUnifiedKVPoolViews(unittest.TestCase):
