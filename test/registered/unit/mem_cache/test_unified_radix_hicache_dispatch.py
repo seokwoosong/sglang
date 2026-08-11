@@ -463,6 +463,22 @@ class TestHybridTransferIndexTranslation(unittest.TestCase):
             ):
                 HybridCacheController._validate_translated_indices(entry, invalid)
 
+    def test_accepts_complete_static_padding_page(self):
+        entry = SimpleNamespace(
+            name=PoolName.KV,
+            device_pool=SimpleNamespace(size=120000, page_size=8),
+        )
+
+        HybridCacheController._validate_translated_indices(
+            entry, torch.tensor([120000, 120007], dtype=torch.int64)
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "outside the physical device pool"
+        ):
+            HybridCacheController._validate_translated_indices(
+                entry, torch.tensor([120008], dtype=torch.int64)
+            )
+
     def test_start_writing_translates_before_backup_and_waits_before_ack(self):
         controller = HybridCacheController.__new__(HybridCacheController)
         virtual = torch.tensor([3, 5], dtype=torch.int64)

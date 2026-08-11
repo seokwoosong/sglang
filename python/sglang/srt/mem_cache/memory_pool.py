@@ -1700,6 +1700,16 @@ class KVCache(abc.ABC):
             maybe_init_custom_mem_pool(device=self.device)
         )
 
+    def get_transfer_index_limit(self) -> int:
+        """Exclusive upper bound for raw HiCache device-slot indices.
+
+        Static paged pools allocate one complete padding page after the
+        advertised scheduler capacity.  The padding rows are real transfer
+        targets, so validating against ``size`` alone rejects the tail of that
+        page whenever ``page_size > 1``.
+        """
+        return self.size + self.page_size
+
     def _finalize_allocation_log(self, num_tokens: int):
         """Common logging and mem_usage computation for KV cache allocation.
         Supports both tuple (K, V) size returns and single KV size returns.

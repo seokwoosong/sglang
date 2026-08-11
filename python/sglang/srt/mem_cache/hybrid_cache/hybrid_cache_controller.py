@@ -1084,13 +1084,26 @@ class HybridCacheController(BaseHiCacheController):
         if indices.numel() == 0:
             return
         min_index, max_index = torch.aminmax(indices)
-        pool_size = getattr(entry.device_pool, "size", None)
+        pool = entry.device_pool
+        get_index_limit = getattr(pool, "get_transfer_index_limit", None)
+        if callable(get_index_limit):
+            index_limit = get_index_limit()
+        else:
+            pool_size = getattr(pool, "size", None)
+            page_size = getattr(pool, "page_size", 1)
+            index_limit = (
+                pool_size + page_size
+                if isinstance(pool_size, int) and isinstance(page_size, int)
+                else None
+            )
         min_value, max_value = min_index.item(), max_index.item()
-        if min_value < 0 or (isinstance(pool_size, int) and max_value > pool_size):
+        if min_value < 0 or (
+            isinstance(index_limit, int) and max_value >= index_limit
+        ):
             raise RuntimeError(
                 f"Translated {entry.name} HiCache indices are outside the "
                 f"physical device pool: min={min_value}, max={max_value}, "
-                f"pool_size={pool_size}."
+                f"index_limit={index_limit}."
             )
 
     def _page_transfer(self, operation):

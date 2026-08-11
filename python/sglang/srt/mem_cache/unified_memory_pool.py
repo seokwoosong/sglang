@@ -537,6 +537,11 @@ class UnifiedMHATokenToKVPool(MHATokenToKVPool):
     def get_kv_size_bytes(self):
         return 0, 0  # UnifiedKVPool logs the total; per-sub-pool would double-count
 
+    def get_transfer_index_limit(self) -> int:
+        # Unlike a static KV pool, the unified view has only its reserved slot
+        # zero in addition to ``size``; it does not own a separate padding page.
+        return self._unified_buffer.max_slots(self._sub_pool_name)
+
     def set_kv_buffer(
         self,
         layer,
@@ -668,6 +673,11 @@ class UnifiedMLATokenToKVPool(MLATokenToKVPool):
 
     def get_kv_size_bytes(self):
         return 0  # UnifiedKVPool logs the total; per-sub-pool would double-count
+
+    def get_transfer_index_limit(self) -> int:
+        # Transfer registration addresses physical token slots, not the dense
+        # per-layer IDs exposed to MLA kernels.
+        return self._unified_buffer.max_slots(self._sub_pool_name)
 
     def get_contiguous_buf_infos(self):
         """PD-transfer registration: ONE entry, the raw buffer, addressed as
