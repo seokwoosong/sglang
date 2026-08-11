@@ -32,6 +32,12 @@ VARIANT_LABELS = {
     "eval-u0": "U0 unified only",
     "eval-u2": "U2 unified + split L2",
     "eval-u3": "U3 unified + typed L2",
+    "post-s0": "Post S0 static only (Triton)",
+    "post-s1": "Post S1 static + HiCache (Triton)",
+    "post-u0": "Post U0 unified only (Triton)",
+    "post-u3": "Post U3 unified + typed L2 (Triton)",
+    "post-s0-default": "Post S0 static only (default backends)",
+    "post-s1-default": "Post S1 static + HiCache (default backends)",
 }
 
 PROFILE_AGGREGATE_METRICS = (
@@ -88,7 +94,9 @@ def latest_valid_results(
     root: Path, pattern: re.Pattern[str]
 ) -> list[tuple[re.Match[str], str, dict[str, Any], Path]]:
     latest: dict[tuple[str, ...], tuple[re.Match[str], str, dict[str, Any], Path]] = {}
-    for path in sorted(root.glob("*/eval-*/*/result.json")):
+    result_paths = list(root.glob("*/eval-*/*/result.json"))
+    result_paths.extend(root.glob("*/post-*/*/result.json"))
+    for path in sorted(result_paths):
         match = pattern.fullmatch(path.parents[2].name)
         if match is None:
             continue
@@ -243,7 +251,7 @@ def parity_summary(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
         }
         rows.append(row)
         observed.append((key, output_fingerprint, logprob_token_fingerprint, row, path))
-        if variant == "eval-s0" and match["policy"] == "none":
+        if variant in {"eval-s0", "post-s0"} and match["policy"] == "none":
             canonical[key] = (output_fingerprint, logprob_token_fingerprint)
 
     # Older artifact sets predate S0 and retain their original within-run parity

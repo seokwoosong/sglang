@@ -33,6 +33,17 @@ DEFAULT_MODEL = Path(
 )
 EVAL_SERVER_SHA = "fcdd52f4e1835bdb4996ac8c87c83d50c3fe55c2"
 EVAL_SERVER_WORKTREE = Path("/home/sukwoo24/sglang-eval-worktrees/qwen08-eval-server")
+POST_REBASE_SERVER_SHA = "743cae224c5bc28687457558a074736776350392"
+POST_REBASE_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/qwen08-post-rebase-743cae2"
+)
+POST_REBASE_SERVER_ENV = {
+    "SGLANG_HICACHE_UNIFIED_TYPED_L2": "1",
+    # The existing RTX 5090 evaluation environment uses torch 2.11 with the
+    # ABI-compatible 0.4.5 AOT wheel.  Current 0.4.6.post1 wheels target torch
+    # 2.13; this Qwen Triton path does not call their new AOT operations.
+    "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK": "1",
+}
 
 VARIANTS = {
     # Fair final-source evaluation: all variants use the same allocator,
@@ -80,6 +91,67 @@ VARIANTS = {
         "sync_unified_transfers": "0",
         "hicache_mem_layout": "page_first",
         "server_env": {"SGLANG_HICACHE_UNIFIED_TYPED_L2": "1"},
+    },
+    # Post-upstream-rebase evaluation.  Keep these definitions separate from
+    # eval-* so the historical fcdd52f artifacts remain exactly reproducible.
+    "post-s0": {
+        "sha": POST_REBASE_SERVER_SHA,
+        "worktree": POST_REBASE_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": False,
+        "sync_unified_transfers": None,
+        "kernel_backends": "triton",
+        "server_env": POST_REBASE_SERVER_ENV,
+    },
+    "post-s1": {
+        "sha": POST_REBASE_SERVER_SHA,
+        "worktree": POST_REBASE_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": True,
+        "sync_unified_transfers": None,
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": POST_REBASE_SERVER_ENV,
+    },
+    "post-u0": {
+        "sha": POST_REBASE_SERVER_SHA,
+        "worktree": POST_REBASE_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": False,
+        "sync_unified_transfers": None,
+        "kernel_backends": "triton",
+        "server_env": POST_REBASE_SERVER_ENV,
+    },
+    "post-u3": {
+        "sha": POST_REBASE_SERVER_SHA,
+        "worktree": POST_REBASE_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": POST_REBASE_SERVER_ENV,
+    },
+    # Product-ceiling controls: same post-rebase source and memory settings as
+    # post-s{0,1}, but let the server resolve its default kernel backends.
+    "post-s0-default": {
+        "sha": POST_REBASE_SERVER_SHA,
+        "worktree": POST_REBASE_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": False,
+        "sync_unified_transfers": None,
+        "kernel_backends": "default",
+        "server_env": POST_REBASE_SERVER_ENV,
+    },
+    "post-s1-default": {
+        "sha": POST_REBASE_SERVER_SHA,
+        "worktree": POST_REBASE_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": True,
+        "sync_unified_transfers": None,
+        "kernel_backends": "default",
+        "hicache_mem_layout": "page_first",
+        "server_env": POST_REBASE_SERVER_ENV,
     },
     # Multi-token typed-L2 evaluation. Both variants use identical source;
     # only --enable-unified-memory selects OURS.
@@ -297,12 +369,6 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
         "bfloat16",
         "--page-size",
         str(args.page_size),
-        "--attention-backend",
-        "triton",
-        "--linear-attn-backend",
-        "triton",
-        "--mamba-backend",
-        "triton",
         "--mamba-radix-cache-strategy",
         "extra_buffer",
         "--max-total-tokens",
@@ -317,6 +383,20 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
         "--log-level",
         args.log_level,
     ]
+    kernel_backends = variant.get("kernel_backends", "triton")
+    if kernel_backends == "triton":
+        command.extend(
+            [
+                "--attention-backend",
+                "triton",
+                "--linear-attn-backend",
+                "triton",
+                "--mamba-backend",
+                "triton",
+            ]
+        )
+    elif kernel_backends != "default":
+        raise ValueError(f"Unknown kernel backend mode: {kernel_backends!r}")
     if args.cuda_graph_mode == "enabled":
         command.extend(
             [

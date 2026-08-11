@@ -21,6 +21,17 @@ python bench_multiturn.py --model-path Qwen/Qwen2.5-14B-Instruct
 
 Note: The performance gain of hierarchical caching depends on the ratio of reusable tokens to GPU memory capacity. The more tokens to be reused, the larger the model, and the more constrained the GPU memory size, the greater the benefit one can expect from hierarchical caching.
 
+## Unified-memory + HiCache evaluations
+
+The post-upstream-rebase Qwen3.5 evaluation, including the pinned-backend
+four-way matrix and the static default-backend control, is documented in
+[`QWEN35_POST_REBASE_HICACHE_EVALUATION.md`](QWEN35_POST_REBASE_HICACHE_EVALUATION.md).
+Run the complete resumable campaign with:
+
+```bash
+bash benchmark/hicache/run_post_rebase_hicache_evaluation.sh
+```
+
 
 # Benchmark with more datasets
 ## Download Dataset

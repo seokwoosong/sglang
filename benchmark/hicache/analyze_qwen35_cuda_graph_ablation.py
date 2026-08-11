@@ -14,8 +14,14 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ARTIFACT_ROOT = REPO_ROOT / "artifacts/qwen35_unified_hicache_4way"
-VARIANTS = ("eval-s0", "eval-s1", "eval-u0", "eval-u3")
-NO_HICACHE_VARIANTS = frozenset(("eval-s0", "eval-u0"))
+DEFAULT_VARIANTS = ("eval-s0", "eval-s1", "eval-u0", "eval-u3")
+KNOWN_VARIANTS = DEFAULT_VARIANTS + (
+    "post-s0",
+    "post-s1",
+    "post-u0",
+    "post-u3",
+)
+NO_HICACHE_VARIANTS = frozenset(("eval-s0", "eval-u0", "post-s0", "post-u0"))
 WORKLOADS = ("short-3k", "middle-10k", "long-50k")
 MODES = ("disabled", "enabled")
 GRAPH_RUN_RE = re.compile(
@@ -35,7 +41,9 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def latest_results(root: Path, prefix: str) -> list[Path]:
     selected: list[Path] = []
-    for variant_dir in sorted(root.glob(f"{prefix}*/eval-*")):
+    variant_dirs = list(root.glob(f"{prefix}*/eval-*"))
+    variant_dirs.extend(root.glob(f"{prefix}*/post-*"))
+    for variant_dir in sorted(variant_dirs):
         candidates = sorted(variant_dir.glob("*/result.json"), reverse=True)
         completed = [
             path
@@ -183,7 +191,7 @@ def aggregate_performance(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def paired_speedups(
-    rows: list[dict[str, Any]],
+    rows: list[dict[str, Any]], variants: tuple[str, ...]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     indexed = {
         (
@@ -197,7 +205,7 @@ def paired_speedups(
     pairs: list[dict[str, Any]] = []
     errors: list[str] = []
     repetitions = sorted({int(row["repetition"]) for row in rows})
-    for variant in VARIANTS:
+    for variant in variants:
         for workload in WORKLOADS:
             for repetition in repetitions:
                 disabled = indexed.get((variant, workload, repetition, "disabled"))
@@ -251,7 +259,9 @@ def paired_speedups(
     return pairs, summaries, errors
 
 
-def analyze_parity(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
+def analyze_parity(
+    root: Path, variants: tuple[str, ...]
+) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
     fingerprints: dict[tuple[str, str], tuple[tuple[Any, ...], tuple[Any, ...]]] = {}
@@ -316,7 +326,7 @@ def analyze_parity(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
             or not row["logprob_token_ids_equal"]
         ):
             errors.append(f"Parity failed: {result['variant']}/{mode}")
-    for variant in VARIANTS:
+    for variant in variants:
         enabled = fingerprints.get((variant, "enabled"))
         disabled = fingerprints.get((variant, "disabled"))
         if enabled is None or disabled is None:
@@ -333,7 +343,8 @@ def analyze_parity(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
         if not token_equal:
             errors.append(f"Cross-mode logprob token IDs differ: {variant}")
 
-    canonical = fingerprints.get(("eval-s0", "disabled"))
+    canonical_variant = "eval-s0" if "eval-s0" in variants else "post-s0"
+    canonical = fingerprints.get((canonical_variant, "disabled"))
     if canonical is not None:
         for key, fingerprint in fingerprints.items():
             row = rows_by_key[key]
@@ -354,19 +365,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     parser.add_argument("--expected-repetitions", type=int, default=3)
+    parser.add_argument(
+        "--variants",
+        nargs="+",
+        choices=KNOWN_VARIANTS,
+        default=list(DEFAULT_VARIANTS),
+    )
     args = parser.parse_args()
+    variants = tuple(args.variants)
     root = args.artifact_root.resolve()
     summary_dir = root / "summary"
 
     runs, performance_errors = analyze_performance(root)
     aggregates = aggregate_performance(runs)
-    pairs, speedups, pair_errors = paired_speedups(runs)
-    parity, parity_errors = analyze_parity(root)
+    pairs, speedups, pair_errors = paired_speedups(runs, variants)
+    parity, parity_errors = analyze_parity(root, variants)
     errors = performance_errors + pair_errors + parity_errors
     expected_performance_runs = (
-        len(VARIANTS) * len(WORKLOADS) * len(MODES) * args.expected_repetitions
+        len(variants) * len(WORKLOADS) * len(MODES) * args.expected_repetitions
     )
-    expected_parity_runs = len(VARIANTS) * len(MODES)
+    expected_parity_runs = len(variants) * len(MODES)
     if len(runs) != expected_performance_runs:
         errors.append(
             f"Expected {expected_performance_runs} performance runs, got {len(runs)}"

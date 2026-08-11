@@ -53,19 +53,52 @@ VARIANT_POLICIES = {
     "eval-u0": ("none",),
     "eval-u2": ("write_back", "write_through"),
     "eval-u3": ("write_back", "write_through"),
+    "post-s0": ("none",),
+    "post-s1": ("write_back", "write_through"),
+    "post-u0": ("none",),
+    "post-u3": ("write_back", "write_through"),
+    "post-s0-default": ("none",),
+    "post-s1-default": ("write_back", "write_through"),
 }
 DEFAULT_VARIANTS = ("eval-s0", "eval-s1", "eval-u0", "eval-u3")
-NO_HICACHE_VARIANTS = frozenset(("eval-s0", "eval-u0"))
-GRAPH_VARIANTS = DEFAULT_VARIANTS
+POST_REBASE_VARIANTS = ("post-s0", "post-s1", "post-u0", "post-u3")
+POST_DEFAULT_VARIANTS = ("post-s0-default", "post-s1-default")
+NO_HICACHE_VARIANTS = frozenset(
+    ("eval-s0", "eval-u0", "post-s0", "post-u0", "post-s0-default")
+)
+GRAPH_VARIANTS = DEFAULT_VARIANTS + POST_REBASE_VARIANTS + POST_DEFAULT_VARIANTS
 GRAPH_WORKLOADS = ("short-3k", "middle-10k", "long-50k")
-TRANSFER_VARIANTS = ("eval-s1", "eval-u3")
+TRANSFER_VARIANTS = ("eval-s1", "eval-u3", "post-s1", "post-u3")
+VARIANT_SERVER_SHAS = {
+    **{
+        variant: "fcdd52f4e1835bdb4996ac8c87c83d50c3fe55c2"
+        for variant in ("eval-s0", "eval-s1", "eval-u0", "eval-u2", "eval-u3")
+    },
+    **{
+        variant: "743cae224c5bc28687457558a074736776350392"
+        for variant in (
+            "post-s0",
+            "post-s1",
+            "post-u0",
+            "post-u3",
+            "post-s0-default",
+            "post-s1-default",
+        )
+    },
+}
 
 
-def task_completed(artifact_root: Path, run_name: str, variant: str) -> bool:
+def task_completed(
+    artifact_root: Path, run_name: str, variant: str, expected_sha: str
+) -> bool:
     manifests = sorted((artifact_root / run_name / variant).glob("*/manifest.json"))
     for path in reversed(manifests):
         try:
-            if json.loads(path.read_text()).get("status") == "completed":
+            manifest = json.loads(path.read_text())
+            if (
+                manifest.get("status") == "completed"
+                and manifest.get("variant_definition", {}).get("sha") == expected_sha
+            ):
                 return True
         except (OSError, json.JSONDecodeError):
             continue
@@ -139,7 +172,12 @@ def run_task(
     run_name: str,
     variant: str,
 ) -> None:
-    if args.resume and task_completed(args.artifact_root, run_name, variant):
+    if args.resume and task_completed(
+        args.artifact_root,
+        run_name,
+        variant,
+        expected_sha=VARIANT_SERVER_SHAS[variant],
+    ):
         print(f"skip completed: {run_name}/{variant}", flush=True)
         return
     print(f"start: {run_name}/{variant}", flush=True)
