@@ -1043,13 +1043,13 @@ class HybridCacheController(BaseHiCacheController):
         keep their V2P tables on the accelerator, while the direct-I/O path may
         subsequently move execution indices to CPU.
         """
-        device_indices = operation.device_indices
         anchor_entry = self.mem_pool_host.anchor_entry
-        if anchor_entry.device_index_translate_fn is not None:
-            device_indices = anchor_entry.device_index_translate_fn(device_indices).to(
-                dtype=operation.device_indices.dtype
-            )
-            self._validate_translated_indices(anchor_entry, device_indices)
+        device_indices = (
+            self.mem_pool_device_allocator.translate_kv_indices_for_transfer(
+                operation.device_indices
+            ).to(dtype=operation.device_indices.dtype)
+        )
+        self._validate_translated_indices(anchor_entry, device_indices)
 
         translated_pool_transfers = None
         if operation.pool_transfers:

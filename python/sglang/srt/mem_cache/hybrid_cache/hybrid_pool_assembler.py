@@ -658,12 +658,7 @@ def build_hybrid_mamba_stack(
         kv_host_size, mamba_host_size = _split_hicache_size(
             server_args.hicache_size, (kv_pool, mamba_pool)
         )
-    full_index_translate_fn = getattr(
-        params.token_to_kv_pool_allocator, "translate_kv_loc", None
-    )
-    mamba_index_translate_fn = getattr(
-        params.req_to_token_pool, "translate_mamba_indices", None
-    )
+    mamba_index_translate_fn = params.req_to_token_pool.translate_mamba_indices
     full_transfer_fence_fn = None
     mamba_transfer_fence_fn = None
     is_unified_mamba = hasattr(kv_pool, "_unified_buffer") and getattr(
@@ -736,7 +731,6 @@ def build_hybrid_mamba_stack(
             transfer_layer_num=transfer_layer_num + len(mtp_draft_device_pools),
             is_anchor=True,
             host_evict_fn=host_kv_evict_fn,
-            device_index_translate_fn=full_index_translate_fn,
             device_transfer_fence_fn=full_transfer_fence_fn,
         ),
         build_pool_entry(

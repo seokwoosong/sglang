@@ -1882,6 +1882,7 @@ class HostPoolGroup:
         local_layer_id = anchor.layer_mapper(layer_id)
         if local_layer_id is not None and host_indices.numel() > 0:
             target_device_pool = device_pool if is_draft else anchor.device_pool
+            draft_kwargs = {"is_draft": True} if is_draft else {}
             self._profile_pool_transfer(
                 anchor,
                 host_indices,
@@ -1892,7 +1893,7 @@ class HostPoolGroup:
                     device_indices,
                     local_layer_id,
                     io_backend,
-                    is_draft=is_draft,
+                    **draft_kwargs,
                 ),
                 all_layers=False,
                 record_batch=local_layer_id == 0,
@@ -1907,6 +1908,7 @@ class HostPoolGroup:
             if local_layer_id is None:
                 continue
             target_device_pool = device_pool if is_draft else entry.device_pool
+            draft_kwargs = {"is_draft": True} if is_draft else {}
             self._profile_pool_transfer(
                 entry,
                 transfer.host_indices,
@@ -1917,7 +1919,7 @@ class HostPoolGroup:
                     transfer.device_indices,
                     local_layer_id,
                     io_backend,
-                    is_draft=is_draft,
+                    **draft_kwargs,
                 ),
                 all_layers=False,
                 record_batch=local_layer_id == 0,

@@ -377,9 +377,12 @@ class TestHybridTransferIndexTranslation(unittest.TestCase):
 
         full_translate = MagicMock(side_effect=lambda x: x + 100)
         mamba_translate = MagicMock(side_effect=lambda x: x + 200)
+        controller.mem_pool_device_allocator = SimpleNamespace(
+            translate_kv_indices_for_transfer=full_translate
+        )
         full_entry = MagicMock(
             is_primary_index_anchor=True,
-            device_index_translate_fn=full_translate,
+            device_index_translate_fn=None,
         )
         mamba_entry = MagicMock(device_index_translate_fn=mamba_translate)
         controller.mem_pool_host = MagicMock(
@@ -416,10 +419,15 @@ class TestHybridTransferIndexTranslation(unittest.TestCase):
         torch.testing.assert_close(
             operation.pool_transfers[0].device_indices, mamba_virtual
         )
+        full_translate.assert_called_once_with(full_virtual)
+        mamba_translate.assert_called_once_with(mamba_virtual)
 
     def test_identity_when_pool_has_no_translator(self):
         controller = HybridCacheController.__new__(HybridCacheController)
         controller.move_indices = lambda host, device: (host, device)
+        controller.mem_pool_device_allocator = SimpleNamespace(
+            translate_kv_indices_for_transfer=lambda indices: indices
+        )
         anchor_entry = MagicMock(
             is_primary_index_anchor=True,
             device_index_translate_fn=None,
@@ -527,6 +535,7 @@ class TestHybridTransferIndexTranslation(unittest.TestCase):
         controller.mem_pool_host = MagicMock()
         controller.io_backend = "kernel"
         controller.has_draft = False
+        controller.has_mtp_draft = False
         controller.load_stream = MagicMock()
         controller.layer_num = 2
         controller.ack_load_queue = []
@@ -937,6 +946,56 @@ class TestUnifiedHiCacheServerArgs(unittest.TestCase):
                     hicache_write_policy="write_through",
                     page_size=page_size,
                 )._handle_unified_memory_pool()
+
+    def test_pd_disaggregation_with_hicache_is_rejected(self):
+        from sglang.srt.server_args import ServerArgs
+
+        with self.assertRaisesRegex(AssertionError, "HiCache.*PD disaggregation"):
+            ServerArgs(
+                model_path="dummy",
+                enable_unified_memory=True,
+                enable_hierarchical_cache=True,
+                hicache_io_backend="kernel",
+                hicache_write_policy="write_back",
+                disaggregation_mode="decode",
+                disaggregation_transfer_backend="mooncake",
+            )._handle_unified_memory_pool()
+
+    def test_pd_disaggregation_remains_supported_without_hicache(self):
+        from sglang.srt.server_args import ServerArgs
+
+        ServerArgs(
+            model_path="dummy",
+            enable_unified_memory=True,
+            disaggregation_mode="decode",
+            disaggregation_transfer_backend="mooncake",
+        )._handle_unified_memory_pool()
+
+    def test_dspark_with_hicache_is_rejected(self):
+        from sglang.srt.server_args import ServerArgs
+
+        with self.assertRaisesRegex(AssertionError, "HiCache.*speculative decoding"):
+            ServerArgs(
+                model_path="dummy",
+                enable_unified_memory=True,
+                enable_hierarchical_cache=True,
+                hicache_io_backend="kernel",
+                hicache_write_policy="write_back",
+                speculative_algorithm="DSPARK",
+                speculative_eagle_topk=1,
+                attention_backend="triton",
+            )._handle_unified_memory_pool()
+
+    def test_dspark_remains_supported_without_hicache(self):
+        from sglang.srt.server_args import ServerArgs
+
+        ServerArgs(
+            model_path="dummy",
+            enable_unified_memory=True,
+            speculative_algorithm="DSPARK",
+            speculative_eagle_topk=1,
+            attention_backend="triton",
+        )._handle_unified_memory_pool()
 
 
 if __name__ == "__main__":

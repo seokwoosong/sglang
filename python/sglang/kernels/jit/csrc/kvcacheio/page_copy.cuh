@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <limits>
 
+namespace sglang {
+
 namespace {
 
 struct HiCachePageCopyParams {
@@ -107,3 +109,5 @@ struct HiCachePageCopyKernel {
     LaunchKernel(static_cast<uint32_t>(blocks), kBlockSize, device.unwrap())(hicache_page_copy_kernel, params);
   }
 };
+
+}  // namespace sglang
