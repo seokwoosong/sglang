@@ -206,9 +206,9 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         self._peer: Optional[MultiEndedAllocator] = None
 
         # Inverse history of relocations (spec rollback), at PAGE granularity.
-        self._inverse_history: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
-            []
-        )
+        self._inverse_history: List[
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        ] = []
 
         # --- Lazy compaction state (all unused when lazy_compaction=False) ---
         # `_free_phys_pages`: GPU free list of physical PAGE ids, sorted at `_flush`.
@@ -1238,9 +1238,9 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         v2p stays -1 and translation yields negative ids → CUDA OOB.
         """
         with record_function("MultiEndedAlloc.alloc_extend"):
-            assert (
-                self.is_id_owner
-            ), f"alloc_extend on a non-id-owner allocator ({self.sub_pool_name!r})"
+            assert self.is_id_owner, (
+                f"alloc_extend on a non-id-owner allocator ({self.sub_pool_name!r})"
+            )
             if num_new_pages is None:
                 num_new_pages = get_num_new_pages(
                     seq_lens=seq_lens_cpu,
@@ -1307,9 +1307,9 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         virtual page on THIS sub-allocator (else v2p stays -1 → CUDA OOB).
         """
         with record_function("MultiEndedAlloc.alloc_decode"):
-            assert (
-                self.is_id_owner
-            ), f"alloc_decode on a non-id-owner allocator ({self.sub_pool_name!r})"
+            assert self.is_id_owner, (
+                f"alloc_decode on a non-id-owner allocator ({self.sub_pool_name!r})"
+            )
             bs = len(seq_lens)
             # CPU-only count BEFORE the kernel, to snapshot the exact slice the
             # kernel will consume.
@@ -2512,6 +2512,9 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
 
     def full_available_size(self) -> int:
         return self.full_attn_allocator.schedulable_available_size()
+
+    def full_tokens_for_mamba_slots(self, slots: int) -> int:
+        return slots * self.mamba_slot_full_token_cost()
 
     def mamba_slot_full_token_cost(self) -> int:
         """Full-token-equivalents of shared-gap bytes ONE mamba state consumes.

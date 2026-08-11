@@ -60,13 +60,13 @@ class MambaComponent(TreeComponent):
     def __init__(self, cache: UnifiedRadixCache, params: CacheInitParams):
         from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
 
-        assert isinstance(
-            params.req_to_token_pool, HybridReqToTokenPool
-        ), f"MambaComponent requires HybridReqToTokenPool, got {type(params.req_to_token_pool)}"
+        assert isinstance(params.req_to_token_pool, HybridReqToTokenPool), (
+            f"MambaComponent requires HybridReqToTokenPool, got {type(params.req_to_token_pool)}"
+        )
         if not params.enable_mamba_extra_buffer:
-            assert (
-                params.page_size == 1
-            ), f"MambaComponent requires page_size=1 when mamba_extra_buffer is disabled, got {params.page_size}"
+            assert params.page_size == 1, (
+                f"MambaComponent requires page_size=1 when mamba_extra_buffer is disabled, got {params.page_size}"
+            )
         super().__init__(cache, params)
         self.mamba_cache_chunk_size = mamba_cache_chunk_size()
         self.mamba_max_states_per_path = get_exec().mamba.mamba_max_states_per_path
@@ -478,12 +478,21 @@ class MambaComponent(TreeComponent):
                 self.tree_core.component_protected_size_[ct] -= vlen
             cd.lock_ref -= 1
 
+    def _evict_for_one_slot(self) -> EvictParams:
+        """Free one mamba slot. On a shared byte buffer the full side has to
+        fund it, so it is evicted too."""
+        allocator = self.cache.token_to_kv_pool_allocator
+        params = EvictParams(
+            num_tokens=allocator.full_tokens_for_mamba_slots(1), mamba_num=1
+        )
+        self._evict_for_mamba_slot(params)
+        return params
+
     def _alloc_mamba_slot(self) -> torch.Tensor:
         """Allocate one mamba pool slot, evicting if necessary."""
         slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
         if slot is None:
-            params = self._mamba_slot_eviction_params()
-            self._evict_for_mamba_slot(params)
+            params = self._evict_for_one_slot()
             slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
             if slot is None and params.num_tokens == 0:
                 # An evicted Mamba row can remain transfer-fenced until its
