@@ -32,6 +32,15 @@ Run the complete resumable campaign with:
 bash benchmark/hicache/run_post_rebase_hicache_evaluation.sh
 ```
 
+The L1-only layer-first versus page-first evaluation, with HiCache disabled
+and the allocator held static for the primary comparison, is documented in
+[`QWEN35_L1_LAYOUT_EVALUATION.md`](QWEN35_L1_LAYOUT_EVALUATION.md). Reproduce
+the complete parity, resident, pressure, and profile campaign with:
+
+```bash
+bash benchmark/hicache/run_qwen35_l1_layout_evaluation.sh
+```
+
 
 # Benchmark with more datasets
 ## Download Dataset

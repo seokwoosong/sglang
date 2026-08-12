@@ -153,6 +153,40 @@ VARIANTS = {
         "hicache_mem_layout": "page_first",
         "server_env": POST_REBASE_SERVER_ENV,
     },
+    # L1-only layout decomposition.  l1-lf and l1-pf-static intentionally use
+    # the same static allocator and differ only in the device-pool layout flag.
+    # l1-pf-unified then quantifies the incremental unified allocator effect on
+    # top of the same page-first layout.  HiCache is disabled for all three.
+    "l1-lf": {
+        "sha": POST_REBASE_SERVER_SHA,
+        "worktree": POST_REBASE_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": False,
+        "sync_unified_transfers": None,
+        "kernel_backends": "triton",
+        "page_major_layout": False,
+        "server_env": POST_REBASE_SERVER_ENV,
+    },
+    "l1-pf-static": {
+        "sha": POST_REBASE_SERVER_SHA,
+        "worktree": POST_REBASE_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": False,
+        "sync_unified_transfers": None,
+        "kernel_backends": "triton",
+        "page_major_layout": True,
+        "server_env": POST_REBASE_SERVER_ENV,
+    },
+    "l1-pf-unified": {
+        "sha": POST_REBASE_SERVER_SHA,
+        "worktree": POST_REBASE_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": False,
+        "sync_unified_transfers": None,
+        "kernel_backends": "triton",
+        "page_major_layout": True,
+        "server_env": POST_REBASE_SERVER_ENV,
+    },
     # Multi-token typed-L2 evaluation. Both variants use identical source;
     # only --enable-unified-memory selects OURS.
     "paged-baseline": {
@@ -397,6 +431,8 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
         )
     elif kernel_backends != "default":
         raise ValueError(f"Unknown kernel backend mode: {kernel_backends!r}")
+    if variant.get("page_major_layout", False):
+        command.append("--enable-page-major-kv-layout")
     if args.cuda_graph_mode == "enabled":
         command.extend(
             [
