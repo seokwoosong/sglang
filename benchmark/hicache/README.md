@@ -41,6 +41,15 @@ the complete parity, resident, pressure, and profile campaign with:
 bash benchmark/hicache/run_qwen35_l1_layout_evaluation.sh
 ```
 
+The forward-path-only 4B/9B scaling follow-up, covering page sizes 1, 32, and
+64 plus the layer-first automatic-backend control, is documented in
+[`QWEN35_L1_FORWARD_SCALE_EVALUATION.md`](QWEN35_L1_FORWARD_SCALE_EVALUATION.md).
+Run or resume its 156-run logical matrix with:
+
+```bash
+python benchmark/hicache/run_qwen35_l1_forward_scale.py
+```
+
 
 # Benchmark with more datasets
 ## Download Dataset

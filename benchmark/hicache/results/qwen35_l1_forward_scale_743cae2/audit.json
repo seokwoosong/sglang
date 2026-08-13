@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "server_sha": "743cae224c5bc28687457558a074736776350392",
+  "run_prefix": "l1-forward-scale",
+  "models": [
+    "4b",
+    "9b"
+  ],
+  "runs": 156,
+  "expected_runs": 156,
+  "layout_pairs": 60,
+  "expected_layout_pairs": 60,
+  "complete": true,
+  "passed": true,
+  "errors": []
+}

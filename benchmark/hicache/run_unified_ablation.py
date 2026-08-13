@@ -167,6 +167,16 @@ VARIANTS = {
         "page_major_layout": False,
         "server_env": POST_REBASE_SERVER_ENV,
     },
+    "l1-lf-auto": {
+        "sha": POST_REBASE_SERVER_SHA,
+        "worktree": POST_REBASE_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": False,
+        "sync_unified_transfers": None,
+        "kernel_backends": "default",
+        "page_major_layout": False,
+        "server_env": POST_REBASE_SERVER_ENV,
+    },
     "l1-pf-static": {
         "sha": POST_REBASE_SERVER_SHA,
         "worktree": POST_REBASE_SERVER_WORKTREE,

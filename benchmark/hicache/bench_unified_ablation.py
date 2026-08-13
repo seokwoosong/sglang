@@ -88,8 +88,40 @@ def metric_snapshot(base_url: str) -> dict[str, float]:
     return {name: parsed.get(name, 0.0) for name in COUNTERS}
 
 
+def forward_category_snapshot(base_url: str) -> dict[str, float]:
+    """Return model-forward GPU seconds without discarding ForwardMode labels."""
+    response = requests.get(f"{base_url}/metrics", timeout=30)
+    response.raise_for_status()
+    metric_name = "sglang:forward_execution_seconds_total"
+    totals: dict[str, float] = {}
+    for raw_line in response.text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith(metric_name + "{"):
+            continue
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        category_match = re.search(r'category="([^"]+)"', fields[0])
+        if category_match is None:
+            continue
+        try:
+            value = float(fields[1])
+        except ValueError:
+            continue
+        category = category_match.group(1)
+        totals[category] = totals.get(category, 0.0) + value
+    return totals
+
+
 def metric_delta(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
     return {name: after.get(name, 0.0) - before.get(name, 0.0) for name in COUNTERS}
+
+
+def series_delta(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
+    return {
+        name: after.get(name, 0.0) - before.get(name, 0.0)
+        for name in sorted(set(before) | set(after))
+    }
 
 
 def memory_profile_snapshot(output_path: str) -> dict[str, Any]:
@@ -864,6 +896,7 @@ async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
     flush_cache(args.base_url)
     server_info = get_server_info(args.base_url)
     metrics_before = metric_snapshot(args.base_url)
+    forward_categories_before = forward_category_snapshot(args.base_url)
     memory_profile_before = memory_profile_snapshot(args.output)
     prefixes, schedule = make_workload(
         seed=args.seed,
@@ -886,6 +919,7 @@ async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
             )
     prime_duration = time.perf_counter() - prime_started
     metrics_after_prime = metric_snapshot(args.base_url)
+    forward_categories_after_prime = forward_category_snapshot(args.base_url)
     time.sleep(0.35)
     memory_profile_after_prime = memory_profile_snapshot(args.output)
     torch_profile = start_torch_profile(args, "measured")
@@ -920,11 +954,15 @@ async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
         measured_duration = time.perf_counter() - measured_started
 
     metrics_after = metric_snapshot(args.base_url)
+    forward_categories_after = forward_category_snapshot(args.base_url)
     time.sleep(0.35)
     memory_profile_after = memory_profile_snapshot(args.output)
     torch_profile = stop_torch_profile(args, torch_profile)
     total_delta = metric_delta(metrics_before, metrics_after)
     measured_delta = metric_delta(metrics_after_prime, metrics_after)
+    forward_category_delta = series_delta(
+        forward_categories_after_prime, forward_categories_after
+    )
     successful = [record for record in records if record.success]
     ttfts = [record.ttft_s for record in successful if record.ttft_s is not None]
     latencies = [record.latency_s for record in successful]
@@ -1002,6 +1040,10 @@ async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
         "metrics_before": metrics_before,
         "metrics_after_prime": metrics_after_prime,
         "metrics_after": metrics_after,
+        "forward_categories_before": forward_categories_before,
+        "forward_categories_after_prime": forward_categories_after_prime,
+        "forward_categories_after": forward_categories_after,
+        "measured_forward_seconds_by_category": forward_category_delta,
         "total_metric_delta": total_delta,
         "measured_metric_delta": measured_delta,
         "memory_profile_total_delta": memory_profile_delta(
