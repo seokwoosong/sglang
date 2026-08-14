@@ -488,6 +488,9 @@ class MambaComponent(TreeComponent):
                 num_tokens=allocator.full_tokens_for_mamba_slots(1), mamba_num=1
             )
         )
+        flush_deferred_frees = getattr(allocator, "flush_deferred_frees", None)
+        if flush_deferred_frees is not None:
+            flush_deferred_frees()
 
     def _alloc_mamba_slot(self) -> torch.Tensor:
         """Allocate one mamba pool slot, evicting if necessary."""
