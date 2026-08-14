@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 from collections import defaultdict
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
@@ -52,6 +54,12 @@ if TYPE_CHECKING:
         UnifiedRadixCache,
         UnifiedTreeNode,
     )
+
+
+logger = logging.getLogger(__name__)
+_DEBUG_UNIFIED_FREE_GROUP = (
+    os.environ.get("SGLANG_DEBUG_UNIFIED_FREE_GROUP", "0") == "1"
+)
 
 
 class MambaComponent(TreeComponent):
@@ -496,8 +504,50 @@ class MambaComponent(TreeComponent):
         """Allocate one mamba pool slot, evicting if necessary."""
         slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
         if slot is None:
+            allocator = self.cache.token_to_kv_pool_allocator
+            if _DEBUG_UNIFIED_FREE_GROUP:
+                active, tensors, tokens, age_ms = (
+                    allocator.deferred_free_debug_state()
+                )
+                logger.warning(
+                    "[unified-mamba-retry] initial_fail group_active=%s "
+                    "group_age_ms=%.3f deferred_tensors=%d deferred_tokens=%d "
+                    "gap_bytes=%d slot_bytes=%d full_available=%d "
+                    "mamba_available=%d",
+                    active,
+                    age_ms,
+                    tensors,
+                    tokens,
+                    allocator.mamba_allocator._current_gap_bytes(),
+                    allocator.mamba_allocator.entry_bytes_per_page,
+                    allocator.full_attn_allocator.available_size(),
+                    allocator.mamba_allocator.available_size(),
+                )
             self._evict_for_one_slot()
+            if _DEBUG_UNIFIED_FREE_GROUP:
+                active, tensors, tokens, age_ms = (
+                    allocator.deferred_free_debug_state()
+                )
+                logger.warning(
+                    "[unified-mamba-retry] after_evict group_active=%s "
+                    "group_age_ms=%.3f deferred_tensors=%d deferred_tokens=%d "
+                    "gap_bytes=%d slot_bytes=%d full_available=%d "
+                    "mamba_available=%d",
+                    active,
+                    age_ms,
+                    tensors,
+                    tokens,
+                    allocator.mamba_allocator._current_gap_bytes(),
+                    allocator.mamba_allocator.entry_bytes_per_page,
+                    allocator.full_attn_allocator.available_size(),
+                    allocator.mamba_allocator.available_size(),
+                )
             slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
+            if _DEBUG_UNIFIED_FREE_GROUP:
+                logger.warning(
+                    "[unified-mamba-retry] retry_result success=%s",
+                    slot is not None,
+                )
             assert slot is not None, "Can not alloc mamba cache"
         return slot
 

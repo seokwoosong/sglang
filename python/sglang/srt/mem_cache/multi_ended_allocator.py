@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 
 # OFF (default): cat unsorted, `_flush` sorts once. ON: sort after each cat.
 _SORT_FREE_LIST_AFTER_MERGE = envs.SGLANG_SORT_FREE_LIST_AFTER_MERGE.get()
+_DEBUG_UNIFIED_FREE_GROUP = (
+    os.environ.get("SGLANG_DEBUG_UNIFIED_FREE_GROUP", "0") == "1"
+)
 
 
 import atexit
@@ -1799,6 +1802,10 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
 
         self.is_not_in_free_group = True
         self.free_group: List[torch.Tensor] = []
+        self._debug_free_group_seq = 0
+        self._debug_free_group_started_at: Optional[float] = None
+        self._debug_deferred_free_calls = 0
+        self._debug_deferred_free_tokens = 0
         # Base init left these None; we use watermark math, not free-lists.
         self.free_pages = torch.empty(0, dtype=torch.int64, device=device)
         self.release_pages = torch.empty(0, dtype=torch.int64, device=device)
@@ -1986,6 +1993,9 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
                 return
             if not self.is_not_in_free_group:
                 self.free_group.append(self._copy_for_free_group(free_index))
+                if _DEBUG_UNIFIED_FREE_GROUP:
+                    self._debug_deferred_free_calls += 1
+                    self._debug_deferred_free_tokens += free_index.numel()
                 return
             self.full_attn_allocator.free(free_index)
             self.full_attn_allocator.clear_inverse_history()
@@ -1994,6 +2004,23 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
     def free_group_begin(self) -> None:
         self.is_not_in_free_group = False
         self.free_group = []
+        if _DEBUG_UNIFIED_FREE_GROUP:
+            self._debug_free_group_seq += 1
+            self._debug_free_group_started_at = _time_mod.perf_counter()
+            self._debug_deferred_free_calls = 0
+            self._debug_deferred_free_tokens = 0
+
+    def deferred_free_debug_state(self) -> tuple[bool, int, int, float]:
+        """Return active, queued tensors/tokens, and group age for diagnostics."""
+        active = not self.is_not_in_free_group
+        pending_tensors = len(self.free_group)
+        pending_tokens = sum(indices.numel() for indices in self.free_group)
+        age_ms = 0.0
+        if active and self._debug_free_group_started_at is not None:
+            age_ms = (
+                _time_mod.perf_counter() - self._debug_free_group_started_at
+            ) * 1000
+        return active, pending_tensors, pending_tokens, age_ms
 
     def flush_deferred_frees(self) -> None:
         """Apply queued Full frees without closing the surrounding free group.
@@ -2011,8 +2038,30 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
             self.mamba_allocator.clear_inverse_history()
 
     def free_group_end(self) -> None:
+        group_end_started_at = _time_mod.perf_counter()
+        active, pending_tensors, pending_tokens, age_ms = (
+            self.deferred_free_debug_state()
+        )
         self.is_not_in_free_group = True
         self.flush_deferred_frees()
+        if _DEBUG_UNIFIED_FREE_GROUP and pending_tensors:
+            logger.warning(
+                "[unified-free-group] end seq=%d active=%s open_ms=%.3f "
+                "deferred_tensors=%d deferred_tokens=%d observed_calls=%d "
+                "observed_tokens=%d commit_ms=%.3f full_available=%d "
+                "mamba_available=%d",
+                self._debug_free_group_seq,
+                active,
+                age_ms,
+                pending_tensors,
+                pending_tokens,
+                self._debug_deferred_free_calls,
+                self._debug_deferred_free_tokens,
+                (_time_mod.perf_counter() - group_end_started_at) * 1000,
+                self.full_attn_allocator.available_size(),
+                self.mamba_allocator.available_size(),
+            )
+        self._debug_free_group_started_at = None
 
     def clear(self) -> None:
         self.full_attn_allocator.clear()

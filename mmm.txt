@@ -1,0 +1,366 @@
+# SGLang Unified-Memory Mamba 할당 재시도 버그 수정 메모
+
+## 1. 목적과 범위
+
+이 문서는 SGLang의 unified-memory 내부 할당 순서에서 발생하는 회귀를 수정하고,
+격리된 loopback GPU 서버에서 재현·관찰하기 위한 개발 메모다. CPU 유닛 테스트는
+이번 확인 범위에서 명시적으로 제외했다. 외부 서비스나 운영 환경을 대상으로 하는
+테스트는 범위에 포함하지 않는다.
+
+- 대상 브랜치: `fix/unified-mamba-deferred-full-free`
+- 회귀 테스트 커밋: `37fdc1399`
+- 관련 선행 변경: `12c2be92a8`
+- 주요 코드:
+  - `python/sglang/srt/mem_cache/unified_cache/components/mamba_component.py`
+  - `python/sglang/srt/mem_cache/multi_ended_allocator.py`
+  - `test/registered/unit/mem_cache/test_multi_ended_allocator.py`
+
+## 2. 문제 요약
+
+`--enable-unified-memory`에서는 Full attention KV 영역과 Mamba 상태 영역이 하나의
+바이트 버퍼를 공유한다. Mamba 슬롯이 부족하면 Full 쪽의 재사용 가능한 항목을
+정리해 공간을 확보한 뒤 Mamba 할당을 다시 시도한다.
+
+현재는 배치 처리 중 반환된 Full 항목이 deferred free 그룹에만 기록될 수 있다.
+이 경우 공간 정리 직후의 Mamba 재시도에서는 반환된 공간이 아직 allocator에
+반영되지 않아, 할당 가능한 공간이 있는데도 재시도가 실패할 수 있다.
+
+핵심 순서는 다음과 같다.
+
+1. Mamba 슬롯의 첫 할당이 실패한다.
+2. `_evict_for_one_slot()`이 Full 쪽에서 필요한 공간을 정리한다.
+3. 반환 항목은 현재 free 그룹에 보류된다.
+4. Mamba allocator가 즉시 재시도하지만 보류된 반환분을 아직 보지 못한다.
+
+이는 네트워크나 보안 기능의 문제가 아니라, 공유 메모리 allocator의 상태 반영
+시점에 관한 내부 정확성 문제다.
+
+## 3. 기대 동작
+
+Mamba 슬롯 확보를 위해 Full 쪽 공간을 정리한 경우, 같은 호출 안에서 이어지는
+할당 재시도 전에 해당 반환분이 공유 allocator에 보이도록 해야 한다.
+
+수정 시 다음 조건을 지킨다.
+
+- 기존 free 그룹의 소유권과 수명은 호출자가 계속 관리한다.
+- 보류된 반환분만 안전하게 반영하고, 빈 그룹에서는 아무 작업도 하지 않는다.
+- 같은 항목을 두 번 반환하지 않는다.
+- unified-memory가 아닌 allocator의 기존 동작은 바꾸지 않는다.
+- 정상적인 첫 할당 경로에는 추가 작업을 하지 않는다.
+- 최종 할당 실패를 나타내는 기존 invariant 검사는 유지한다.
+
+개념적인 처리 흐름은 아래와 같다.
+
+```text
+Mamba 슬롯 할당 시도
+  -> 성공: 그대로 반환
+  -> 실패: 필요한 Full/Mamba 항목 정리
+           -> 보류된 반환분 반영
+           -> Mamba 슬롯 할당 재시도
+```
+
+## 4. 회귀 테스트 설계
+
+`TestUnifiedMambaDeferredFullFree.test_full_eviction_is_visible_before_mamba_retry`
+는 GPU나 서버 없이 필요한 순서만 모델링한다.
+
+- Full 정리가 수행되면 테스트 allocator에 반환 대기 상태를 기록한다.
+- 반환 대기 상태가 allocator에 반영되기 전에는 Mamba 할당이 실패한다.
+- 반환분이 반영된 뒤에는 같은 재시도가 성공한다.
+
+현재 코드에서는 이 테스트가 실패하며, 수정 후에는 통과해야 한다. 다만 이번 작업에서
+CPU 테스트 실행은 요청에 따라 생략했다.
+
+```bash
+python test/registered/unit/mem_cache/test_multi_ended_allocator.py \
+  TestUnifiedMambaDeferredFullFree.test_full_eviction_is_visible_before_mamba_retry -v
+```
+
+관련 파일 전체는 다음과 같이 확인한다.
+
+```bash
+python -m pytest \
+  test/registered/unit/mem_cache/test_multi_ended_allocator.py -q
+```
+
+## 5. 구현 점검 사항
+
+1. token allocator에 보류된 반환분을 즉시 반영하는 작은 API가 필요한지 확인한다.
+2. 해당 API는 현재 free 그룹을 중복 처리하지 않도록 반영 후 대기 목록을 비운다.
+3. `_alloc_mamba_slot()`의 공간 정리와 재시도 사이에서 이 API를 호출한다.
+4. 같은 할당 패턴을 사용하는 load-back 등 인접 경로에도 동일한 순서 보장이
+   필요한지 확인한다.
+5. 빈 대기 목록, free 그룹 외부 호출, 연속 호출에 대한 동작을 테스트한다.
+6. 기존 unified allocator 및 Mamba 관련 CPU 테스트를 함께 실행한다.
+
+## 6. 완료 기준
+
+- 위 회귀 테스트가 구현되어 있다(실행은 이번 범위에서 생략).
+- `test_multi_ended_allocator.py`의 기존 테스트 실행은 이번 범위에서 생략.
+- 공간 정리 후 재시도에서 새로 반환된 Full 영역을 즉시 사용할 수 있다.
+- free 그룹의 시작/종료 의미와 중복 반환 방지 규칙이 유지된다.
+- 변경 범위와 이유가 코드 주석 및 커밋 메시지에 간결하게 설명된다.
+
+## 7. 비범위와 로컬 통합 확인 원칙
+
+- 공개 주소 또는 운영 서버를 대상으로 한 검증
+- 서비스 중단을 유도하는 시나리오
+- 외부에 요청 발생기를 배포하거나 공유하는 작업
+
+필요한 동작은 결정적인 CPU 유닛 테스트로 검증하고, 추가 통합 확인이 필요하면
+격리된 로컬 개발 환경에서 제한된 범위로 수행한다. 아래 명령은 loopback 주소에만
+연결하는 개발용 재현 절차다.
+
+## 8. Qwen3.5-4B 로컬 서버 실행
+
+모델은 이미 내려받은 로컬 snapshot을 사용한다. `--enable-unified-memory`와
+Mamba radix cache는 켜 둬야 이 문제의 실제 경로를 유지할 수 있다. 재현 중에는
+`--disable-radix-cache`를 추가하지 않는다.
+
+```bash
+export FLASHINFER_WORKSPACE_BASE=/tmp/sglang-flashinfer-qwen35
+export TORCH_EXTENSIONS_DIR=/tmp/sglang-torch-extensions-qwen35
+export PYTHONPATH=/home/sukwoo24/sglang/python
+export CUDA_VISIBLE_DEVICES=0
+export SGLANG_DEBUG_UNIFIED_FREE_GROUP=1
+
+/home/sukwoo24/.venv_sglang_upstream_full/bin/python -m sglang.launch_server \
+  --host 127.0.0.1 --port 30000 \
+  --model-path /home/sukwoo24/.cache/huggingface/hub/models--Qwen--Qwen3.5-4B/snapshots/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a \
+  --served-model-name Qwen/Qwen3.5-4B \
+  --tp 1 --dtype bfloat16 --page-size 1 \
+  --attention-backend triton --linear-attn-backend triton --mamba-backend triton \
+  --mamba-radix-cache-strategy extra_buffer \
+  --max-total-tokens 120000 --max-running-requests 500 \
+  --chunked-prefill-size 4096 --context-length 32768 \
+  --mem-fraction-static 0.4 --language-only --mm-feature-transport cpu \
+  --cuda-graph-backend-decode full --cuda-graph-backend-prefill breakable \
+  --enable-unified-memory --log-level warning
+```
+
+다른 GPU에서는 메모리 프로파일링 결과에 따라 실제 동시 실행 수가 자동으로 낮아질
+수 있다. 서버가 준비됐는지는 별도 터미널에서 확인한다.
+
+```bash
+curl -sf http://127.0.0.1:30000/health
+```
+
+## 9. `sglang.bench_serving` 트래픽 생성
+
+`--tokenize-prompt`와 random dataset을 사용하면 요청마다 서로 다른 토큰 prompt를
+만들 수 있어, 동일 prefix의 radix-cache hit에 실험 결과가 좌우되는 것을 줄일 수
+있다. `--request-rate inf`는 준비된 요청을 즉시 발행하고,
+`--max-concurrency`는 클라이언트 측 동시 요청 수를 제한한다.
+
+먼저 작은 확인용 실행:
+
+```bash
+/home/sukwoo24/.venv_sglang_upstream_full/bin/python -m sglang.benchmark.serving \
+  --backend sglang --host 127.0.0.1 --port 30000 \
+  --model Qwen/Qwen3.5-4B --served-model-name Qwen/Qwen3.5-4B \
+  --dataset-name random --num-prompts 30 \
+  --random-input-len 6000 --random-output-len 8 \
+  --random-range-ratio 0.0 --request-rate inf --max-concurrency 6 \
+  --tokenize-prompt --disable-stream --disable-tqdm --seed 42
+```
+
+free group이 열려 있는 동안 새 Mamba 슬롯 요청이 계속 들어오도록 하는 본 실험:
+
+```bash
+/home/sukwoo24/.venv_sglang_upstream_full/bin/python -m sglang.benchmark.serving \
+  --backend sglang --host 127.0.0.1 --port 30000 \
+  --model Qwen/Qwen3.5-4B --served-model-name Qwen/Qwen3.5-4B \
+  --dataset-name random --num-prompts 400 \
+  --random-input-len 12000 --random-output-len 8 \
+  --random-range-ratio 0.0 --request-rate inf --max-concurrency 24 \
+  --tokenize-prompt --disable-stream --disable-tqdm --seed 42 \
+  --output-details --output-file /tmp/qwen35-bench-details.jsonl
+```
+
+`--num-prompts`는 총 요청 수이고 `--max-concurrency`는 한 번에 유지할 클라이언트
+요청 수다. 서버 로그에서 다음 항목을 함께 기록한다.
+
+- `[unified-free-group]`: `open_ms`, `deferred_tensors`, `deferred_tokens`, `commit_ms`
+- `[unified-mamba-retry]`: `group_active`, `group_age_ms`, `mamba_available`, `retry_result`
+
+특히 `initial_fail group_active=True`가 관찰되는지 확인한다. `group_active=False`인
+실패는 free-group 순서 문제와 무관한 일반적인 슬롯 부족일 수 있다. bench 결과의
+실패 수와 서버 traceback도 함께 보관한다. `cached-token`이 높으면 prompt 중복으로
+인한 cache hit 가능성이 있으므로 seed나 prompt 길이를 바꿔 재확인한다.
+
+## 10. 실제 assert 재현 (Qwen3.5-0.8B, 2026-08-15)
+
+### 결론
+
+Qwen3.5-0.8B에서 shared unified buffer를 KV 쪽으로 충분히 채우면, Mamba 슬롯
+부족 시 Full KV eviction이 수행돼도 free group 안에서는 즉시 재사용되지 않아
+Mamba 재시도가 실패했다. 그 결과 scheduler가 다음 invariant에서 종료됐다.
+
+```text
+AssertionError: Can not alloc mamba cache
+```
+
+이것은 클라이언트 timeout이 아니라 scheduler 프로세스의 실제 assert다. 서버가
+종료되면서 benchmark 클라이언트에는 `ServerDisconnectedError`와
+`ConnectionRefusedError`가 뒤따라 기록된다.
+
+### 실패 직전 관찰값
+
+| 항목 | 값 |
+| --- | ---: |
+| unified buffer | 6.10 GB |
+| Mamba scheduler cap | 52 requests (`max_mamba_cache_size=260`) |
+| Full KV usage | 0.93 |
+| Mamba usage | 0.42 |
+| running / queued requests | 32 / 2 |
+| Full available | 1,341 tokens |
+| Mamba available | 0 |
+| 현재 shared gap | 16,478,208 B |
+| Mamba slot 필요량 | 19,537,920 B |
+
+실패 로그의 순서는 다음과 같다.
+
+1. `initial_fail`: free group이 열려 있고 Mamba available이 0이다.
+2. `_evict_for_one_slot()`이 Full KV 8,192 tokens를 eviction 대상으로 선택한다.
+3. free group이 열려 있으므로 해당 반환은 allocator에 즉시 반영되지 않고
+   `deferred_tensors=1`, `deferred_tokens=8192`로 보류된다.
+4. shared gap은 16,478,208 B로 남아 slot 필요량보다 3,059,712 B 부족하다.
+5. 재시도는 `success=False`가 되고 `_alloc_mamba_slot()`의 assert가 scheduler를
+   종료한다.
+
+`full token usage`와 `mamba usage`는 각각 보호된 Full KV와 active Mamba 상태의
+비율이다. 하나의 shared backing buffer를 사용하지만 두 수치를 합산한 값이 전체
+점유율은 아니다. 이 실패에서는 Full KV가 shared gap을 소진해 Mamba의 물리 slot
+확장을 막았다.
+
+### 재현 전제
+
+- 단일 GPU, loopback 서버만 사용한다.
+- 모델 snapshot은 아래 로컬 경로에 있어야 한다.
+- 이 절차는 scheduler assert로 서버를 종료시킨다. 운영 서버에서는 실행하지 않는다.
+- CPU 테스트는 실행하지 않는다.
+
+### 서버 실행
+
+새 터미널에서 다음 명령으로 서버를 실행한다. `SGLANG_DEBUG_UNIFIED_FREE_GROUP=1`은
+문제 진단용 로그를 추가할 뿐, allocator 동작을 바꾸지 않는다.
+
+```bash
+export FLASHINFER_WORKSPACE_BASE=/tmp/sglang-flashinfer-qwen08
+export TORCH_EXTENSIONS_DIR=/tmp/sglang-torch-extensions-qwen08
+export PYTHONPATH=/home/sukwoo24/sglang/python
+export CUDA_VISIBLE_DEVICES=0
+export SGLANG_DEBUG_UNIFIED_FREE_GROUP=1
+
+/home/sukwoo24/.venv_sglang_upstream_full/bin/python -m sglang.launch_server \
+  --host 127.0.0.1 --port 30000 \
+  --model-path /home/sukwoo24/.cache/huggingface/hub/models--Qwen--Qwen3.5-0.8B/snapshots/2fc06364715b967f1860aea9cf38778875588b17 \
+  --served-model-name Qwen/Qwen3.5-0.8B \
+  --tp 1 --dtype bfloat16 --page-size 1 \
+  --attention-backend triton --linear-attn-backend triton --mamba-backend triton \
+  --mamba-full-memory-ratio 0.9 --max-mamba-cache-size 260 \
+  --mamba-radix-cache-strategy extra_buffer \
+  --max-total-tokens 120000 --max-running-requests 500 \
+  --chunked-prefill-size 8192 --max-prefill-tokens 16384 --context-length 32768 \
+  --mem-fraction-static 0.30 --language-only --mm-feature-transport cpu \
+  --disable-cuda-graph --enable-unified-memory --log-level info \
+  2>&1 | tee /tmp/qwen08-saturation-server.log
+```
+
+다른 GPU에서는 pool 크기와 `max_running_requests` cap이 달라질 수 있다. 먼저 다음
+로그가 있는지 확인한다.
+
+```text
+max_running_requests is capped to 52 by the mamba state cache
+UnifiedMambaTokenToKVPoolAllocator ready: ... full max_slots=533400 ... mamba max_slots=335
+```
+
+### saturation traffic
+
+서버가 준비된 뒤 별도 터미널에서 아래 traffic을 한 번 보낸다.
+
+```bash
+curl -sf http://127.0.0.1:30000/health
+
+PYTHONPATH=/home/sukwoo24/sglang/python \
+/home/sukwoo24/.venv_sglang_upstream_full/bin/python -m sglang.benchmark.serving \
+  --backend sglang --host 127.0.0.1 --port 30000 \
+  --model Qwen/Qwen3.5-0.8B --served-model-name Qwen/Qwen3.5-0.8B \
+  --dataset-name random --num-prompts 104 \
+  --random-input-len 8192 --random-output-len 512 \
+  --random-range-ratio 1.0 --request-rate inf --max-concurrency 64 \
+  --tokenize-prompt --disable-stream --disable-tqdm --seed 880 \
+  --return-logprob --logprob-start-len 0 \
+  2>&1 | tee /tmp/qwen08-saturation-bench.log
+```
+
+이 조합의 의도는 다음과 같다.
+
+- 8,192-token prompt로 Full KV를 빠르게 채운다.
+- 512-token generation으로 요청을 곧바로 끝내지 않고 KV 점유를 유지한다.
+- client concurrency 64는 server의 Mamba cap 52보다 커서 slot 경쟁과 queue를 만든다.
+- random prompt와 `random-range-ratio=1.0`은 prefix reuse가 pressure를 완화하지
+  않도록 한다.
+
+### 성공적인 재현 판정과 로그 검색
+
+다음 순서가 같은 시각대에 나오면 재현 성공이다.
+
+```bash
+rg -n -C 3 \
+  'full token usage: 0\\.9|initial_fail|after_evict|retry_result success=False|Can not alloc mamba cache' \
+  /tmp/qwen08-saturation-server.log
+```
+
+기대하는 핵심 로그는 다음과 유사하다.
+
+```text
+Prefill batch ... full token usage: 0.93 ... mamba usage: 0.42 ...
+[unified-mamba-retry] initial_fail group_active=True ... gap_bytes=16478208 slot_bytes=19537920 ... mamba_available=0
+[unified-mamba-retry] after_evict group_active=True ... deferred_tokens=8192 ... mamba_available=0
+[unified-mamba-retry] retry_result success=False
+AssertionError: Can not alloc mamba cache
+```
+
+마지막으로 서버가 실제로 종료됐는지 확인한다.
+
+```bash
+curl -sf http://127.0.0.1:30000/health || echo 'scheduler terminated as expected'
+```
+
+### batch-free 안에서의 성공 retry도 확인한 보조 traffic
+
+아래 2-lane traffic은 assert를 보장하지는 않지만, `group_age_ms > 100`인 열린
+free group 안에서 Mamba allocation이 발생하고 retry가 성공하는 경우를 만든다.
+
+1. 먼저 background로 `500 × (input 256, output 128), concurrency 48`을 보낸다.
+2. 10초 뒤 foreground로 `200 × (input 4096, output 1), concurrency 48`을 보낸다.
+
+```bash
+# finisher: completion/free burst 생성
+PYTHONPATH=/home/sukwoo24/sglang/python \
+/home/sukwoo24/.venv_sglang_upstream_full/bin/python -m sglang.benchmark.serving \
+  --backend sglang --host 127.0.0.1 --port 30000 \
+  --model Qwen/Qwen3.5-0.8B --served-model-name Qwen/Qwen3.5-0.8B \
+  --dataset-name random --num-prompts 500 --random-input-len 256 --random-output-len 128 \
+  --random-range-ratio 1.0 --request-rate inf --max-concurrency 48 \
+  --tokenize-prompt --disable-stream --disable-tqdm --seed 1 \
+  --return-logprob --logprob-start-len 0 > /tmp/finisher.log 2>&1 &
+
+sleep 10
+
+# allocator: 열린 free group에서 새 Mamba slot 요구
+PYTHONPATH=/home/sukwoo24/sglang/python \
+/home/sukwoo24/.venv_sglang_upstream_full/bin/python -m sglang.benchmark.serving \
+  --backend sglang --host 127.0.0.1 --port 30000 \
+  --model Qwen/Qwen3.5-0.8B --served-model-name Qwen/Qwen3.5-0.8B \
+  --dataset-name random --num-prompts 200 --random-input-len 4096 --random-output-len 1 \
+  --random-range-ratio 1.0 --request-rate inf --max-concurrency 48 \
+  --tokenize-prompt --disable-stream --disable-tqdm --seed 10001 \
+  --return-logprob --logprob-start-len 0 > /tmp/allocator.log 2>&1
+```
+
+관찰된 예에서는 `group_age_ms=136.314`, `deferred_tensors=49`,
+`deferred_tokens=5391`, `mamba_available=0`에서 eviction 뒤 retry가 성공했고,
+같은 free group의 `open_ms`는 140.993ms였다. 이는 deferred free가 즉시 physical
+공간으로 보이지 않는 경로가 실제 서버에서도 도달함을 보여준다.
