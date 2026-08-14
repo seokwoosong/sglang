@@ -26,6 +26,7 @@ register_cpu_ci(est_time=8, suite="base-a-test-cpu")
 
 import random
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import torch
@@ -35,6 +36,9 @@ from sglang.srt.mem_cache.multi_ended_allocator import (
     UnifiedMambaTokenToKVPoolAllocator,
     UnifiedSWATokenToKVPoolAllocator,
 )
+from sglang.srt.mem_cache.unified_cache.components.mamba_component import (
+    MambaComponent,
+)
 from sglang.srt.mem_cache.unified_memory_pool import (
     MambaSubPoolSpec,
     MHASubPoolSpec,
@@ -42,6 +46,45 @@ from sglang.srt.mem_cache.unified_memory_pool import (
 )
 
 _DEV = "cpu"
+
+
+class TestUnifiedMambaDeferredFullFree(unittest.TestCase):
+    def test_full_eviction_is_visible_before_mamba_retry(self):
+        """#34441 selects Full as a donor, but batch grouping defers its free.
+
+        Model that ordering directly: eviction queues Full rows, and the Mamba
+        allocator can succeed only after those rows are flushed into the shared
+        allocator. The production retry must perform that flush synchronously.
+        """
+
+        class _TokenAllocator:
+            def __init__(self):
+                self.full_free_queued = False
+                self.full_free_visible = False
+
+            def full_tokens_for_mamba_slots(self, slots):
+                return 1590 * slots
+
+            def flush_deferred_frees(self):
+                if self.full_free_queued:
+                    self.full_free_visible = True
+                    self.full_free_queued = False
+
+        token_allocator = _TokenAllocator()
+        mamba_allocator = MagicMock()
+        allocated = object()
+        mamba_allocator.alloc.side_effect = lambda _: (
+            allocated if token_allocator.full_free_visible else None
+        )
+
+        component = MambaComponent.__new__(MambaComponent)
+        component.cache = SimpleNamespace(
+            token_to_kv_pool_allocator=token_allocator,
+            req_to_token_pool=SimpleNamespace(mamba_allocator=mamba_allocator),
+            evict=lambda _params: setattr(token_allocator, "full_free_queued", True),
+        )
+
+        self.assertIs(component._alloc_mamba_slot(), allocated)
 
 
 def _make_mha_spec(name, grow, layer_num=2, head_num=2, head_dim=4):
