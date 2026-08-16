@@ -142,6 +142,12 @@ class TestPrefillAdder(CustomTestCase):
 
         req.mamba_ping_pong_track_buffer = object()
         self.assertEqual(adder._mamba_gap_budget_for_req(req), 7)
+        self.assertEqual(
+            adder._mamba_gap_budget_for_req(
+                req, include_chunk_reallocation_peak=True
+            ),
+            4 * 7,
+        )
         req.mamba_host_hit_length = 128
         self.assertEqual(adder._mamba_gap_budget_for_req(req), 7)
         self.assertEqual(
@@ -156,7 +162,61 @@ class TestPrefillAdder(CustomTestCase):
         self.assertEqual(adder._mamba_gap_budget_for_req(req), 3 * 7)
 
         req.req_pool_idx = 3
-        self.assertEqual(adder._mamba_gap_budget_for_req(req), 7)
+        self.assertEqual(adder._mamba_gap_budget_for_req(req), 3 * 7)
+
+    def test_chunked_unified_mamba_reserves_gap_before_sizing_full_chunk(self):
+        adder, req = self._build_hybrid_swa_chunked_req(
+            page_size=1,
+            rem_swa=1_000,
+            rem_chunk=100,
+            extend_input_len=200,
+            is_hybrid_swa=False,
+            full_available=100,
+        )
+        req.mamba_pool_idx = None
+        req.mamba_ping_pong_track_buffer = None
+        req.mamba_host_hit_length = 0
+        req_pool = HybridReqToTokenPool.__new__(HybridReqToTokenPool)
+        req_pool.enable_mamba_extra_buffer = True
+        req_pool.enable_mamba_extra_buffer_lazy = False
+        req_pool.mamba_ping_pong_track_buffer_size = 2
+        adder.tree_cache.req_to_token_pool = req_pool
+        adder.is_hybrid_ssm_cache = True
+        adder._mamba_slot_cost = 10
+        adder._rem_mamba_slot_offset = 0
+        adder.token_to_kv_pool_allocator.mamba_allocator.schedulable_available_size.return_value = 10
+        adder.tree_cache.mamba_evictable_size.return_value = 0
+
+        result = adder.add_chunked_req(req)
+
+        self.assertIs(result, req)
+        req.set_extend_range.assert_called_once_with(0, 60)
+
+    def test_chunked_unified_mamba_defers_when_only_state_gap_remains(self):
+        adder, req = self._build_hybrid_swa_chunked_req(
+            page_size=1,
+            rem_swa=1_000,
+            rem_chunk=100,
+            extend_input_len=200,
+            is_hybrid_swa=False,
+            full_available=40,
+        )
+        req.mamba_pool_idx = None
+        req.mamba_ping_pong_track_buffer = None
+        req.mamba_host_hit_length = 0
+        req_pool = HybridReqToTokenPool.__new__(HybridReqToTokenPool)
+        req_pool.enable_mamba_extra_buffer = True
+        req_pool.enable_mamba_extra_buffer_lazy = False
+        req_pool.mamba_ping_pong_track_buffer_size = 2
+        adder.tree_cache.req_to_token_pool = req_pool
+        adder.is_hybrid_ssm_cache = True
+        adder._mamba_slot_cost = 10
+
+        result = adder.add_chunked_req(req)
+
+        self.assertIs(result, req)
+        req.set_extend_range.assert_not_called()
+        self.assertEqual(adder.can_run_list, [])
 
     def test_unified_joint_budget_credits_evictable_mamba_bytes(self):
         adder = object.__new__(PrefillAdder)

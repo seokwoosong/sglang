@@ -826,7 +826,11 @@ class PrefillAdder:
         )
 
     def _mamba_gap_budget_for_req(
-        self, req: Req, *, include_pending_host_load: bool = False
+        self,
+        req: Req,
+        *,
+        include_pending_host_load: bool = False,
+        include_chunk_reallocation_peak: bool = False,
     ) -> int:
         """Shared-gap reservation for a newly admitted unified-Mamba request.
 
@@ -838,6 +842,20 @@ class PrefillAdder:
             return 0
 
         slots = self.tree_cache.req_to_token_pool.mamba_slots_needed_for_req(req)
+        if include_chunk_reallocation_peak:
+            req_pool = self.tree_cache.req_to_token_pool
+            tracking_slots = 0
+            if req_pool.enable_mamba_extra_buffer:
+                tracking_slots = (
+                    1
+                    if req_pool.enable_mamba_extra_buffer_lazy
+                    else req_pool.mamba_ping_pong_track_buffer_size
+                )
+            # Overlap scheduling plans the next chunk before the previous
+            # chunk's cache insertion donates/releases these states.  Reserve
+            # the post-insertion reallocation peak, not only what is missing at
+            # the earlier planning instant.
+            slots = max(slots, 1 + tracking_slots)
         if self.is_hybrid_ssm_cache:
             slots += 1
         if include_pending_host_load and req.mamba_host_hit_length > 0:
@@ -1014,10 +1032,19 @@ class PrefillAdder:
         )
 
     def add_chunked_req(self, req: Req):
+        mamba_gap_reserve = self._mamba_gap_budget_for_req(
+            req, include_chunk_reallocation_peak=True
+        )
         if self.dllm_config is not None:
             _rem_tokens = self._get_dllm_remain_tokens()
         else:
-            _rem_tokens = min(self.rem_chunk_tokens, int(self.rem_total_tokens))
+            # Keep the request's transient active/tracking/handoff Mamba rows
+            # out of the Full-KV chunk budget.  Charging them only afterwards
+            # lets a continuing chunk consume the entire shared gap first.
+            full_tokens_after_mamba = max(
+                0, int(self.rem_total_tokens) - mamba_gap_reserve
+            )
+            _rem_tokens = min(self.rem_chunk_tokens, full_tokens_after_mamba)
             if self.is_hybrid_swa:
                 # alloc_extend needs extend_num_tokens + page_size per request,
                 # so reserve one page here to avoid OOM
@@ -1027,7 +1054,7 @@ class PrefillAdder:
             # The chunked_req must be added to the list; otherwise, it will cause a memory leak.
             # Therefore, in certain cases where _rem_tokens <= 0, it should be replaced with rem_chunk_tokens.
             if _rem_tokens <= 0:
-                if self.is_hybrid_swa:
+                if self.is_hybrid_swa or mamba_gap_reserve:
                     return req
                 _rem_tokens = self.rem_chunk_tokens
 
@@ -1058,7 +1085,7 @@ class PrefillAdder:
                 else 0
             ),
             req.retracted_stain,
-            mamba_gap_reserve=self._mamba_gap_budget_for_req(req),
+            mamba_gap_reserve=mamba_gap_reserve,
         )
 
         # Return if chunked prefill not finished

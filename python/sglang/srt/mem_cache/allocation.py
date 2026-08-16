@@ -338,6 +338,11 @@ def alloc_req_slots(
             mamba_state_needed
         )
         if preallocated_mamba_slots is None:
+            if tree_cache is None:
+                raise RuntimeError(
+                    "Atomic Mamba request-state reservation failed without "
+                    "an evictable tree cache"
+                )
             allocator = tree_cache.token_to_kv_pool_allocator
             mamba_id_shortfall = max(
                 0,
