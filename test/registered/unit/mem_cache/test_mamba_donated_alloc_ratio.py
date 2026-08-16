@@ -358,6 +358,9 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
         tree_cache = MagicMock()
         tree_cache.supports_mamba.return_value = True
         tree_cache.mamba_evictable_size.return_value = 3
+        tree_cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.return_value = (
+            0
+        )
 
         self.assertEqual(
             alloc_req_slots(
@@ -375,16 +378,16 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
         tree_cache = MagicMock()
         tree_cache.supports_mamba.return_value = True
         tree_cache.mamba_evictable_size.return_value = 3
-        tree_cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
-            7
+        tree_cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.side_effect = (
+            lambda slots: 7 * slots
         )
 
         alloc_req_slots(req_pool, [self._req(), self._req()], tree_cache)
 
         params = tree_cache.evict.call_args.args[0]
-        # Six states are missing and one fits. Three cached Mamba states cover
-        # part of the shortfall; Full KV supplies only the remaining two rows.
-        self.assertEqual((params.num_tokens, params.mamba_num), (14, 3))
+        # Six states are missing and one fits. Evict the complete five-row
+        # shortfall from both sub-pools so deferred Full frees fund the retry.
+        self.assertEqual((params.num_tokens, params.mamba_num), (35, 5))
 
     def test_single_slot_eviction_uses_the_available_side(self):
         component = object.__new__(MambaComponent)

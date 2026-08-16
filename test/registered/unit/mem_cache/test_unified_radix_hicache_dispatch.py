@@ -724,18 +724,18 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
         tree_cache = MagicMock()
         tree_cache.supports_mamba.return_value = True
         tree_cache.mamba_evictable_size.return_value = 3
-        tree_cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
-            7
+        tree_cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.side_effect = (
+            lambda slots: 7 * slots
         )
 
         self.assertEqual(
             alloc_req_slots(req_pool, [self._req(), self._req()], tree_cache), [3, 4]
         )
         params = tree_cache.evict.call_args.args[0]
-        # Six states are missing and one fits in the gap. Reuse three cached
-        # Mamba states, then evict Full KV only for the remaining two slots.
-        self.assertEqual(params.mamba_num, 3)
-        self.assertEqual(params.num_tokens, 14)
+        # Six states are missing and one fits in the gap. Evict the complete
+        # five-row shortfall from both sub-pools so Full frees fund the retry.
+        self.assertEqual(params.mamba_num, 5)
+        self.assertEqual(params.num_tokens, 35)
 
     def test_preallocated_active_states_are_not_charged_again(self):
         req_pool = HybridReqToTokenPool.__new__(HybridReqToTokenPool)
@@ -748,6 +748,9 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
         tree_cache = MagicMock()
         tree_cache.supports_mamba.return_value = True
         tree_cache.mamba_evictable_size.return_value = 3
+        tree_cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.return_value = (
+            0
+        )
 
         alloc_req_slots(
             req_pool,
@@ -789,6 +792,9 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
         component = MambaComponent.__new__(MambaComponent)
         component.cache = MagicMock()
         component.cache.mamba_evictable_size.return_value = 1
+        component.cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.return_value = (
+            1590
+        )
         component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
             1590
         )
@@ -803,14 +809,17 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
         self.assertIs(component._alloc_mamba_slot(), allocated)
 
         first, second = [call.args[0] for call in component.cache.evict.call_args_list]
-        self.assertEqual((first.num_tokens, first.mamba_num), (0, 1))
-        self.assertEqual((second.num_tokens, second.mamba_num), (1590, 0))
+        self.assertEqual((first.num_tokens, first.mamba_num), (1590, 1))
+        self.assertEqual((second.num_tokens, second.mamba_num), (1590, 1))
         component.cache.writing_check.assert_called_once_with(write_back=True)
 
     def test_full_id_exhaustion_retries_mamba_after_write_ack(self):
         component = MambaComponent.__new__(MambaComponent)
         component.cache = MagicMock()
         component.cache.mamba_evictable_size.return_value = 0
+        component.cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.return_value = (
+            1590
+        )
         component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
             1590
         )
@@ -825,7 +834,7 @@ class TestUnifiedMambaCrossPoolEviction(unittest.TestCase):
         self.assertIs(component._alloc_mamba_slot(), allocated)
 
         first, second = [call.args[0] for call in component.cache.evict.call_args_list]
-        self.assertEqual((first.num_tokens, first.mamba_num), (1590, 0))
+        self.assertEqual((first.num_tokens, first.mamba_num), (1590, 1))
         self.assertEqual((second.num_tokens, second.mamba_num), (1590, 1))
         component.cache.writing_check.assert_called_once_with(write_back=True)
 

@@ -478,12 +478,20 @@ class MambaComponent(TreeComponent):
                 self.tree_core.component_protected_size_[ct] -= vlen
             cd.lock_ref -= 1
 
+    def _full_tokens_for_mamba_slots(self, slots: int) -> int:
+        """Price Mamba rows in Full tokens, including older allocator adapters."""
+        allocator = self.cache.token_to_kv_pool_allocator
+        full_tokens_fn = getattr(allocator, "full_tokens_for_mamba_slots", None)
+        if full_tokens_fn is not None:
+            return full_tokens_fn(slots)
+        full_token_cost_fn = getattr(allocator, "mamba_slot_full_token_cost", None)
+        return full_token_cost_fn() * slots if full_token_cost_fn is not None else 0
+
     def _evict_for_one_slot(self) -> EvictParams:
         """Free one mamba slot. On a shared byte buffer the full side has to
         fund it, so it is evicted too."""
-        allocator = self.cache.token_to_kv_pool_allocator
         params = EvictParams(
-            num_tokens=allocator.full_tokens_for_mamba_slots(1), mamba_num=1
+            num_tokens=self._full_tokens_for_mamba_slots(1), mamba_num=1
         )
         self._evict_for_mamba_slot(params)
         return params
@@ -520,18 +528,9 @@ class MambaComponent(TreeComponent):
                     # checkpoint evictable only now. Evict once more to obtain
                     # a virtual Mamba ID; Full-byte eviction alone cannot grow
                     # that finite ID namespace.
-                    full_token_cost_fn = getattr(
-                        self.cache.token_to_kv_pool_allocator,
-                        "mamba_slot_full_token_cost",
-                        None,
-                    )
                     self._evict_for_mamba_slot(
                         EvictParams(
-                            num_tokens=(
-                                full_token_cost_fn()
-                                if full_token_cost_fn is not None
-                                else 0
-                            ),
+                            num_tokens=self._full_tokens_for_mamba_slots(1),
                             mamba_num=1,
                         )
                     )
