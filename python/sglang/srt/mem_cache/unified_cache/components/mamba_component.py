@@ -488,11 +488,8 @@ class MambaComponent(TreeComponent):
         return full_token_cost_fn() * slots if full_token_cost_fn is not None else 0
 
     def _evict_for_one_slot(self) -> EvictParams:
-        """Free one mamba slot. On a shared byte buffer the full side has to
-        fund it, so it is evicted too."""
-        params = EvictParams(
-            num_tokens=self._full_tokens_for_mamba_slots(1), mamba_num=1
-        )
+        """Recycle one Mamba row, expanding from Full only when necessary."""
+        params = self._mamba_slot_eviction_params()
         self._evict_for_mamba_slot(params)
         return params
 
@@ -562,12 +559,18 @@ class MambaComponent(TreeComponent):
             flush_deferred_frees()
 
     def _mamba_slot_eviction_params(self) -> EvictParams:
-        """Evict from the side that can actually supply one shared Mamba row."""
+        """Evict the resource responsible for a failed Mamba allocation.
+
+        ``available_size`` is the free virtual-ID count.  A positive count means
+        the failure is physical shared-byte pressure, so Full must donate bytes.
+        At zero, Full eviction cannot create an ID and a Mamba victim is required.
+        """
         allocator = self.cache.token_to_kv_pool_allocator
         full_token_cost_fn = getattr(allocator, "mamba_slot_full_token_cost", None)
         if full_token_cost_fn is None:
             return EvictParams(mamba_num=1)
-        if self.cache.mamba_evictable_size() > 0:
+        mamba_allocator = self.cache.req_to_token_pool.mamba_allocator
+        if mamba_allocator.available_size() <= 0:
             return EvictParams(mamba_num=1)
         return EvictParams(num_tokens=full_token_cost_fn())
 

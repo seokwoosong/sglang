@@ -140,7 +140,9 @@ class TestMambaRatioEnvGate(unittest.TestCase):
         strategy = (
             "extra_buffer_lazy"
             if lazy
-            else "extra_buffer" if extra_buffer else "no_buffer"
+            else "extra_buffer"
+            if extra_buffer
+            else "no_buffer"
         )
         from sglang.srt import runtime_context as rc
 
@@ -351,17 +353,18 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
         req_pool.mamba_ping_pong_track_buffer_size = 2
         req_pool.mamba_allocator = MagicMock()
         req_pool.mamba_allocator.schedulable_available_size.return_value = 1
+        req_pool.mamba_allocator.available_size.return_value = 1
         req_pool.alloc = MagicMock(return_value=[3, 4])
         return req_pool
 
     def test_preallocated_active_states_are_not_charged_again(self):
         req_pool = self._req_pool()
+        req_pool.mamba_allocator.schedulable_available_size.side_effect = [1, 4]
+        req_pool.mamba_allocator.available_size.side_effect = [1, 4]
         tree_cache = MagicMock()
         tree_cache.supports_mamba.return_value = True
         tree_cache.mamba_evictable_size.return_value = 3
-        tree_cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.return_value = (
-            0
-        )
+        tree_cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.return_value = 0
 
         self.assertEqual(
             alloc_req_slots(
@@ -376,6 +379,8 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
 
     def test_request_slots_use_mamba_then_full_shared_bytes(self):
         req_pool = self._req_pool()
+        req_pool.mamba_allocator.schedulable_available_size.side_effect = [1, 4]
+        req_pool.mamba_allocator.available_size.side_effect = [3, 6]
         tree_cache = MagicMock()
         tree_cache.supports_mamba.return_value = True
         tree_cache.mamba_evictable_size.return_value = 3
@@ -385,23 +390,20 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
 
         alloc_req_slots(req_pool, [self._req(), self._req()], tree_cache)
 
-        params = tree_cache.evict.call_args.args[0]
-        # Six states are missing and one fits. Evict the complete five-row
-        # shortfall from both sub-pools so deferred Full frees fund the retry.
-        self.assertEqual((params.num_tokens, params.mamba_num), (35, 5))
+        first, second = [call.args[0] for call in tree_cache.evict.call_args_list]
+        self.assertEqual((first.num_tokens, first.mamba_num), (0, 3))
+        self.assertEqual((second.num_tokens, second.mamba_num), (14, 0))
 
     def test_single_slot_eviction_uses_the_available_side(self):
         component = object.__new__(MambaComponent)
         component.cache = MagicMock()
-        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = (
-            1590
-        )
+        component.cache.token_to_kv_pool_allocator.mamba_slot_full_token_cost.return_value = 1590
 
-        component.cache.mamba_evictable_size.return_value = 1
+        component.cache.req_to_token_pool.mamba_allocator.available_size.return_value = 0
         params = component._mamba_slot_eviction_params()
         self.assertEqual((params.num_tokens, params.mamba_num), (0, 1))
 
-        component.cache.mamba_evictable_size.return_value = 0
+        component.cache.req_to_token_pool.mamba_allocator.available_size.return_value = 1
         params = component._mamba_slot_eviction_params()
         self.assertEqual((params.num_tokens, params.mamba_num), (1590, 0))
 

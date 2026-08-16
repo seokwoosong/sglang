@@ -267,18 +267,43 @@ def alloc_req_slots(
         mamba_state_needed = sum(
             req_to_token_pool.mamba_slots_needed_for_req(req) for req in reqs
         )
-        if mamba_available_size < mamba_state_needed:
+        mamba_id_available_size = req_to_token_pool.mamba_allocator.available_size()
+        if (
+            mamba_available_size < mamba_state_needed
+            or mamba_id_available_size < mamba_state_needed
+        ):
             if tree_cache is not None and tree_cache.supports_mamba():
-                mamba_num = max(0, mamba_state_needed - mamba_available_size)
                 allocator = tree_cache.token_to_kv_pool_allocator
-                # A mamba slot's bytes can only come back from the full side here,
-                # so evict it too instead of asking mamba to free what it lacks.
-                tree_cache.evict(
-                    EvictParams(
-                        num_tokens=allocator.full_tokens_for_mamba_slots(mamba_num),
-                        mamba_num=mamba_num,
-                    )
+                # Physical capacity and virtual IDs are separate constraints.
+                # Recycle Mamba cache only when its finite ID namespace is short;
+                # those victims also create physical holes at no Full-KV cost.
+                mamba_id_shortfall = max(
+                    0, mamba_state_needed - mamba_id_available_size
                 )
+                if mamba_id_shortfall > 0:
+                    tree_cache.evict(EvictParams(mamba_num=mamba_id_shortfall))
+
+                mamba_available_size = (
+                    req_to_token_pool.mamba_allocator.schedulable_available_size()
+                )
+                mamba_id_available_size = (
+                    req_to_token_pool.mamba_allocator.available_size()
+                )
+                physical_shortfall = max(0, mamba_state_needed - mamba_available_size)
+                mamba_id_shortfall = max(
+                    0, mamba_state_needed - mamba_id_available_size
+                )
+                if physical_shortfall > 0 or mamba_id_shortfall > 0:
+                    # Full donates only the still-missing physical bytes. Mamba
+                    # eviction is retained only for an independently missing ID.
+                    tree_cache.evict(
+                        EvictParams(
+                            num_tokens=allocator.full_tokens_for_mamba_slots(
+                                physical_shortfall
+                            ),
+                            mamba_num=mamba_id_shortfall,
+                        )
+                    )
     req_pool_indices = req_to_token_pool.alloc(reqs)
     if req_pool_indices is None:
         raise RuntimeError(
