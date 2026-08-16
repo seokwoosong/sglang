@@ -2516,6 +2516,14 @@ class UnifiedMambaTokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
     def full_tokens_for_mamba_slots(self, slots: int) -> int:
         return slots * self.mamba_slot_full_token_cost()
 
+    def mamba_slots_for_full_tokens(self, tokens: int) -> int:
+        """Mamba donor rows needed to fund a Full-token allocation shortfall."""
+        if tokens <= 0:
+            return 0
+        full_bytes = tokens * self.full_attn_allocator.entry_bytes
+        mamba_bytes = self.mamba_allocator.entry_bytes_per_page
+        return -(-full_bytes // mamba_bytes)
+
     def mamba_slot_full_token_cost(self) -> int:
         """Full-token-equivalents of shared-gap bytes ONE mamba state consumes.
 

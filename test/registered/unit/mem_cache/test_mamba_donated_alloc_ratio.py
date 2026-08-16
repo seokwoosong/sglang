@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import torch
 
 from sglang.srt.mem_cache.allocation import alloc_req_slots
+from sglang.srt.mem_cache.common import evict_from_tree_cache
 from sglang.srt.mem_cache.base_prefix_cache import (
     EvictParams,
     IncLockRefResult,
@@ -403,6 +404,34 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
         component.cache.mamba_evictable_size.return_value = 0
         params = component._mamba_slot_eviction_params()
         self.assertEqual((params.num_tokens, params.mamba_num), (1590, 0))
+
+    def test_full_shortfall_reclaims_shared_mamba_donor_rows(self):
+        tree_cache = MagicMock()
+        tree_cache.is_chunk_cache.return_value = False
+        tree_cache.full_evictable_size.return_value = 0
+        allocator = tree_cache.token_to_kv_pool_allocator
+        allocator.available_size.return_value = 96
+        allocator.mamba_slots_for_full_tokens.return_value = 3
+
+        evict_from_tree_cache(tree_cache, 4096)
+
+        params = tree_cache.evict.call_args.args[0]
+        self.assertEqual((params.num_tokens, params.mamba_num), (4000, 3))
+        allocator.mamba_slots_for_full_tokens.assert_called_once_with(4000)
+
+    def test_full_eviction_is_preferred_before_mamba_donation(self):
+        tree_cache = MagicMock()
+        tree_cache.is_chunk_cache.return_value = False
+        tree_cache.full_evictable_size.return_value = 4000
+        allocator = tree_cache.token_to_kv_pool_allocator
+        allocator.available_size.return_value = 96
+        allocator.mamba_slots_for_full_tokens.return_value = 0
+
+        evict_from_tree_cache(tree_cache, 4096)
+
+        params = tree_cache.evict.call_args.args[0]
+        self.assertEqual((params.num_tokens, params.mamba_num), (4000, 0))
+        allocator.mamba_slots_for_full_tokens.assert_called_once_with(0)
 
 
 if __name__ == "__main__":

@@ -1869,13 +1869,10 @@ class TestPagedMultiEndedAllocator(unittest.TestCase):
         # And .size matches this conserved sum.
         self.assertEqual(allocator.size, full_avail_before)
 
-    # 16. `full_tokens_for_mamba_slots` prices a mamba slot in full-side
-    # tokens. The two sub-pools grow toward each other out of one byte buffer,
-    # so a mamba slot can only be funded by bytes the full side gives up; the
-    # mamba-shortfall eviction in `alloc_req_slots` is sized with this. Base
-    # allocators return 0 so pools that do not share bytes keep evicting
-    # exactly as before.
-    def test_full_tokens_for_mamba_slots(self):
+    # 16. Cross-pool donor helpers price both eviction directions in bytes.
+    # Base allocators return zero so separate/static pools retain their prior
+    # behavior, while the shared composite can reclaim whichever side is idle.
+    def test_cross_pool_donor_costs(self):
         from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
         from sglang.srt.mem_cache.multi_ended_allocator import (
             UnifiedMambaTokenToKVPoolAllocator,
@@ -1915,11 +1912,21 @@ class TestPagedMultiEndedAllocator(unittest.TestCase):
         for slots in (0, 1, 5):
             self.assertEqual(allocator.full_tokens_for_mamba_slots(slots), slots * cost)
 
+        full_entry_bytes = allocator.full_attn_allocator.entry_bytes
+        mamba_entry_bytes = allocator.mamba_allocator.entry_bytes_per_page
+        for tokens in (0, 1, cost, cost + 1, 4096):
+            expected = -(-tokens * full_entry_bytes // mamba_entry_bytes)
+            self.assertEqual(allocator.mamba_slots_for_full_tokens(tokens), expected)
+
         # The base default is what every non-shared allocator inherits: 0, so
         # `EvictParams(num_tokens=...)` on the mamba-shortfall path stays 0
         # there and those pools are untouched.
         self.assertEqual(
             BaseTokenToKVPoolAllocator.full_tokens_for_mamba_slots(allocator, 5), 0
+        )
+        self.assertEqual(
+            BaseTokenToKVPoolAllocator.mamba_slots_for_full_tokens(allocator, 4096),
+            0,
         )
 
     # 17. REGRESSION: the page-math helper used by

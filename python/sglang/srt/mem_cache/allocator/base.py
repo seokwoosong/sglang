@@ -63,6 +63,14 @@ class BaseTokenToKVPoolAllocator(abc.ABC):
         fund the other."""
         return 0
 
+    def mamba_slots_for_full_tokens(self, tokens: int) -> int:
+        """Mamba states to evict so `tokens` Full rows fit in shared memory.
+
+        Separate pools cannot donate bytes across allocators, so their default
+        is zero. Shared composites override this with their byte-cost ratio.
+        """
+        return 0
+
     def get_kvcache(self):
         return self._kvcache
 

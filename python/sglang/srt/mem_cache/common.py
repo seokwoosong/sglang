@@ -126,7 +126,18 @@ def evict_from_tree_cache(tree_cache: BasePrefixCache | None, num_tokens: int):
         # Standard allocator: evict only the shortfall (mirrors the SWA arm)
         available_size = allocator.available_size()
         if available_size < num_tokens:
-            tree_cache.evict(EvictParams(num_tokens=num_tokens - available_size))
+            full_shortfall = num_tokens - available_size
+            donor_shortfall = max(0, full_shortfall - tree_cache.full_evictable_size())
+            # A unified Full/Mamba allocator can satisfy Full pressure by
+            # reclaiming cached Mamba rows from the same byte buffer, but only
+            # for pressure not already covered by evictable Full KV. Static
+            # allocators inherit a zero donor count, preserving their behavior.
+            tree_cache.evict(
+                EvictParams(
+                    num_tokens=full_shortfall,
+                    mamba_num=allocator.mamba_slots_for_full_tokens(donor_shortfall),
+                )
+            )
 
 
 def release_kv_cache(req: Req, tree_cache: BasePrefixCache, is_insert: bool = True):
