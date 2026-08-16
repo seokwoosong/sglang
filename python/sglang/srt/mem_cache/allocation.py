@@ -367,6 +367,21 @@ def alloc_req_slots(
                         )
                     )
                 )
+            # Full victims may be protected by the time overlap scheduling
+            # reaches allocation, so eviction can reclaim fewer bytes than
+            # requested.  Re-measure and use Mamba victims only for the actual
+            # residual.  This avoids the old unconditional Full+Mamba
+            # over-eviction while still making progress when Full cannot donate.
+            immediate_available = (
+                req_to_token_pool.mamba_allocator.immediate_available_size()
+            )
+            residual_physical_shortfall = max(
+                0, mamba_state_needed - immediate_available
+            )
+            if residual_physical_shortfall > 0:
+                evict_for_mamba_admission(
+                    EvictParams(mamba_num=residual_physical_shortfall)
+                )
             preallocated_mamba_slots = req_to_token_pool.mamba_allocator.alloc(
                 mamba_state_needed
             )

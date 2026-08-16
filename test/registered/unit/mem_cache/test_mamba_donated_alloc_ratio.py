@@ -402,7 +402,7 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
         req_pool.mamba_allocator = MagicMock()
         req_pool.mamba_allocator.schedulable_available_size.return_value = 3
         req_pool.mamba_allocator.available_size.return_value = 3
-        req_pool.mamba_allocator.immediate_available_size.return_value = 0
+        req_pool.mamba_allocator.immediate_available_size.side_effect = [0, 3]
         reserved = torch.tensor([11, 12, 13])
         req_pool.mamba_allocator.alloc.side_effect = [None, reserved]
         req_pool.alloc = MagicMock(return_value=[9])
@@ -421,6 +421,32 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
         req_pool.alloc.assert_called_once_with(
             [req], preallocated_mamba_slots=reserved
         )
+
+    def test_unified_batch_reservation_uses_mamba_only_for_full_residual(self):
+        req_pool = UnifiedHybridReqToTokenPool.__new__(UnifiedHybridReqToTokenPool)
+        req_pool.enable_mamba_extra_buffer = True
+        req_pool.enable_mamba_extra_buffer_lazy = False
+        req_pool.mamba_ping_pong_track_buffer_size = 2
+        req_pool.mamba_allocator = MagicMock()
+        req_pool.mamba_allocator.schedulable_available_size.return_value = 3
+        req_pool.mamba_allocator.available_size.return_value = 3
+        req_pool.mamba_allocator.immediate_available_size.side_effect = [0, 0]
+        reserved = torch.tensor([11, 12, 13])
+        req_pool.mamba_allocator.alloc.side_effect = [None, reserved]
+        req_pool.alloc = MagicMock(return_value=[9])
+
+        tree_cache = MagicMock()
+        tree_cache.supports_mamba.return_value = True
+        tree_cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.side_effect = (
+            lambda slots: 7 * slots
+        )
+        req = self._req(req_pool_idx=9)
+
+        self.assertEqual(alloc_req_slots(req_pool, [req], tree_cache), [9])
+
+        first, second = [call.args[0] for call in tree_cache.evict.call_args_list]
+        self.assertEqual((first.num_tokens, first.mamba_num), (21, 0))
+        self.assertEqual((second.num_tokens, second.mamba_num), (0, 3))
 
     def test_request_slots_use_mamba_then_full_shared_bytes(self):
         req_pool = self._req_pool()
