@@ -916,6 +916,10 @@ class UnifiedMambaSlotAllocator:
         # drainable holes since alloc flushes the peer before extending.
         return self._multi_ended_allocator.schedulable_available_size()
 
+    def immediate_available_size(self) -> int:
+        """Physical slots allocatable now, without crediting peer holes."""
+        return self._multi_ended_allocator.available_size()
+
     @property
     def free_slots(self) -> torch.Tensor:
         # Watermark-derived physical free-list for the invariant checker.

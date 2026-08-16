@@ -23,6 +23,7 @@ from sglang.srt.mem_cache.common import (
     evict_from_tree_cache,
 )
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
+from sglang.srt.mem_cache.unified_memory_pool import UnifiedHybridReqToTokenPool
 from sglang.srt.runtime_context import get_exec, get_parallel
 from sglang.srt.utils import (
     is_cpu,
@@ -325,7 +326,61 @@ def alloc_req_slots(
                             mamba_num=mamba_id_shortfall,
                         )
                     )
-    req_pool_indices = req_to_token_pool.alloc(reqs)
+    preallocated_mamba_slots = None
+    if (
+        isinstance(req_to_token_pool, UnifiedHybridReqToTokenPool)
+        and mamba_state_needed > 0
+    ):
+        # Reserve the whole batch atomically.  Separate active/ping-pong allocs
+        # can consume a peer-hole compaction credit piecemeal and strand the
+        # final allocation even though admission covered the aggregate need.
+        preallocated_mamba_slots = req_to_token_pool.mamba_allocator.alloc(
+            mamba_state_needed
+        )
+        if preallocated_mamba_slots is None:
+            allocator = tree_cache.token_to_kv_pool_allocator
+            mamba_id_shortfall = max(
+                0,
+                mamba_state_needed
+                - req_to_token_pool.mamba_allocator.available_size(),
+            )
+            if mamba_id_shortfall > 0:
+                evict_for_mamba_admission(
+                    EvictParams(mamba_num=mamba_id_shortfall)
+                )
+            immediate_available = (
+                req_to_token_pool.mamba_allocator.immediate_available_size()
+            )
+            physical_shortfall = max(
+                0, mamba_state_needed - immediate_available
+            )
+            if physical_shortfall > 0:
+                evict_for_mamba_admission(
+                    EvictParams(
+                        num_tokens=allocator.full_tokens_for_mamba_slots(
+                            physical_shortfall
+                        )
+                    )
+                )
+            preallocated_mamba_slots = req_to_token_pool.mamba_allocator.alloc(
+                mamba_state_needed
+            )
+            if preallocated_mamba_slots is None:
+                mamba_allocator = req_to_token_pool.mamba_allocator
+                raise RuntimeError(
+                    "Atomic Mamba request-state reservation failed after eviction: "
+                    f"needed={mamba_state_needed}, "
+                    f"ids_available={mamba_allocator.available_size()}, "
+                    f"immediate_available={mamba_allocator.immediate_available_size()}, "
+                    f"schedulable_available={mamba_allocator.schedulable_available_size()}, "
+                    f"allocator={mamba_allocator.allocator_state_str()}"
+                )
+    if preallocated_mamba_slots is None:
+        req_pool_indices = req_to_token_pool.alloc(reqs)
+    else:
+        req_pool_indices = req_to_token_pool.alloc(
+            reqs, preallocated_mamba_slots=preallocated_mamba_slots
+        )
     if req_pool_indices is None:
         raise RuntimeError(
             "alloc_req_slots runs out of memory. "

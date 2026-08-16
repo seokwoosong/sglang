@@ -1322,18 +1322,39 @@ class HybridReqToTokenPool(ReqToTokenPool):
 
     # For chunk prefill req, we do not need to allocate mamba cache,
     # We could use allocated mamba cache instead.
-    def alloc(self, reqs: List[Req]) -> Optional[List[int]]:
+    def alloc(
+        self,
+        reqs: List[Req],
+        *,
+        preallocated_mamba_slots: Optional[torch.Tensor] = None,
+    ) -> Optional[List[int]]:
+        expected_mamba_slots = sum(self.mamba_slots_needed_for_req(req) for req in reqs)
+        if preallocated_mamba_slots is not None:
+            assert preallocated_mamba_slots.numel() == expected_mamba_slots, (
+                "Preallocated Mamba slot count does not match request state needs: "
+                f"reserved={preallocated_mamba_slots.numel()}, "
+                f"needed={expected_mamba_slots}"
+            )
         select_index = super().alloc(reqs)
         if select_index is None:
+            if preallocated_mamba_slots is not None:
+                self.mamba_allocator.free(preallocated_mamba_slots)
             return None
 
         mamba_indices: list[torch.Tensor] = []
         mamba_ping_pong_track_buffers: list[torch.Tensor] = []
+        preallocated_offset = 0
         for req in reqs:
             if req.mamba_pool_idx is not None:  # for radix cache / continuing chunked
                 pass
             else:
-                mid = self.mamba_allocator.alloc(1)
+                if preallocated_mamba_slots is None:
+                    mid = self.mamba_allocator.alloc(1)
+                else:
+                    mid = preallocated_mamba_slots[
+                        preallocated_offset : preallocated_offset + 1
+                    ]
+                    preallocated_offset += 1
                 assert (
                     mid is not None
                 ), f"Not enough space for mamba cache, try to increase --mamba-full-memory-ratio or --max-mamba-cache-size. {mid=}, {self.mamba_pool.size=}, {self.mamba_allocator.available_size()=}, {len(reqs)=}"
@@ -1354,8 +1375,21 @@ class HybridReqToTokenPool(ReqToTokenPool):
             mamba_indices.append(req.mamba_pool_idx)
             if self.enable_mamba_extra_buffer:
                 if req.mamba_ping_pong_track_buffer is None:
-                    self._alloc_ping_pong_buffer(req)
+                    slots = None
+                    if preallocated_mamba_slots is not None:
+                        n = (
+                            1
+                            if self.enable_mamba_extra_buffer_lazy
+                            else self.mamba_ping_pong_track_buffer_size
+                        )
+                        slots = preallocated_mamba_slots[
+                            preallocated_offset : preallocated_offset + n
+                        ]
+                        preallocated_offset += n
+                    self._alloc_ping_pong_buffer(req, slots=slots)
                 mamba_ping_pong_track_buffers.append(req.mamba_ping_pong_track_buffer)
+        if preallocated_mamba_slots is not None:
+            assert preallocated_offset == preallocated_mamba_slots.numel()
         assert len(select_index) == len(
             mamba_indices
         ), "Not enough space for mamba cache, try to increase --mamba-full-memory-ratio or --max-mamba-cache-size."
@@ -1441,7 +1475,9 @@ class HybridReqToTokenPool(ReqToTokenPool):
             return req.mamba_next_track_idx
         return self.get_mamba_ping_pong_other_idx(req.mamba_next_track_idx)
 
-    def _alloc_ping_pong_buffer(self, req: Req):
+    def _alloc_ping_pong_buffer(
+        self, req: Req, *, slots: Optional[torch.Tensor] = None
+    ):
         """Allocate the ping-pong track buffer for a new request.
 
         Lazy mode allocates 1 slot with the second set to -1 (allocated
@@ -1452,7 +1488,10 @@ class HybridReqToTokenPool(ReqToTokenPool):
             if self.enable_mamba_extra_buffer_lazy
             else self.mamba_ping_pong_track_buffer_size
         )
-        slots = self.mamba_allocator.alloc(n)
+        if slots is None:
+            slots = self.mamba_allocator.alloc(n)
+        else:
+            assert slots.numel() == n
         assert slots is not None, (
             "Not enough space for mamba ping pong idx, "
             "try to increase --mamba-full-memory-ratio. "

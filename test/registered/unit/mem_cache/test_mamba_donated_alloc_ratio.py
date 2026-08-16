@@ -23,6 +23,7 @@ from sglang.srt.mem_cache.base_prefix_cache import (
     IncLockRefResult,
 )
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
+from sglang.srt.mem_cache.unified_memory_pool import UnifiedHybridReqToTokenPool
 from sglang.srt.mem_cache.unified_cache.components.mamba_component import MambaComponent
 from sglang.srt.mem_cache.unified_cache.components.tree_component import ComponentType
 from sglang.srt.mem_cache.unified_cache.unified_tree_core import UnifiedTreeCore
@@ -392,6 +393,34 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
         params = tree_cache.evict.call_args.args[0]
         self.assertEqual((params.num_tokens, params.mamba_num), (21, 0))
         tree_cache.token_to_kv_pool_allocator.flush_deferred_frees.assert_called_once_with()
+
+    def test_unified_batch_reservation_retries_atomically(self):
+        req_pool = UnifiedHybridReqToTokenPool.__new__(UnifiedHybridReqToTokenPool)
+        req_pool.enable_mamba_extra_buffer = True
+        req_pool.enable_mamba_extra_buffer_lazy = False
+        req_pool.mamba_ping_pong_track_buffer_size = 2
+        req_pool.mamba_allocator = MagicMock()
+        req_pool.mamba_allocator.schedulable_available_size.return_value = 3
+        req_pool.mamba_allocator.available_size.return_value = 3
+        req_pool.mamba_allocator.immediate_available_size.return_value = 0
+        reserved = torch.tensor([11, 12, 13])
+        req_pool.mamba_allocator.alloc.side_effect = [None, reserved]
+        req_pool.alloc = MagicMock(return_value=[9])
+
+        tree_cache = MagicMock()
+        tree_cache.supports_mamba.return_value = True
+        tree_cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.side_effect = (
+            lambda slots: 7 * slots
+        )
+
+        req = self._req(req_pool_idx=9)
+        self.assertEqual(alloc_req_slots(req_pool, [req], tree_cache), [9])
+
+        params = tree_cache.evict.call_args.args[0]
+        self.assertEqual((params.num_tokens, params.mamba_num), (21, 0))
+        req_pool.alloc.assert_called_once_with(
+            [req], preallocated_mamba_slots=reserved
+        )
 
     def test_request_slots_use_mamba_then_full_shared_bytes(self):
         req_pool = self._req_pool()
