@@ -338,9 +338,9 @@ class TestPPMambaPoolSizing(unittest.TestCase):
 
 class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
     @staticmethod
-    def _req(*, active=False, tracking=False):
+    def _req(*, active=False, tracking=False, req_pool_idx=None):
         return SimpleNamespace(
-            req_pool_idx=None,
+            req_pool_idx=req_pool_idx,
             mamba_pool_idx=object() if active else None,
             mamba_ping_pong_track_buffer=object() if tracking else None,
         )
@@ -376,6 +376,21 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
         )
         params = tree_cache.evict.call_args.args[0]
         self.assertEqual((params.num_tokens, params.mamba_num), (0, 3))
+
+    def test_chunked_req_with_released_states_is_charged_again(self):
+        req_pool = self._req_pool()
+        req_pool.mamba_allocator.schedulable_available_size.side_effect = [0, 0]
+        req_pool.mamba_allocator.available_size.side_effect = [3, 3]
+        tree_cache = MagicMock()
+        tree_cache.supports_mamba.return_value = True
+        tree_cache.token_to_kv_pool_allocator.full_tokens_for_mamba_slots.side_effect = (
+            lambda slots: 7 * slots
+        )
+
+        alloc_req_slots(req_pool, [self._req(req_pool_idx=9)], tree_cache)
+
+        params = tree_cache.evict.call_args.args[0]
+        self.assertEqual((params.num_tokens, params.mamba_num), (21, 0))
 
     def test_request_slots_use_mamba_then_full_shared_bytes(self):
         req_pool = self._req_pool()

@@ -1306,13 +1306,11 @@ class HybridReqToTokenPool(ReqToTokenPool):
         """Return the Mamba slots that ``alloc([req])`` will still allocate.
 
         Prefix matching and HiCache load-back may assign the request's active
-        state before the request-table row is allocated.  Count only the
-        missing active/tracking slots so the shared-memory admission planner
-        does not charge already-resident states a second time.
+        state before the request-table row is allocated.  Conversely, chunked
+        prefill may retain its request-table row after cache insertion donated
+        and released its Mamba states.  Count the state references themselves;
+        ``req_pool_idx`` does not determine whether ``alloc`` needs Mamba space.
         """
-        if req.req_pool_idx is not None:
-            return 0
-
         needed = int(req.mamba_pool_idx is None)
         if self.enable_mamba_extra_buffer and req.mamba_ping_pong_track_buffer is None:
             needed += (
