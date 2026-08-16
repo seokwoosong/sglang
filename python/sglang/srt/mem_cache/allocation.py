@@ -291,7 +291,11 @@ def alloc_req_slots(
         if (
             mamba_available_size < mamba_state_needed
             or mamba_id_available_size < mamba_state_needed
-        ):
+        ) and not isinstance(req_to_token_pool, UnifiedHybridReqToTokenPool):
+            # Unified reserves the whole request-state batch atomically below.
+            # Let that exact allocation consume existing holes/peer compaction
+            # before doing any eviction; estimate-first eviction duplicates
+            # compaction and can evict cache that the allocator did not need.
             if tree_cache is not None and tree_cache.supports_mamba():
                 allocator = tree_cache.token_to_kv_pool_allocator
                 # Physical capacity and virtual IDs are separate constraints.

@@ -422,6 +422,28 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
             [req], preallocated_mamba_slots=reserved
         )
 
+    def test_unified_atomic_success_skips_estimate_first_eviction(self):
+        req_pool = UnifiedHybridReqToTokenPool.__new__(UnifiedHybridReqToTokenPool)
+        req_pool.enable_mamba_extra_buffer = True
+        req_pool.enable_mamba_extra_buffer_lazy = False
+        req_pool.mamba_ping_pong_track_buffer_size = 2
+        req_pool.mamba_allocator = MagicMock()
+        req_pool.mamba_allocator.schedulable_available_size.return_value = 0
+        req_pool.mamba_allocator.available_size.return_value = 3
+        reserved = torch.tensor([11, 12, 13])
+        req_pool.mamba_allocator.alloc.return_value = reserved
+        req_pool.alloc = MagicMock(return_value=[9])
+        tree_cache = MagicMock()
+        tree_cache.supports_mamba.return_value = True
+        req = self._req(req_pool_idx=9)
+
+        self.assertEqual(alloc_req_slots(req_pool, [req], tree_cache), [9])
+
+        tree_cache.evict.assert_not_called()
+        req_pool.alloc.assert_called_once_with(
+            [req], preallocated_mamba_slots=reserved
+        )
+
     def test_unified_batch_reservation_uses_mamba_only_for_full_residual(self):
         req_pool = UnifiedHybridReqToTokenPool.__new__(UnifiedHybridReqToTokenPool)
         req_pool.enable_mamba_extra_buffer = True
