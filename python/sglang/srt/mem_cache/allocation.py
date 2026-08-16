@@ -258,6 +258,25 @@ def alloc_req_slots(
     and should surface rather than be masked.
     """
     num_reqs = len(reqs)
+
+    def evict_for_mamba_admission(params: EvictParams) -> None:
+        """Make cross-pool eviction visible before request-state allocation.
+
+        Unified Full frees may be grouped until the end of the surrounding
+        scheduler batch.  Mamba allocation happens inside that group, so drain
+        only those deferred frees now; otherwise the admission calculation and
+        the immediately following physical allocation observe different space.
+        """
+        assert tree_cache is not None
+        tree_cache.evict(params)
+        flush_deferred_frees = getattr(
+            tree_cache.token_to_kv_pool_allocator,
+            "flush_deferred_frees",
+            None,
+        )
+        if flush_deferred_frees is not None:
+            flush_deferred_frees()
+
     if isinstance(req_to_token_pool, HybridReqToTokenPool):
         # Byte-coordinated for the shared allocator (accounts for the peer full
         # sub-pool's bytes); plain slot free count for the non-shared one.
@@ -281,7 +300,9 @@ def alloc_req_slots(
                     0, mamba_state_needed - mamba_id_available_size
                 )
                 if mamba_id_shortfall > 0:
-                    tree_cache.evict(EvictParams(mamba_num=mamba_id_shortfall))
+                    evict_for_mamba_admission(
+                        EvictParams(mamba_num=mamba_id_shortfall)
+                    )
 
                 mamba_available_size = (
                     req_to_token_pool.mamba_allocator.schedulable_available_size()
@@ -296,7 +317,7 @@ def alloc_req_slots(
                 if physical_shortfall > 0 or mamba_id_shortfall > 0:
                     # Full donates only the still-missing physical bytes. Mamba
                     # eviction is retained only for an independently missing ID.
-                    tree_cache.evict(
+                    evict_for_mamba_admission(
                         EvictParams(
                             num_tokens=allocator.full_tokens_for_mamba_slots(
                                 physical_shortfall

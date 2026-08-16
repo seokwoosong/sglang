@@ -391,6 +391,7 @@ class TestUnifiedMambaAdmissionAndEviction(unittest.TestCase):
 
         params = tree_cache.evict.call_args.args[0]
         self.assertEqual((params.num_tokens, params.mamba_num), (21, 0))
+        tree_cache.token_to_kv_pool_allocator.flush_deferred_frees.assert_called_once_with()
 
     def test_request_slots_use_mamba_then_full_shared_bytes(self):
         req_pool = self._req_pool()
