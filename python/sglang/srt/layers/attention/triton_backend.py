@@ -177,6 +177,14 @@ class TritonAttnBackend(AttentionBackend):
         self._translate_kv_loc = getattr(
             self.token_to_kv_pool_allocator, "translate_kv_loc_dense", None
         ) or getattr(self.token_to_kv_pool_allocator, "translate_kv_loc", None)
+        self._full_v2p_page_table = getattr(
+            self.token_to_kv_pool_allocator, "full_v2p_page_table", None
+        )
+        if not envs.SGLANG_FUSE_UNIFIED_KV_INDEX_TRANSLATION.get():
+            self._full_v2p_page_table = None
+        self._kv_index_page_multiplier = getattr(
+            self.token_to_kv_pool_allocator, "kernel_page_multiplier", 1
+        )
         self.num_draft_tokens = get_spec().speculative_num_draft_tokens
         self.speculative_num_steps = get_spec().speculative_num_steps
         self.topk = get_spec().speculative_eagle_topk or 0
@@ -198,6 +206,11 @@ class TritonAttnBackend(AttentionBackend):
         )
         self.dcp_size = get_parallel().attn_dcp_size
         self.dcp_rank = get_parallel().attn_dcp_rank
+        # DCP uses its own sharded index-construction kernel. Keep the existing
+        # post-build translation semantics there until that kernel grows the
+        # equivalent page-table gather.
+        if self.dcp_size > 1:
+            self._full_v2p_page_table = None
         self.num_head = (
             model_runner.model_config.get_max_num_attention_heads()
             // get_parallel().attn_tp_size
@@ -432,6 +445,9 @@ class TritonAttnBackend(AttentionBackend):
             None,
             kv_indices,
             self.req_to_token.stride(0),
+            self._full_v2p_page_table,
+            PAGE_SIZE=self.page_size,
+            PAGE_MULT=self._kv_index_page_multiplier,
         )
         return kv_indptr
 
@@ -711,7 +727,7 @@ class TritonAttnBackend(AttentionBackend):
             if have_cpu_mirror
             else int(self.kv_indptr[bs].item())
         )
-        if n_kv > 0:
+        if n_kv > 0 and self._full_v2p_page_table is None:
             self.cuda_graph_kv_indices[:n_kv] = self._translate_kv_loc(
                 self.cuda_graph_kv_indices[:n_kv]
             )
@@ -779,7 +795,10 @@ class TritonAttnBackend(AttentionBackend):
                         forward_batch.req_pool_indices,
                         kv_indices,
                     )
-                    if self._translate_kv_loc is not None:
+                    if (
+                        self._translate_kv_loc is not None
+                        and self._full_v2p_page_table is None
+                    ):
                         kv_indices = self._translate_kv_loc(kv_indices)
                 if (
                     self.sliding_window_size is not None
@@ -922,7 +941,10 @@ class TritonAttnBackend(AttentionBackend):
                     forward_batch.req_pool_indices,
                     kv_indices,
                 )
-                if self._translate_kv_loc is not None:
+                if (
+                    self._translate_kv_loc is not None
+                    and self._full_v2p_page_table is None
+                ):
                     kv_indices = self._translate_kv_loc(kv_indices)
             if self.sliding_window_size is not None and self.sliding_window_size > 0:
                 (

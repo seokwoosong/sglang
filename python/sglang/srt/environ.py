@@ -378,6 +378,9 @@ class Envs:
     SGLANG_DISABLE_LAZY_COMPACTION = EnvBool(False)
     # Sort the multi-ended allocator's free list after a merge (perf A/B knob).
     SGLANG_SORT_FREE_LIST_AFTER_MERGE = EnvBool(False)
+    # Fuse Triton req_to_token KV-index construction with unified-memory V2P
+    # translation. Disable for performance rollback/A-B.
+    SGLANG_FUSE_UNIFIED_KV_INDEX_TRANSLATION = EnvBool(True)
     # Periodically log lazy-compaction stats per sub-pool (observability only).
     SGLANG_LOG_LAZY_COMPACTION_STATS = EnvBool(False)
     # Optional low-overhead breakdown profiler for static/unified L1 experiments.

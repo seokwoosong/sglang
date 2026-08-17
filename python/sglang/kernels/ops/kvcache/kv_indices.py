@@ -14,6 +14,13 @@ def create_flashinfer_kv_indices_triton(
     kv_start_idx,
     kv_indices_ptr,
     req_to_token_ptr_stride: tl.constexpr,
+    # Unified-memory fast path.  req_to_token stores virtual token ids; gather
+    # the page-level V2P table while building kv_indices so the backend does not
+    # launch a second full-buffer translation kernel.  Defaults preserve every
+    # existing static-pool caller.
+    v2p_ptr=None,
+    PAGE_SIZE: tl.constexpr = 1,
+    PAGE_MULT: tl.constexpr = 1,
 ):
     BLOCK_SIZE: tl.constexpr = 512
     pid = tl.program_id(axis=0)
@@ -41,6 +48,15 @@ def create_flashinfer_kv_indices_triton(
             + offset,
             mask=mask,
         )
+        if v2p_ptr is not None:
+            virtual_page = data // PAGE_SIZE
+            page_offset = data % PAGE_SIZE
+            physical_page = tl.load(v2p_ptr + virtual_page, mask=mask, other=-1)
+            # Match MultiEndedAllocator.translate_kv_loc_dense(): tombstoned
+            # mappings route to the reserved page-0 sink.
+            data = tl.maximum(
+                physical_page * (PAGE_SIZE * PAGE_MULT) + page_offset, 0
+            )
         tl.store(kv_indices_ptr + kv_indices_offset + offset, data, mask=mask)
 
 

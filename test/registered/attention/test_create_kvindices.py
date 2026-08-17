@@ -75,6 +75,47 @@ class TestCreateKvIndices(CustomTestCase):
         for batch in BATCH:
             self._run_test(batch, MAX_BATCH, MAX_CONTEXT_LEN)
 
+    def test_create_kvindices_with_fused_v2p_translation(self):
+        page_size = 8
+        page_multiplier = 3
+        max_context_len = 32
+        req_to_token = torch.tensor(
+            [
+                list(range(0, max_context_len)),
+                list(range(max_context_len, 2 * max_context_len)),
+            ],
+            dtype=torch.int64,
+            device=get_device(),
+        )
+        req_pool_indices = torch.tensor([1, 0], dtype=torch.int32, device=get_device())
+        seq_lens = torch.tensor([19, 13], dtype=torch.int32, device=get_device())
+        kv_indptr = torch.tensor([0, 19, 32], dtype=torch.int32, device=get_device())
+        # Deliberately non-identity so the fused gather cannot pass accidentally.
+        v2p = torch.tensor(
+            [7, 3, 6, 2, 5, 1, 4, 0], dtype=torch.int64, device=get_device()
+        )
+        got = torch.empty(32, dtype=torch.int64, device=get_device())
+
+        create_flashinfer_kv_indices_triton[(2,)](
+            req_to_token,
+            req_pool_indices,
+            seq_lens,
+            kv_indptr,
+            None,
+            got,
+            req_to_token.stride(0),
+            v2p,
+            PAGE_SIZE=page_size,
+            PAGE_MULT=page_multiplier,
+        )
+
+        virtual = torch.cat((req_to_token[1, :19], req_to_token[0, :13]))
+        expected = (
+            v2p[virtual // page_size] * (page_size * page_multiplier)
+            + virtual % page_size
+        ).clamp_min(0)
+        self.assertTrue(torch.equal(got, expected))
+
 
 if __name__ == "__main__":
     unittest.main()
