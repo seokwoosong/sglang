@@ -89,6 +89,12 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
+# Keep write-back staging deliberately small.  Full-KV eviction is the hot path
+# under shared-pool pressure, but device rows cannot be reused until every
+# staged D2H finishes.  Four victims amortize the acknowledgement barrier while
+# bounding transient device/host duplication and failure recovery work.
+_WRITE_BACK_EVICTION_BATCH_SIZE = 4
+
 # Metric label per component, matching the host pool names used by
 # hicache_backup_tokens_total and the host occupancy gauges.
 _COMPONENT_POOL_LABEL = {
@@ -677,6 +683,130 @@ class UnifiedRadixCache(BasePrefixCache):
         self._accumulate_tracker(tracker, result.tracker)
         return result.is_dropped
 
+    def _flush_staged_full_write_backs(
+        self,
+        staged: list[tuple[NodeId, int]],
+        tracker: dict[ComponentType, int],
+    ) -> None:
+        """Finish a bounded Full write-back batch and release its device rows.
+
+        The expected Full counts are used only as a consistency check.  The
+        authoritative tracker remains the result of each real demote, including
+        any Mamba/SWA cascade frees that cannot be known safely at enqueue time.
+        """
+        if not staged:
+            return
+
+        expected_full = sum(expected for _, expected in staged)
+        full_before = tracker[BASE_COMPONENT_TYPE]
+        self.writing_check(write_back=True)
+        for node_id, _ in staged:
+            self._demote(node_id, tracker)
+
+        actual_full = tracker[BASE_COMPONENT_TYPE] - full_before
+        assert actual_full == expected_full, (
+            "Staged Full write-back accounting diverged after demote: "
+            f"expected={expected_full}, actual={actual_full}, "
+            f"victims={[node_id for node_id, _ in staged]}"
+        )
+
+    def _evict_full_write_back_batched(
+        self,
+        request_cnt: int,
+        tracker: dict[ComponentType, int],
+    ) -> None:
+        """Evict Full KV with a bounded number of D2H writes per barrier.
+
+        ``selection_tracker`` includes Full rows whose backups were enqueued but
+        whose device values are still transfer-fenced.  It prevents selecting
+        more leaves than the request needs.  After each barrier, real demote
+        results update ``tracker`` and the eviction heap is rebuilt so newly
+        exposed parent leaves participate in the next bounded round.
+        """
+        ct = BASE_COMPONENT_TYPE
+        while tracker[ct] < request_cnt:
+            selection_tracker = dict(tracker)
+            staged: list[tuple[NodeId, int]] = []
+            made_progress = False
+
+            self.tree_core.evict_device_start(ct, request_cnt)
+            try:
+                while (
+                    selection_tracker[ct] < request_cnt
+                    and len(staged) < _WRITE_BACK_EVICTION_BATCH_SIZE
+                ):
+                    before_next = dict(selection_tracker)
+                    node_id = self._evict_device_next_node(ct, selection_tracker)
+                    # Full's current tree walk does not normally free inline,
+                    # but keep the returned-value contract correct if it does.
+                    for component_type in self.tree_components:
+                        tracker[component_type] += (
+                            selection_tracker[component_type]
+                            - before_next[component_type]
+                        )
+                    if node_id is None:
+                        break
+
+                    before_leaf = dict(selection_tracker)
+                    backup_kv = self._evict_device_leaf(
+                        ct, node_id, selection_tracker
+                    )
+                    if backup_kv is None:
+                        # Already-backed leaves demote synchronously, so their
+                        # returned rows are real rather than merely planned.
+                        for component_type in self.tree_components:
+                            delta = (
+                                selection_tracker[component_type]
+                                - before_leaf[component_type]
+                            )
+                            tracker[component_type] += delta
+                            made_progress = made_progress or delta > 0
+                        continue
+
+                    written = self._execute_and_commit_kv_backup(
+                        backup_kv, write_back=True
+                    )
+                    if written > 0:
+                        staged.append((node_id, written))
+                        selection_tracker[ct] += written
+                        made_progress = True
+                        continue
+
+                    # A failed host reservation must not strand earlier pending
+                    # victims.  Commit those first, then run the existing drop
+                    # fallback against authoritative state and rebuild the walk.
+                    self._flush_staged_full_write_backs(staged, tracker)
+                    staged.clear()
+                    freed_before_drop = dict(tracker)
+                    if self._drop_subtree_no_host(node_id, tracker):
+                        self._record_dropped_tokens(tracker, freed_before_drop)
+                        made_progress = True
+                        logger.warning(
+                            "write_back: KV subtree dropped without backup "
+                            "due to host memory pressure, root node %d",
+                            node_id,
+                        )
+                    else:
+                        logger.warning(
+                            "write_back: backup failed under host memory "
+                            "pressure but subtree drop declined (node locked); "
+                            "root node %d stays device-resident until host "
+                            "space frees",
+                            node_id,
+                        )
+                    break
+            finally:
+                self.tree_core.evict_device_end(ct)
+
+            self._flush_staged_full_write_backs(staged, tracker)
+            if tracker[ct] >= request_cnt:
+                return
+            if not made_progress:
+                return
+            # A bounded flush changes device leaves and can expose parents.
+            # Rebuild the heap rather than continuing a cursor built before the
+            # staged demotes.
+
     def _evict_components(
         self,
         request_by_type: dict[ComponentType, int],
@@ -686,6 +816,13 @@ class UnifiedRadixCache(BasePrefixCache):
             request_cnt = request_by_type[ct]
             # Skip eviction walk if request is already met
             if tracker[ct] >= request_cnt:
+                continue
+            if (
+                ct == BASE_COMPONENT_TYPE
+                and self.cache_controller is not None
+                and self.cache_controller.write_policy == "write_back"
+            ):
+                self._evict_full_write_back_batched(request_cnt, tracker)
                 continue
             self.tree_core.evict_device_start(ct, request_cnt)
             try:
