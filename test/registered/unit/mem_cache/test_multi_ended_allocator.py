@@ -2364,6 +2364,29 @@ class TestLazyCompaction(unittest.TestCase):
                 )
                 self.assertEqual(fa._external_transfer_hazards, [])
 
+    def test_completed_row_transfer_is_reaped_before_lazy_hole_materialization(self):
+        for pool_name in ("kv", "mamba"):
+            with self.subTest(pool=pool_name):
+                fa, _, free_virtual, _, _ = self._make_transfer_case(pool_name)
+                freed_physical = fa.virtual_to_physical[free_virtual].clone()
+                fa.free(free_virtual)
+
+                transfer_done = MagicMock()
+                transfer_done.query.return_value = True
+                fa.register_external_transfer(transfer_done, freed_physical)
+                hazard = fa._external_transfer_hazards[0]
+                schedule_stream = MagicMock()
+
+                with patch("torch.cuda.current_stream", return_value=schedule_stream):
+                    replacement = fa.alloc(1)
+
+                schedule_stream.wait_event.assert_not_called()
+                self.assertIsNone(hazard.pages_cpu)
+                self.assertEqual(fa._external_transfer_hazards, [])
+                torch.testing.assert_close(
+                    fa.virtual_to_physical[replacement], freed_physical
+                )
+
     def test_eager_compaction_waits_for_external_transfer(self):
         """The eager-compaction rollback mode remains correct, although an
         interior free can block at its existing V2P validation sync.
