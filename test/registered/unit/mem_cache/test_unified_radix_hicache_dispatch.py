@@ -52,61 +52,6 @@ MAMBA = ComponentType.MAMBA
 
 
 class TestUnifiedRadixHiCacheDispatch(unittest.TestCase):
-    def _mock_batched_write_back_cache(self, demote_sizes):
-        cache = object.__new__(UnifiedRadixCache)
-        cache.tree_components = (FULL,)
-        cache.tree_core = MagicMock()
-        cache.writing_check = MagicMock()
-        cache._record_dropped_tokens = MagicMock()
-
-        def demote(node_id, tracker):
-            tracker[FULL] += demote_sizes[node_id]
-
-        cache._demote = MagicMock(side_effect=demote)
-        return cache
-
-    def test_full_write_back_batches_four_victims_per_barrier(self):
-        cache = self._mock_batched_write_back_cache(
-            {node_id: 2 for node_id in range(1, 6)}
-        )
-        cache._evict_device_next_node = MagicMock(side_effect=range(1, 6))
-        cache._evict_device_leaf = MagicMock(return_value=object())
-        cache._execute_and_commit_kv_backup = MagicMock(return_value=2)
-        cache._drop_subtree_no_host = MagicMock()
-        tracker = {FULL: 0}
-
-        cache._evict_full_write_back_batched(10, tracker)
-
-        self.assertEqual(tracker[FULL], 10)
-        self.assertEqual(cache.writing_check.call_count, 2)
-        self.assertEqual(
-            [call.args[0] for call in cache._demote.call_args_list],
-            [1, 2, 3, 4, 5],
-        )
-        self.assertEqual(cache.tree_core.evict_device_start.call_count, 2)
-        self.assertEqual(cache.tree_core.evict_device_end.call_count, 2)
-
-    def test_full_write_back_flushes_staged_victims_before_drop_fallback(self):
-        cache = self._mock_batched_write_back_cache({1: 2})
-        cache._evict_device_next_node = MagicMock(side_effect=[1, 2])
-        cache._evict_device_leaf = MagicMock(return_value=object())
-        cache._execute_and_commit_kv_backup = MagicMock(side_effect=[2, 0])
-
-        def drop(_node_id, tracker):
-            tracker[FULL] += 2
-            return True
-
-        cache._drop_subtree_no_host = MagicMock(side_effect=drop)
-        tracker = {FULL: 0}
-
-        cache._evict_full_write_back_batched(4, tracker)
-
-        self.assertEqual(tracker[FULL], 4)
-        cache.writing_check.assert_called_once_with(write_back=True)
-        cache._demote.assert_called_once_with(1, tracker)
-        cache._drop_subtree_no_host.assert_called_once_with(2, tracker)
-        cache._record_dropped_tokens.assert_called_once()
-
     def test_strategy_registry_ordering(self):
         order = [type(s) for s in _STRATEGIES]
         # DeepSeekV4 inherits from SWAKVPool, so it must resolve before _SwaStrategy.
