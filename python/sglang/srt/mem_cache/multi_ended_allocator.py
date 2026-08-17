@@ -738,17 +738,6 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
                 else:
                     drained_t = self._free_phys_pages[:n_drain]
                 touched_pages = None
-                # Poll row fences before materializing either index tensor.  Most
-                # HiCache copies have completed by the time a freed hole is reused;
-                # in that common case `_settle_external_transfers` can reap the
-                # event using `Event.query()` alone.  Without this cheap pass, the
-                # mere presence of a stale hazard forces `drained_t.tolist()` and
-                # the hazard's device indices to CPU, synchronizing the scheduler
-                # with unrelated GPU work even though no fence remains to check.
-                if self._external_transfer_hazards:
-                    self._settle_external_transfers(
-                        urgent=False, touched_pages=set()
-                    )
                 if self._external_transfer_hazards:
                     touched_pages = set(int(page) for page in drained_t.tolist())
                 self._settle_external_transfers(
