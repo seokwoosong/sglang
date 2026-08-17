@@ -1049,7 +1049,14 @@ class HybridCacheController(BaseHiCacheController):
                 operation.device_indices
             ).to(dtype=operation.device_indices.dtype)
         )
-        self._validate_translated_indices(anchor_entry, device_indices)
+        # ``_validate_translated_indices`` reduces a CUDA tensor and calls
+        # ``item()``, which is intentionally synchronous.  Keeping that guard on
+        # every HiCache transfer serializes the scheduler with the forward stream
+        # and defeats asynchronous D2H enqueueing.  The allocator owns the V2P
+        # invariants in normal operation; retain the expensive range check for
+        # explicit memory-pool debugging only.
+        if envs.SGLANG_DEBUG_MEMORY_POOL.get():
+            self._validate_translated_indices(anchor_entry, device_indices)
 
         translated_pool_transfers = None
         if operation.pool_transfers:
@@ -1065,7 +1072,8 @@ class HybridCacheController(BaseHiCacheController):
                     transfer_device_indices = entry.device_index_translate_fn(
                         transfer_device_indices
                     ).to(dtype=transfer.device_indices.dtype)
-                    self._validate_translated_indices(entry, transfer_device_indices)
+                    if envs.SGLANG_DEBUG_MEMORY_POOL.get():
+                        self._validate_translated_indices(entry, transfer_device_indices)
                 translated_pool_transfers.append(
                     PoolTransfer(
                         name=transfer.name,
