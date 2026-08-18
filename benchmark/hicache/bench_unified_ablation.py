@@ -832,12 +832,14 @@ def make_workload(
     shared_ratio: float,
     group_order_start: int = 0,
     reverse_group_order: bool = False,
+    suffix_seed: int | None = None,
 ) -> tuple[list[list[int]], list[tuple[int, int, list[int]]]]:
     if not 0 < shared_ratio < 1:
         raise ValueError("shared_ratio must be between zero and one")
     if not 0 <= group_order_start < groups:
         raise ValueError("group_order_start must be in [0, groups)")
     rng = random.Random(seed)
+    suffix_rng = rng if suffix_seed is None else random.Random(suffix_seed)
     prefix_len = max(1, int(input_len * shared_ratio))
     suffix_len = input_len - prefix_len
     prefixes: list[list[int]] = []
@@ -855,13 +857,16 @@ def make_workload(
     for round_id in range(rounds):
         for group_id in group_order:
             prefix = prefixes[group_id]
-            suffix = [rng.randrange(2000, 200000) for _ in range(suffix_len)]
+            suffix = [
+                suffix_rng.randrange(2000, 200000) for _ in range(suffix_len)
+            ]
             schedule.append((group_id, round_id, prefix + suffix))
     return prefixes, schedule
 
 
 async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
-    flush_cache(args.base_url)
+    if not args.skip_flush_cache:
+        flush_cache(args.base_url)
     server_info = get_server_info(args.base_url)
     metrics_before = metric_snapshot(args.base_url)
     memory_profile_before = memory_profile_snapshot(args.output)
@@ -873,6 +878,7 @@ async def run_steady_async(args: argparse.Namespace) -> dict[str, Any]:
         shared_ratio=args.shared_ratio,
         group_order_start=args.group_order_start,
         reverse_group_order=args.reverse_group_order,
+        suffix_seed=args.suffix_seed,
     )
 
     prime_started = time.perf_counter()
@@ -1071,6 +1077,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     steady.add_argument("--rounds", type=int, default=4)
     steady.add_argument("--shared-ratio", type=float, default=0.95)
+    steady.add_argument(
+        "--suffix-seed",
+        type=int,
+        default=None,
+        help="Optional independent suffix seed for exact-prefix replay workloads.",
+    )
+    steady.add_argument(
+        "--skip-flush-cache",
+        action="store_true",
+        help="Preserve cache state left by an earlier phase in the same server.",
+    )
     steady.add_argument("--prime-output-len", type=int, default=1)
     steady.add_argument(
         "--prime-repeats",

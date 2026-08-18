@@ -20,6 +20,7 @@ import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK = REPO_ROOT / "benchmark/hicache/bench_unified_ablation.py"
+MIXED_BENCHMARK = REPO_ROOT / "benchmark/hicache/bench_phase_mixed.py"
 EVAL_WORKTREE_ROOT = Path(
     os.environ.get(
         "SGLANG_ABLATION_WORKTREE_ROOT",
@@ -44,8 +45,283 @@ POST_REBASE_SERVER_ENV = {
     # 2.13; this Qwen Triton path does not call their new AOT operations.
     "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK": "1",
 }
+CURRENT_ORACLE_SERVER_SHA = "8de3268353c0fbbfaa380003aa808dae38c5ee16"
+CURRENT_ORACLE_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/static-unified-fix-8de3268"
+)
+MAMBA_REUSE_OPT_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/mamba-reuse-opt"
+)
+UNIFIED_V2_SERVER_SHA = "2e51a88369472a78f6d509d6058e522d8284f439"
+UNIFIED_V2_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/unified-v2-baseline-2e51a88"
+)
+UNIFIED_V3_SERVER_SHA = "70b6f97e22954d445bd0701492a06b415de05f26"
+UNIFIED_V3_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/unified-v3-chunked-70b6f97"
+)
+UNIFIED_V4_SERVER_SHA = "bd7ac09bdafd286a492d75b77df19dacd022e4a3"
+UNIFIED_V4_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/unified-v4-flush-bd7ac09"
+)
+UNIFIED_V5_SERVER_SHA = "3e79c81cb58b257948c47ea1e11cdafac5ee2a96"
+UNIFIED_V5_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/unified-v5-atomic-3e79c81"
+)
+UNIFIED_V6_SERVER_SHA = "fb638937833b96125fa065600063da559f52e6ab"
+UNIFIED_V6_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/unified-v6-chunk-budget-fb63893"
+)
+UNIFIED_V7_SERVER_SHA = "85f217f6a06157038f5cd5d4a4e526c157101ff3"
+UNIFIED_V7_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/unified-v7-chunk-peak-85f217f"
+)
+UNIFIED_V8_SERVER_SHA = "74de44b554771c167c28bb674697a0005bc5e697"
+UNIFIED_V8_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/unified-v8-residual-74de44b"
+)
+UNIFIED_V9_SERVER_SHA = "5b2d430656f2a50802a6ae8ff82e5bf7249e307c"
+UNIFIED_V9_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/unified-v9-alloc-first-5b2d430"
+)
+UNIFIED_V11_SERVER_SHA = "30281e242c074287e14aa52ebd2c72d5313a8ee6"
+UNIFIED_V11_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/unified-v11-no-sync-validation-30281e2"
+)
+UNIFIED_V12_SERVER_SHA = "6ce1a3336f8840abeca29b00a4901909910e74c2"
+UNIFIED_V12_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/unified-v12-reap-row-fences-6ce1a33"
+)
+CURRENT_ORACLE_SERVER_ENV = {
+    "SGLANG_HICACHE_UNIFIED_TYPED_L2": "1",
+    "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK": "1",
+}
+PR34441_SERVER_SHA = "0e3deb8347b1ce86512c8ed8d79a435f0258795d"
+PR34441_SERVER_WORKTREE = Path(
+    "/home/sukwoo24/sglang-eval-worktrees/pr34441-0e3deb8"
+)
 
 VARIANTS = {
+    "oracle-s1-v13": {
+        "sha": "c94d6485dc756944869a19c3be6566e72c803b78",
+        "worktree": Path(
+            "/home/sukwoo24/sglang-eval-worktrees/unified-v13-fused-kv-indices-c94d648"
+        ),
+        "unified": False,
+        "hicache": True,
+        "sync_unified_transfers": None,
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v13-fusion-off": {
+        "sha": "c94d6485dc756944869a19c3be6566e72c803b78",
+        "worktree": Path(
+            "/home/sukwoo24/sglang-eval-worktrees/unified-v13-fused-kv-indices-c94d648"
+        ),
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": {
+            **CURRENT_ORACLE_SERVER_ENV,
+            "SGLANG_FUSE_UNIFIED_KV_INDEX_TRANSLATION": "0",
+        },
+    },
+    "oracle-u3-v13-fusion-on": {
+        "sha": "c94d6485dc756944869a19c3be6566e72c803b78",
+        "worktree": Path(
+            "/home/sukwoo24/sglang-eval-worktrees/unified-v13-fused-kv-indices-c94d648"
+        ),
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": {
+            **CURRENT_ORACLE_SERVER_ENV,
+            "SGLANG_FUSE_UNIFIED_KV_INDEX_TRANSLATION": "1",
+        },
+    },
+    "oracle-u3-v9c": {
+        "sha": UNIFIED_V9_SERVER_SHA,
+        "worktree": Path(
+            "/home/sukwoo24/sglang-eval-worktrees/unified-v9-clean-contemporary-5b2d430"
+        ),
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v9c-sync": {
+        "sha": UNIFIED_V9_SERVER_SHA,
+        "worktree": Path(
+            "/home/sukwoo24/sglang-eval-worktrees/unified-v9-clean-contemporary-5b2d430"
+        ),
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "1",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v12": {
+        "sha": UNIFIED_V12_SERVER_SHA,
+        "worktree": UNIFIED_V12_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v11": {
+        "sha": UNIFIED_V11_SERVER_SHA,
+        "worktree": UNIFIED_V11_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v9": {
+        "sha": UNIFIED_V9_SERVER_SHA,
+        "worktree": UNIFIED_V9_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v8": {
+        "sha": UNIFIED_V8_SERVER_SHA,
+        "worktree": UNIFIED_V8_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v7": {
+        "sha": UNIFIED_V7_SERVER_SHA,
+        "worktree": UNIFIED_V7_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v6": {
+        "sha": UNIFIED_V6_SERVER_SHA,
+        "worktree": UNIFIED_V6_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v5": {
+        "sha": UNIFIED_V5_SERVER_SHA,
+        "worktree": UNIFIED_V5_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v4": {
+        "sha": UNIFIED_V4_SERVER_SHA,
+        "worktree": UNIFIED_V4_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v3": {
+        "sha": UNIFIED_V3_SERVER_SHA,
+        "worktree": UNIFIED_V3_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-v2": {
+        "sha": UNIFIED_V2_SERVER_SHA,
+        "worktree": UNIFIED_V2_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3-mamba-reuse": {
+        "sha": CURRENT_ORACLE_SERVER_SHA,
+        "worktree": MAMBA_REUSE_OPT_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    # Targeted isolation of PR #34441 on top of the pre-patch oracle SHA.
+    "pr34441-u3": {
+        "sha": PR34441_SERVER_SHA,
+        "worktree": PR34441_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    # Static-oracle versus unified evaluation pinned to the current feature
+    # branch.  The detached worktree keeps long-running measurements isolated
+    # from subsequent edits in the developer worktree.
+    "oracle-s1": {
+        "sha": CURRENT_ORACLE_SERVER_SHA,
+        "worktree": CURRENT_ORACLE_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": True,
+        "sync_unified_transfers": None,
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-s1-default": {
+        "sha": CURRENT_ORACLE_SERVER_SHA,
+        "worktree": CURRENT_ORACLE_SERVER_WORKTREE,
+        "unified": False,
+        "hicache": True,
+        "sync_unified_transfers": None,
+        "kernel_backends": "default",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
+    "oracle-u3": {
+        "sha": CURRENT_ORACLE_SERVER_SHA,
+        "worktree": CURRENT_ORACLE_SERVER_WORKTREE,
+        "unified": True,
+        "hicache": True,
+        "sync_unified_transfers": "0",
+        "kernel_backends": "triton",
+        "hicache_mem_layout": "page_first",
+        "server_env": CURRENT_ORACLE_SERVER_ENV,
+    },
     # Fair final-source evaluation: all variants use the same allocator,
     # compaction, transfer, and profiling code. Only the advertised memory/L2
     # configuration changes.
@@ -371,8 +647,6 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
         str(args.page_size),
         "--mamba-radix-cache-strategy",
         "extra_buffer",
-        "--max-total-tokens",
-        str(args.max_total_tokens),
         "--max-running-requests",
         str(args.max_running_requests),
         "--chunked-prefill-size",
@@ -383,6 +657,8 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
         "--log-level",
         args.log_level,
     ]
+    if args.max_total_tokens is not None:
+        command.extend(["--max-total-tokens", str(args.max_total_tokens)])
     kernel_backends = variant.get("kernel_backends", "triton")
     if kernel_backends == "triton":
         command.extend(
@@ -404,6 +680,15 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
                 "full",
                 "--cuda-graph-backend-prefill",
                 "breakable",
+            ]
+        )
+    elif args.cuda_graph_mode == "decode-only":
+        command.extend(
+            [
+                "--cuda-graph-backend-decode",
+                "full",
+                "--cuda-graph-backend-prefill",
+                "disabled",
             ]
         )
     else:
@@ -440,6 +725,30 @@ def server_command(args: argparse.Namespace, variant: dict[str, Any]) -> list[st
 def benchmark_command(
     args: argparse.Namespace, variant: dict[str, Any], output: Path
 ) -> list[str]:
+    if args.scenario == "mixed":
+        command = [
+            str(args.python),
+            str(MIXED_BENCHMARK),
+            "--base-url",
+            f"http://127.0.0.1:{args.port}",
+            "--variant",
+            args.variant,
+            "--output",
+            str(output),
+            "--shared-ratio",
+            str(args.shared_ratio),
+            "--seed",
+            str(args.seed),
+            "--max-concurrency",
+            str(args.max_concurrency),
+            "--traffic-profile",
+            args.traffic_profile,
+        ]
+        if variant["hicache"]:
+            command.append("--expect-hicache")
+        if args.forbid_dropped:
+            command.append("--forbid-dropped")
+        return command
     command = [
         str(args.python),
         str(BENCHMARK),
@@ -647,7 +956,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Permit a diagnostic source patch and record its diff in the manifest.",
     )
     parser.add_argument(
-        "--scenario", choices=["parity", "accuracy", "steady"], required=True
+        "--scenario",
+        choices=["parity", "accuracy", "steady", "mixed"],
+        required=True,
     )
     parser.add_argument("--run-name", required=True)
     parser.add_argument(
@@ -661,7 +972,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-timeout", type=int, default=1200)
     parser.add_argument("--client-timeout", type=int, default=1800)
     parser.add_argument("--monitor-interval", type=float, default=5.0)
-    parser.add_argument("--max-total-tokens", type=int, required=True)
+    parser.add_argument(
+        "--max-total-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Optional explicit Full-KV token cap. Omit it together with "
+            "--max-mamba-cache-size for fixed-mem-fraction auto sizing."
+        ),
+    )
     parser.add_argument("--page-size", type=int, default=1)
     parser.add_argument(
         "--max-mamba-cache-size",
@@ -684,10 +1003,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-level", default="info")
     parser.add_argument(
         "--cuda-graph-mode",
-        choices=["enabled", "disabled"],
+        choices=["enabled", "decode-only", "disabled"],
         default="disabled",
         help=(
             "Use decode=full and prefill=breakable for clean/correctness runs, "
+            "decode-only when prefill graph capture cannot safely JIT kernels, "
             "or disable both graphs for component profiling."
         ),
     )
@@ -719,6 +1039,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prime-output-len", type=int, default=1)
     parser.add_argument("--prime-repeats", type=int, default=1)
     parser.add_argument("--max-concurrency", type=int, default=4)
+    parser.add_argument(
+        "--traffic-profile",
+        choices=[
+            "stationary",
+            "demand-shift",
+            "residency-burst",
+            "concurrency-spike",
+            "ordered-long-late",
+            "ordered-long-early",
+            "reuse-shift",
+            "heavy-tail",
+        ],
+        default="stationary",
+        help="Mixed-workload demand pattern (used only by --scenario mixed).",
+    )
     parser.add_argument("--require-eviction", action="store_true")
     parser.add_argument("--require-loadback", action="store_true")
     parser.add_argument("--require-backup", action="store_true")
@@ -766,6 +1101,11 @@ def main() -> None:
     command = server_command(args, variant)
     client_command = benchmark_command(args, variant, result_path)
     environment = os.environ.copy()
+    # Absolute Python paths do not activate their virtual environment.  Put
+    # its bin directory first so FlashInfer JIT can find the matching ninja
+    # executable and other console-script dependencies.
+    python_bin = str(args.python.absolute().parent)
+    environment["PATH"] = os.pathsep.join((python_bin, environment.get("PATH", "")))
     environment["PYTHONPATH"] = str(variant["worktree"] / "python")
     environment["TOKENIZERS_PARALLELISM"] = "false"
     environment.pop("SGLANG_HICACHE_TRACE_PATH", None)
@@ -812,6 +1152,7 @@ def main() -> None:
         "server_command": command,
         "client_command": client_command,
         "environment_overrides": {
+            "PATH_PREFIX": python_bin,
             "PYTHONPATH": environment["PYTHONPATH"],
             "TOKENIZERS_PARALLELISM": environment["TOKENIZERS_PARALLELISM"],
             "SGLANG_HICACHE_SYNC_UNIFIED_TRANSFERS": sync_value,
