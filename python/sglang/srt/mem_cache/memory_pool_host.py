@@ -966,7 +966,7 @@ class PoolEntry:
     is_primary_index_anchor: bool = False
     # Optional eviction callbacks for auto-alloc in HybridCacheController.
     # host_evict_fn(n): evict n slots from the host pool (used by write()).
-    # device_evict_fn(n): evict n slots from the device pool (used by load()).
+    # device_evict_fn(n): make a device allocation of n slots feasible (used by load()).
     host_evict_fn: Optional[Callable] = None
     device_evict_fn: Optional[Callable] = None
     # Optional alloc/free overrides for the device side, used by
