@@ -69,6 +69,10 @@ class MambaComponent(TreeComponent):
                 params.page_size == 1
             ), f"MambaComponent requires page_size=1 when mamba_extra_buffer is disabled, got {params.page_size}"
         super().__init__(cache, params)
+        self._init_mamba_component_state(params)
+
+    def _init_mamba_component_state(self, params: CacheInitParams) -> None:
+        """Initialize state shared by native and backend-specific adapters."""
         self.mamba_cache_chunk_size = mamba_cache_chunk_size()
         # params.page_size is the tree page the allocator actually uses, already
         # widened by dcp_size, so it is the one grid a checkpoint depth can land on.

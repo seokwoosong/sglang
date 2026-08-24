@@ -8,6 +8,7 @@ from collections import deque
 from types import SimpleNamespace
 
 from sglang.test.ci.ci_register import register_cpu_ci, register_mlx_ci
+from sglang.test.test_utils import CustomTestCase
 
 register_cpu_ci(est_time=1, suite="base-a-test-cpu")
 register_mlx_ci(est_time=1, suite="stage-a-unit-test-mlx")
@@ -54,7 +55,11 @@ if _HAS_MLX:
         SchedulerBatchResultProcessor,
     )
     from sglang.srt.managers.utils import GenerationBatchResult
-    from sglang.srt.mem_cache.base_prefix_cache import InsertParams, InsertResult
+    from sglang.srt.mem_cache.base_prefix_cache import (
+        InsertParams,
+        InsertResult,
+        MatchResult,
+    )
     from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
 
 
@@ -92,6 +97,14 @@ def _set_dummy_server_args_for_auxiliary_state_tests() -> None:
     server_args = ServerArgs(model_path="dummy", page_size=1)
     server_args._mamba_cache_chunk_size = 64
     set_global_server_args_for_scheduler(server_args)
+
+
+def _make_auxiliary_state_component(pool):
+    _set_dummy_server_args_for_auxiliary_state_tests()
+    return MlxAuxiliaryStateComponent(
+        SimpleNamespace(req_to_token_pool=pool),
+        SimpleNamespace(enable_mamba_extra_buffer=False, page_size=1),
+    )
 
 
 @unittest.skipUnless(_HAS_MLX, _SKIP_REASON)
@@ -266,7 +279,7 @@ class TestMlxAttentionPatching(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_MLX, _SKIP_REASON)
-class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
+class TestMlxAuxiliaryStateRunnerCache(CustomTestCase):
     def test_dense_prefill_keeps_pool_backed_radix_path(self):
         runner = object.__new__(MlxModelRunner)
         runner.model = FakeDenseModel(num_layers=2)
@@ -877,6 +890,17 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         self.assertEqual(forked.tolist(), [3])
         self.assertEqual(restored[0].state[0].tolist(), [1.0])
         self.assertEqual(pool.available_size(), 3)
+        self.assertEqual(pool.schedulable_available_size(), 3)
+
+    def test_auxiliary_state_pool_returns_unused_group_slots(self):
+        pool = MlxAuxiliaryStatePool(size=4, device="cpu")
+
+        pool.alloc_group_begin(3)
+        allocated = pool.alloc(1)
+        pool.alloc_group_end()
+
+        self.assertEqual(allocated.tolist(), [1])
+        self.assertEqual(pool.available_size(), 3)
 
     def test_auxiliary_state_pool_restores_instance_meta_state(self):
         pool = MlxAuxiliaryStatePool(size=2, device="cpu")
@@ -916,6 +940,7 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         self.assertIsNotNone(auxiliary_state_idx)
         self.assertIsNone(req.req_pool_idx)
         self.assertIsNotNone(req.mamba_pool_idx)
+        self.assertIs(pool.mamba_allocator, pool.mamba_pool)
         self.assertEqual(pool.auxiliary_state_pool.available_size(), 3)
         pool.free_auxiliary_state_cache(req)
         self.assertIsNone(req.mamba_pool_idx)
@@ -954,10 +979,7 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         req.mamba_ping_pong_track_buffer = pool.auxiliary_state_pool.alloc(1)
         req.mamba_next_track_idx = 0
         req.mamba_last_track_seqlen = 64
-        component = MlxAuxiliaryStateComponent(
-            SimpleNamespace(req_to_token_pool=pool),
-            SimpleNamespace(enable_mamba_extra_buffer=False),
-        )
+        component = _make_auxiliary_state_component(pool)
         insert_params = InsertParams()
 
         cache_len = component.prepare_for_caching_req(
@@ -994,10 +1016,7 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         req.mamba_ping_pong_track_buffer = pool.auxiliary_state_pool.alloc(1)
         req.mamba_next_track_idx = 0
         req.mamba_last_track_seqlen = 64
-        component = MlxAuxiliaryStateComponent(
-            SimpleNamespace(req_to_token_pool=pool),
-            SimpleNamespace(enable_mamba_extra_buffer=False),
-        )
+        component = _make_auxiliary_state_component(pool)
         insert_params = InsertParams()
 
         cache_len = component.prepare_for_caching_req(
@@ -1034,10 +1053,7 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         pool.alloc([req])
         req.mamba_ping_pong_track_buffer = pool.auxiliary_state_pool.alloc(1)
         req.mamba_next_track_idx = 0
-        component = MlxAuxiliaryStateComponent(
-            SimpleNamespace(req_to_token_pool=pool),
-            SimpleNamespace(enable_mamba_extra_buffer=False),
-        )
+        component = _make_auxiliary_state_component(pool)
         insert_params = InsertParams()
 
         cache_len = component.prepare_for_caching_req(
@@ -1071,10 +1087,7 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
         )
         req = FakeRequest()
         pool.alloc([req])
-        component = MlxAuxiliaryStateComponent(
-            SimpleNamespace(req_to_token_pool=pool),
-            SimpleNamespace(enable_mamba_extra_buffer=False),
-        )
+        component = _make_auxiliary_state_component(pool)
         insert_params = InsertParams()
 
         component.prepare_for_caching_req(
@@ -1092,6 +1105,36 @@ class TestMlxAuxiliaryStateRunnerCache(unittest.TestCase):
 
         self.assertIsNone(req.mamba_pool_idx)
         self.assertEqual(pool.auxiliary_state_pool.available_size(), 4)
+
+    def test_auxiliary_state_component_finalizes_checkpoint_branch(self):
+        pool = MlxAuxiliaryStateReqToTokenPool(
+            size=2,
+            max_context_len=128,
+            device="cpu",
+            enable_memory_saver=False,
+            auxiliary_state_size=4,
+        )
+        component = _make_auxiliary_state_component(pool)
+        node = object()
+        component.has_host_value_only = lambda _: False
+        result = MatchResult(
+            device_indices=torch.arange(4),
+            last_device_node=node,
+            last_host_node=node,
+            best_match_node=node,
+            full_kv_hit_length=70,
+        )
+
+        result = component.finalize_match_result_in_tree_core(
+            result=result,
+            params=SimpleNamespace(),
+            value_chunks=[],
+            best_value_len=0,
+        )
+
+        self.assertEqual(component.mamba_cache_chunk_size, 64)
+        self.assertEqual(component.mamba_checkpoint_grid, 64)
+        self.assertEqual(result.mamba_branching_seqlen, 64)
 
 
 @unittest.skipUnless(_HAS_MLX, _SKIP_REASON)

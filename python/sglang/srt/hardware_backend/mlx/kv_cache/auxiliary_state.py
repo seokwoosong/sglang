@@ -15,6 +15,7 @@ from typing import Any, Iterable, Optional
 import mlx.core as mx
 import torch
 
+from sglang.srt.mem_cache.allocator.mamba import MambaSlotAllocator
 from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertResult
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.mem_cache.unified_cache.components.mamba_component import (
@@ -86,16 +87,14 @@ def _restore_cache(cache: Any, snapshot: _CacheSnapshot) -> None:
         setattr(cache, name, _clone_tree(value))
 
 
-class MlxAuxiliaryStatePool:
+class MlxAuxiliaryStatePool(MambaSlotAllocator):
     """Index-addressable snapshots of native MLX auxiliary cache state."""
 
     def __init__(self, size: int, device: str):
-        self.size = size
-        self.device = device
         self.mamba_cache = None
         self.mem_usage = 0
         self._snapshots: dict[int, dict[int, _CacheSnapshot]] = {}
-        self.clear()
+        super().__init__(size=size, device=device)
 
     def _tensor(self, indices: Any) -> torch.Tensor:
         return torch.as_tensor(indices, dtype=torch.int64, device=self.device).view(-1)
@@ -105,14 +104,11 @@ class MlxAuxiliaryStatePool:
         assert flat.numel() == 1
         return int(flat.item())
 
-    def available_size(self) -> int:
-        return int(self.free_slots.numel())
-
-    def alloc(self, need_size: int) -> Optional[torch.Tensor]:
-        if need_size > self.available_size():
+    def _do_alloc(self, need_size: int) -> Optional[torch.Tensor]:
+        slots = super()._do_alloc(need_size)
+        if slots is None:
             return None
-        slots = self.free_slots[:need_size].clone()
-        self.free_slots = self.free_slots[need_size:]
+        slots = slots.clone()
         for slot in slots.tolist():
             self._snapshots.pop(int(slot), None)
         return slots
@@ -125,12 +121,11 @@ class MlxAuxiliaryStatePool:
             return
         for slot in indices.tolist():
             self._snapshots.pop(int(slot), None)
-        self.free_slots = torch.cat([self.free_slots, indices])
+        super().free(indices)
 
     def clear(self) -> None:
-        self.free_slots = torch.arange(
-            1, self.size + 1, dtype=torch.int64, device=self.device
-        )
+        self._alloc_iter = None
+        super().clear()
         self._snapshots.clear()
 
     def copy_from(self, src: Any, dst: Any) -> None:
@@ -227,6 +222,8 @@ class MlxAuxiliaryStateReqToTokenPool(ReqToTokenPool):
             size=auxiliary_state_size,
             device=device,
         )
+        # Snapshot storage owns its slot free-list, so both views are identical.
+        self.mamba_allocator = self.mamba_pool
         # The unified radix base MAMBA component still reads ``mamba_pool``.
         # Keep the MLX-owned name beside it so local code can avoid model-
         # specific terminology.
@@ -315,8 +312,8 @@ class MlxAuxiliaryStateComponent(MambaComponent):
                 f"got {type(pool)}"
             )
         TreeComponent.__init__(self, cache, params)
+        self._init_mamba_component_state(params)
         self.enable_mamba_extra_buffer = False
-        self._mamba_pool_host = None
 
     @staticmethod
     def _tracked_value(req) -> tuple[object | None, bool]:
