@@ -1,0 +1,4 @@
+interface:
+  display_name: "SGLang Contribution Workflow"
+  short_description: "Implement, validate, commit, push, and prepare SGLang PRs"
+  default_prompt: "Prepare this SGLang contribution from implementation through a review-ready pull request using the repository contribution rules."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SGLang Interface Style"
+  short_description: "Apply explicit interface contracts in SGLang code"
+  default_prompt: "Review or implement this SGLang change using explicit backend contracts and fail-fast interfaces."
