@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-26T23:46:28+0900",
+  "git_commit": "3d00762885335bcef69246344306e16ebca4db60",
+  "git_branch": "exp/nvfp4-core-evaluation",
+  "platform": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+  "torch": "2.13.0+cu130",
+  "flashinfer": "0.6.15.post1",
+  "nvidia_smi": "NVIDIA GeForce RTX 5090, 610.62, 32607 MiB, 12.0",
+  "models": {
+    "bf16": "/home/sukwoo24/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659",
+    "nvfp4": "/home/sukwoo24/.cache/huggingface/hub/models--nvidia--Llama-3.1-8B-Instruct-NVFP4/snapshots/bdb54e24298451af785c0ac63c1b485e9b7400a2"
+  },
+  "serving_invariants": {
+    "dtype": "bfloat16",
+    "prefill_attention_backend": "flashinfer",
+    "decode_attention_backend": "trtllm_mha",
+    "page_size": 64,
+    "mem_fraction_static": 0.9,
+    "max_total_tokens": 73728,
+    "cuda_graph_max_bs_decode": 32,
+    "random_seed": 42,
+    "mm_feature_transport": "cpu",
+    "max_initial_gpu_memory_mib": 4096
+  },
+  "speed": {
+    "workloads": {
+      "prefill_heavy": [
+        2048,
+        128
+      ],
+      "balanced": [
+        1024,
+        1024
+      ],
+      "decode_heavy": [
+        128,
+        2048
+      ]
+    },
+    "concurrency": [
+      1,
+      8,
+      32
+    ],
+    "prompts_by_concurrency": {
+      "1": 4,
+      "8": 16,
+      "32": 64
+    },
+    "repeats": 3,
+    "request_rate": "inf",
+    "random_range_ratio": 1.0,
+    "temperature": 0.0,
+    "cache_flushed_after_warmup": true
+  },
+  "accuracy": {
+    "gsm8k_examples": 200,
+    "gsm8k_num_shots": 5,
+    "gsm8k_temperature": 0.0,
+    "passkey_context_lengths": [
+      4096,
+      8192
+    ],
+    "passkey_cases_per_length": 30
+  },
+  "design_note": "max_total_tokens is 73728 because 32 concurrent requests at the largest 2176-token workload require 69632 resident tokens; 65536 would silently reduce effective concurrency."
+}

@@ -1,0 +1,1672 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="RTX 5090에서 수행한 SGLang NVFP4 및 FP4 Tensor Core 평가 결과 발표 자료"
+    />
+    <title>NVFP4 on RTX 5090 — Experimental Evaluation</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #061018;
+        --panel: rgba(12, 28, 40, 0.82);
+        --panel-strong: #102635;
+        --line: rgba(174, 216, 238, 0.17);
+        --ink: #f1f8fc;
+        --muted: #9bb0be;
+        --cyan: #55ddff;
+        --green: #82f0a3;
+        --amber: #ffc66d;
+        --rose: #ff7699;
+        --blue: #7f9cff;
+        --shadow: 0 30px 80px rgba(0, 0, 0, 0.3);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", system-ui,
+          -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      button,
+      a {
+        font: inherit;
+      }
+
+      a {
+        color: var(--cyan);
+      }
+
+      code,
+      .mono {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      .deck {
+        position: relative;
+        width: 100vw;
+        height: 100dvh;
+        isolation: isolate;
+      }
+
+      .deck::before,
+      .deck::after {
+        position: fixed;
+        z-index: -1;
+        width: 46vw;
+        height: 46vw;
+        border-radius: 50%;
+        filter: blur(110px);
+        opacity: 0.14;
+        content: "";
+      }
+
+      .deck::before {
+        top: -24vw;
+        right: -12vw;
+        background: var(--cyan);
+      }
+
+      .deck::after {
+        bottom: -32vw;
+        left: -17vw;
+        background: var(--blue);
+      }
+
+      .slide {
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: clamp(32px, 5vw, 84px) clamp(36px, 7vw, 120px)
+          clamp(74px, 8vh, 104px);
+      }
+
+      .slide.active {
+        display: flex;
+        animation: enter 280ms ease-out;
+      }
+
+      @keyframes enter {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .content {
+        width: min(1440px, 100%);
+        max-height: 100%;
+      }
+
+      .eyebrow {
+        margin: 0 0 14px;
+        color: var(--cyan);
+        font-size: clamp(0.78rem, 1.05vw, 1rem);
+        font-weight: 750;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 1120px;
+        margin-bottom: 24px;
+        font-size: clamp(3rem, 7.5vw, 7.2rem);
+        font-weight: 780;
+        letter-spacing: -0.065em;
+        line-height: 0.95;
+      }
+
+      h2 {
+        margin-bottom: clamp(24px, 4vh, 48px);
+        font-size: clamp(2.05rem, 4.2vw, 4.35rem);
+        font-weight: 760;
+        letter-spacing: -0.045em;
+        line-height: 1.04;
+      }
+
+      h3 {
+        margin-bottom: 12px;
+        font-size: clamp(1rem, 1.5vw, 1.34rem);
+        letter-spacing: -0.02em;
+      }
+
+      .lede {
+        max-width: 980px;
+        color: var(--muted);
+        font-size: clamp(1.15rem, 2.1vw, 2rem);
+        line-height: 1.5;
+      }
+
+      .accent {
+        color: var(--cyan);
+      }
+
+      .green {
+        color: var(--green);
+      }
+
+      .amber {
+        color: var(--amber);
+      }
+
+      .rose {
+        color: var(--rose);
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 42px;
+      }
+
+      .chip,
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        color: #c9d8e2;
+        font-size: 0.84rem;
+        font-weight: 690;
+        letter-spacing: 0.02em;
+      }
+
+      .chip {
+        padding: 9px 14px;
+      }
+
+      .badge {
+        padding: 5px 9px;
+        white-space: nowrap;
+      }
+
+      .badge.yes {
+        border-color: rgba(130, 240, 163, 0.35);
+        background: rgba(130, 240, 163, 0.09);
+        color: var(--green);
+      }
+
+      .badge.partial {
+        border-color: rgba(255, 198, 109, 0.38);
+        background: rgba(255, 198, 109, 0.09);
+        color: var(--amber);
+      }
+
+      .badge.no {
+        border-color: rgba(255, 118, 153, 0.35);
+        background: rgba(255, 118, 153, 0.08);
+        color: var(--rose);
+      }
+
+      .grid-2,
+      .grid-3 {
+        display: grid;
+        gap: clamp(14px, 2vw, 26px);
+      }
+
+      .grid-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .grid-3 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .card {
+        position: relative;
+        overflow: hidden;
+        min-height: 150px;
+        padding: clamp(20px, 2.2vw, 32px);
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: linear-gradient(145deg, rgba(17, 39, 54, 0.92), var(--panel));
+        box-shadow: var(--shadow);
+      }
+
+      .card::after {
+        position: absolute;
+        top: -70px;
+        right: -70px;
+        width: 150px;
+        height: 150px;
+        border-radius: 50%;
+        background: var(--card-accent, var(--cyan));
+        filter: blur(65px);
+        opacity: 0.14;
+        content: "";
+      }
+
+      .card p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: clamp(0.9rem, 1.25vw, 1.12rem);
+        line-height: 1.55;
+      }
+
+      .metric-value {
+        margin-bottom: 8px;
+        color: var(--card-accent, var(--cyan));
+        font-size: clamp(2.5rem, 5vw, 5rem);
+        font-weight: 780;
+        letter-spacing: -0.065em;
+        line-height: 1;
+      }
+
+      .metric-label {
+        margin-bottom: 12px;
+        color: var(--ink);
+        font-size: clamp(1rem, 1.5vw, 1.3rem);
+        font-weight: 720;
+      }
+
+      .thesis {
+        margin-top: clamp(20px, 3vh, 36px);
+        padding: 20px 24px;
+        border-left: 4px solid var(--cyan);
+        border-radius: 0 16px 16px 0;
+        background: rgba(85, 221, 255, 0.07);
+        font-size: clamp(1rem, 1.55vw, 1.35rem);
+        line-height: 1.55;
+      }
+
+      .concept {
+        display: flex;
+        min-height: 290px;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .concept-index {
+        margin-bottom: 32px;
+        color: var(--card-accent, var(--cyan));
+        font-size: 0.82rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+      }
+
+      .concept .verdict {
+        margin-top: 26px;
+        font-size: 0.94rem;
+        font-weight: 750;
+      }
+
+      .table-wrap {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: rgba(8, 23, 34, 0.78);
+        box-shadow: var(--shadow);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: clamp(0.78rem, 1.08vw, 1rem);
+      }
+
+      th,
+      td {
+        padding: clamp(10px, 1.4vh, 17px) clamp(12px, 1.5vw, 22px);
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: middle;
+      }
+
+      th {
+        background: rgba(85, 221, 255, 0.06);
+        color: #bcd0dc;
+        font-size: 0.82em;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      td:first-child {
+        color: var(--ink);
+        font-weight: 700;
+      }
+
+      .pipeline {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 28px;
+      }
+
+      .pipeline-step {
+        position: relative;
+        min-height: 150px;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(15, 35, 49, 0.8);
+      }
+
+      .pipeline-step:not(:last-child)::after {
+        position: absolute;
+        z-index: 2;
+        top: 50%;
+        right: -22px;
+        width: 30px;
+        color: var(--cyan);
+        content: "→";
+        font-size: 1.6rem;
+        font-weight: 800;
+        text-align: center;
+        transform: translateY(-50%);
+      }
+
+      .pipeline-step small {
+        display: block;
+        margin-bottom: 14px;
+        color: var(--cyan);
+        font-weight: 780;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .pipeline-step p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .facts {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .fact {
+        padding: 14px 16px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.045);
+        color: #b9cad4;
+        font-size: clamp(0.78rem, 1vw, 0.96rem);
+        line-height: 1.4;
+      }
+
+      .fact strong {
+        display: block;
+        margin-bottom: 2px;
+        color: var(--ink);
+      }
+
+      .chart {
+        padding: clamp(18px, 2.2vw, 30px);
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: rgba(8, 23, 34, 0.8);
+        box-shadow: var(--shadow);
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 18px;
+        margin-bottom: 24px;
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+
+      .legend span::before {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        margin-right: 7px;
+        border-radius: 3px;
+        background: var(--legend-color);
+        content: "";
+      }
+
+      .chart-row {
+        display: grid;
+        grid-template-columns: 82px 1fr 78px;
+        align-items: center;
+        gap: 14px;
+        margin: 17px 0;
+      }
+
+      .chart-row .sequence {
+        color: #c9d9e2;
+        font-weight: 760;
+      }
+
+      .track {
+        position: relative;
+        height: 42px;
+        overflow: hidden;
+        border-radius: 9px;
+        background:
+          linear-gradient(
+            to right,
+            transparent 33.1%,
+            rgba(255, 255, 255, 0.3) 33.1%,
+            rgba(255, 255, 255, 0.3) 33.6%,
+            transparent 33.6%
+          ),
+          rgba(255, 255, 255, 0.045);
+      }
+
+      .bar {
+        position: absolute;
+        left: 0;
+        height: 50%;
+        min-width: 5px;
+        border-radius: 7px;
+      }
+
+      .bar.kernel {
+        top: 0;
+        width: var(--kernel-width);
+        background: linear-gradient(90deg, #298caf, var(--cyan));
+      }
+
+      .bar.e2e {
+        bottom: 0;
+        width: var(--e2e-width);
+        background: linear-gradient(90deg, #ff9e4b, var(--amber));
+      }
+
+      .chart-value {
+        color: var(--cyan);
+        font-weight: 780;
+        text-align: right;
+      }
+
+      .axis {
+        position: relative;
+        height: 23px;
+        margin: 0 92px 0 96px;
+        color: #708795;
+        font-size: 0.72rem;
+      }
+
+      .axis span {
+        position: absolute;
+        transform: translateX(-50%);
+      }
+
+      .axis span:nth-child(1) {
+        left: 0;
+      }
+
+      .axis span:nth-child(2) {
+        left: 33.33%;
+        color: #b8c8d2;
+      }
+
+      .axis span:nth-child(3) {
+        left: 66.66%;
+      }
+
+      .axis span:nth-child(4) {
+        left: 100%;
+      }
+
+      .insight-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .stack-card {
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(13, 31, 44, 0.8);
+      }
+
+      .stack-card .seq {
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 750;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .stack-card .latency {
+        margin: 6px 0 17px;
+        font-size: clamp(1.6rem, 2.7vw, 2.7rem);
+        font-weight: 780;
+        letter-spacing: -0.04em;
+      }
+
+      .stack {
+        display: flex;
+        height: 17px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .stack .attention {
+        width: var(--attention-share);
+        background: var(--cyan);
+      }
+
+      .stack .prep {
+        flex: 1;
+        background: var(--amber);
+      }
+
+      .stack-label {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+
+      .callout {
+        margin-top: 22px;
+        padding: 18px 22px;
+        border: 1px solid rgba(255, 198, 109, 0.28);
+        border-radius: 16px;
+        background: rgba(255, 198, 109, 0.07);
+        color: #ead8b7;
+        font-size: clamp(0.9rem, 1.28vw, 1.14rem);
+        line-height: 1.5;
+      }
+
+      .serving-legend {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        margin: -4px 2px 14px;
+        color: var(--muted);
+        font-size: 0.76rem;
+      }
+
+      .serving-legend .series {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+      }
+
+      .serving-legend .series span::before {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 6px;
+        border-radius: 999px;
+        background: var(--series-color);
+        content: "";
+      }
+
+      .serving-workloads {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+      }
+
+      .serving-card {
+        --card-accent: var(--green);
+        padding: 18px;
+      }
+
+      .serving-card header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 13px;
+      }
+
+      .serving-card h3 {
+        margin: 0;
+        font-size: 1.02rem;
+      }
+
+      .workload-shape {
+        color: var(--muted);
+        font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.7rem;
+      }
+
+      .serving-stage {
+        --stage-color: var(--cyan);
+      }
+
+      .serving-stage.baseline {
+        --stage-color: rgba(255, 255, 255, 0.42);
+      }
+
+      .serving-stage.linear {
+        --stage-color: var(--amber);
+      }
+
+      .serving-stage.full {
+        --stage-color: var(--green);
+      }
+
+      .stage-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .stage-name {
+        color: var(--muted);
+        font-size: 0.69rem;
+        line-height: 1.25;
+      }
+
+      .stage-value {
+        color: var(--stage-color);
+        font-size: 0.93rem;
+        white-space: nowrap;
+      }
+
+      .stage-track {
+        height: 8px;
+        margin-top: 5px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.07);
+      }
+
+      .stage-track span {
+        display: block;
+        width: var(--stage-width);
+        height: 100%;
+        border-radius: inherit;
+        background: var(--stage-color);
+      }
+
+      .stage-throughput {
+        margin-top: 4px;
+        color: #86a0ae;
+        font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.65rem;
+        text-align: right;
+      }
+
+      .serving-transition {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 7px 0;
+        padding-left: 8px;
+        border-left: 1px solid rgba(255, 255, 255, 0.14);
+        color: #87a1af;
+        font-size: 0.67rem;
+      }
+
+      .serving-transition strong {
+        color: var(--transition-color, var(--cyan));
+        white-space: nowrap;
+      }
+
+      .serving-summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        margin-top: 14px;
+        padding: 12px 16px;
+        border: 1px solid rgba(93, 240, 177, 0.22);
+        border-radius: 14px;
+        background: rgba(93, 240, 177, 0.055);
+        color: var(--muted);
+        font-size: 0.72rem;
+      }
+
+      .serving-summary strong {
+        color: var(--green);
+      }
+
+      .status-column {
+        padding: clamp(20px, 2.2vw, 30px);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: rgba(11, 28, 40, 0.78);
+      }
+
+      .status-column h3 {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin-bottom: 20px;
+      }
+
+      .status-column h3::before {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: var(--status-color);
+        box-shadow: 0 0 20px var(--status-color);
+        content: "";
+      }
+
+      .benchmark-example {
+        margin: -5px 0 16px;
+        padding: 11px 13px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.035);
+        color: #afc2cd;
+        font-size: 0.7rem;
+        line-height: 1.45;
+      }
+
+      .benchmark-example .example-label {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--status-color);
+        font-size: 0.62rem;
+        font-weight: 750;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .benchmark-example p {
+        margin: 0;
+      }
+
+      .benchmark-example strong {
+        color: #e8f1f5;
+      }
+
+      .status-column ul,
+      .requirements {
+        display: grid;
+        gap: 13px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .status-column li,
+      .requirements li {
+        position: relative;
+        padding-left: 24px;
+        color: #bdced8;
+        line-height: 1.45;
+      }
+
+      .status-column li::before,
+      .requirements li::before {
+        position: absolute;
+        left: 0;
+        color: var(--status-color, var(--cyan));
+        content: "→";
+        font-weight: 800;
+      }
+
+      .decision {
+        display: grid;
+        grid-template-columns: 0.8fr 1.2fr;
+        gap: 30px;
+        align-items: stretch;
+      }
+
+      .verdict-card {
+        display: flex;
+        min-height: 360px;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: clamp(26px, 3vw, 42px);
+        border: 1px solid rgba(255, 198, 109, 0.32);
+        border-radius: 24px;
+        background:
+          radial-gradient(circle at 80% 10%, rgba(255, 198, 109, 0.16), transparent 40%),
+          rgba(20, 34, 42, 0.9);
+        box-shadow: var(--shadow);
+      }
+
+      .verdict-card .word {
+        color: var(--amber);
+        font-size: clamp(3.4rem, 7vw, 7rem);
+        font-weight: 830;
+        letter-spacing: -0.08em;
+        line-height: 0.9;
+      }
+
+      .verdict-card p {
+        margin: 0;
+        color: #d3c6aa;
+        font-size: clamp(1rem, 1.45vw, 1.25rem);
+        line-height: 1.55;
+      }
+
+      .reference-grid {
+        display: grid;
+        grid-template-columns: 0.9fr 1.1fr;
+        gap: 22px;
+      }
+
+      .environment {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px;
+      }
+
+      .environment div {
+        padding: 11px 13px;
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.045);
+      }
+
+      .environment dt {
+        margin-bottom: 3px;
+        color: var(--muted);
+        font-size: 0.72rem;
+      }
+
+      .environment dd {
+        margin: 0;
+        color: var(--ink);
+        font-size: 0.88rem;
+        font-weight: 680;
+      }
+
+      pre {
+        overflow: auto;
+        margin: 0;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 15px;
+        background: #07141d;
+        color: #c9dbe5;
+        font-size: clamp(0.68rem, 0.85vw, 0.82rem);
+        line-height: 1.55;
+        white-space: pre-wrap;
+      }
+
+      .source-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      .source-links a {
+        padding: 8px 11px;
+        border: 1px solid rgba(85, 221, 255, 0.2);
+        border-radius: 10px;
+        background: rgba(85, 221, 255, 0.055);
+        text-decoration: none;
+      }
+
+      .controls {
+        position: fixed;
+        z-index: 10;
+        right: 28px;
+        bottom: 24px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .controls button {
+        display: grid;
+        width: 40px;
+        height: 40px;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(10, 27, 39, 0.88);
+        color: #c9dbe5;
+        cursor: pointer;
+        backdrop-filter: blur(12px);
+      }
+
+      .controls button:hover,
+      .controls button:focus-visible {
+        border-color: rgba(85, 221, 255, 0.55);
+        color: var(--cyan);
+        outline: none;
+      }
+
+      .progress-shell {
+        position: fixed;
+        z-index: 10;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        height: 4px;
+        background: rgba(255, 255, 255, 0.055);
+      }
+
+      .progress {
+        width: 10%;
+        height: 100%;
+        background: linear-gradient(90deg, var(--blue), var(--cyan));
+        transition: width 220ms ease;
+      }
+
+      .counter {
+        position: fixed;
+        z-index: 10;
+        bottom: 28px;
+        left: 30px;
+        color: #78909e;
+        font-size: 0.8rem;
+        letter-spacing: 0.08em;
+      }
+
+      .help {
+        position: fixed;
+        right: 132px;
+        bottom: 34px;
+        color: #657d8b;
+        font-size: 0.72rem;
+      }
+
+      @media (max-width: 900px) {
+        html,
+        body {
+          overflow: auto;
+        }
+
+        .deck {
+          height: auto;
+          min-height: 100dvh;
+        }
+
+        .slide,
+        .slide.active {
+          position: relative;
+          display: none;
+          min-height: 100dvh;
+          padding: 34px 22px 86px;
+        }
+
+        .slide.active {
+          display: flex;
+        }
+
+        .grid-2,
+        .grid-3,
+        .pipeline,
+        .facts,
+        .insight-row,
+        .serving-workloads,
+        .decision,
+        .reference-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .concept {
+          min-height: 190px;
+        }
+
+        .pipeline-step:not(:last-child)::after {
+          top: auto;
+          right: 50%;
+          bottom: -25px;
+          transform: translateX(50%) rotate(90deg);
+        }
+
+        .table-wrap {
+          overflow-x: auto;
+        }
+
+        table {
+          min-width: 760px;
+        }
+
+        .serving-summary {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .help {
+          display: none;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.01ms !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+
+      @page {
+        size: 13.333in 7.5in;
+        margin: 0;
+      }
+
+      @media print {
+        html,
+        body {
+          overflow: visible;
+          background: var(--bg);
+          print-color-adjust: exact;
+          -webkit-print-color-adjust: exact;
+        }
+
+        .deck {
+          height: auto;
+        }
+
+        .slide,
+        .slide.active {
+          position: relative;
+          display: flex !important;
+          width: 13.333in;
+          height: 7.5in;
+          break-after: page;
+          page-break-after: always;
+          padding: 0.55in 0.72in;
+          animation: none;
+        }
+
+        .controls,
+        .counter,
+        .help,
+        .progress-shell {
+          display: none;
+        }
+
+        .card,
+        .chart,
+        .table-wrap,
+        .verdict-card {
+          box-shadow: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="deck" aria-label="NVFP4 실험 결과 발표 자료">
+      <section class="slide active" data-title="Title" aria-roledescription="slide">
+        <div class="content">
+          <p class="eyebrow">SGLang · Experimental evaluation</p>
+          <h1>NVFP4 on<br /><span class="accent">RTX 5090</span></h1>
+          <p class="lede">
+            커널 분해부터 실제 SGLang serving까지:<br />
+            <strong class="green">성능·메모리 이득</strong>과
+            <strong class="rose">정확도 비용</strong>
+          </p>
+          <div class="chips" aria-label="실험 메타데이터">
+            <span class="chip">SM120 · 32 GiB</span>
+            <span class="chip">FlashInfer 0.6.15.post1</span>
+            <span class="chip">SGLang 0.5.17</span>
+            <span class="chip">2026.08.26 · 219 measured cases</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-title="Executive summary" aria-roledescription="slide">
+        <div class="content">
+          <p class="eyebrow">Executive summary</p>
+          <h2>실제 SGLang serving에서도<br />FP4 적용으로 최대 3.47× 빨라졌다</h2>
+          <div class="grid-3">
+            <article class="card" style="--card-accent: var(--cyan)">
+              <div class="metric-value">1.00×</div>
+              <div class="metric-label">BF16 baseline</div>
+              <p>
+                Linear: BF16 · KV-cache: BF16<br />
+                Attention: FlashInfer prefill + XQA decode
+              </p>
+            </article>
+            <article class="card" style="--card-accent: var(--amber)">
+              <div class="metric-value">3.28×</div>
+              <div class="metric-label">W4A4 linear 적용</div>
+              <p>
+                Linear만 FP4 Core로 변경<br />
+                BF16 KV · attention backend 동일
+              </p>
+            </article>
+            <article class="card" style="--card-accent: var(--green)">
+              <div class="metric-value">3.47×</div>
+              <div class="metric-label">W4A4 + NVFP4 KV</div>
+              <p>
+                KV-cache까지 NVFP4로 변경<br />
+                QK/PV는 FP4 Core 미사용 · memory −51.6%
+              </p>
+            </article>
+          </div>
+          <div class="thesis">
+            <strong>핵심:</strong> 같은 FlashInfer prefill + TRTLLM MHA/XQA decode에서
+            <span class="amber">FP4-Core linear만으로 1.00× → 3.28×</span>,
+            <span class="green">NVFP4 KV를 더해 3.47× (+5.8%)</span>가 됐다.
+            조건은 prefill-heavy 2048→128 · concurrency 32 · output throughput.<br />
+            GSM8K는 <strong>77.0% (BF16)</strong> →
+            <strong class="amber">68.5% (W4A4 + BF16 KV)</strong> →
+            <strong class="rose">64.5% (W4A4 + NVFP4 KV)</strong>로 하락했다.
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-title="Three meanings of FP4" aria-roledescription="slide">
+        <div class="content">
+          <p class="eyebrow">Scope first</p>
+          <h2>“FP4를 쓴다”는 말은<br />세 가지로 나뉜다</h2>
+          <div class="grid-3">
+            <article class="card concept" style="--card-accent: var(--green)">
+              <div>
+                <div class="concept-index">01 · LINEAR</div>
+                <h3>NVFP4 W4A4 GEMM</h3>
+                <p>QKV·output·MLP projection의 activation과 weight를 FP4로 연산.</p>
+              </div>
+              <div class="verdict green">✓ SGLang serving에서 사용 가능</div>
+            </article>
+            <article class="card concept" style="--card-accent: var(--amber)">
+              <div>
+                <div class="concept-index">02 · STORAGE</div>
+                <h3>NVFP4 KV cache</h3>
+                <p>K/V를 packed FP4로 저장해 용량과 메모리 트래픽을 줄임.</p>
+              </div>
+              <div class="verdict amber">△ cache가 FP4여도 MMA는 BF16</div>
+            </article>
+            <article class="card concept" style="--card-accent: var(--cyan)">
+              <div>
+                <div class="concept-index">03 · ATTENTION</div>
+                <h3>FlashInfer FP4 QK / PV</h3>
+                <p>FlashInfer API를 직접 호출해 QK/PV FP4 MMA를 독립형으로 실험.</p>
+              </div>
+              <div class="verdict accent">◉ SGLang 미연결 · microbenchmark 가능</div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-title="Capability map" aria-roledescription="slide">
+        <div class="content">
+          <p class="eyebrow">Capability map</p>
+          <h2>FP4 저장과 FP4 연산,<br />softmax 정밀도는 따로 봐야 한다</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>경로</th>
+                  <th>SGLang serving</th>
+                  <th>FP4로 저장·전달되는 값</th>
+                  <th>실제 계산 정밀도</th>
+                  <th>실제 범위</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>NVFP4 W4A4 linear</td>
+                  <td><span class="badge yes">Yes</span></td>
+                  <td>Activation + weight</td>
+                  <td>Linear GEMM만 FP4</td>
+                  <td>Linear projection</td>
+                </tr>
+                <tr>
+                  <td>NVFP4 KV + TRTLLM MHA</td>
+                  <td><span class="badge yes">Yes</span></td>
+                  <td>K / V cache</td>
+                  <td>QK·PV BF16 · softmax FP32</td>
+                  <td>SM120 XQA · BF16 MMA</td>
+                </tr>
+                <tr>
+                  <td>FlashInfer dense NVFP4 attention</td>
+                  <td><span class="badge no">No integration</span></td>
+                  <td>Q/K/V · P는 softmax 후 FP4 변환</td>
+                  <td><strong>QK FP4 → softmax FP32 → PV FP4</strong></td>
+                  <td>Dense MHA · SGLang 미연결</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-title="FP4 attention preprocessing" aria-roledescription="slide">
+        <div class="content">
+          <p class="eyebrow">Standalone FlashInfer API · not SGLang serving</p>
+          <h2>FP4 attention에서<br />전처리 비용의 영향</h2>
+          <div class="chart" role="img" aria-label="시퀀스 길이별 FP4 속도 향상 차트">
+            <div class="legend">
+              <span style="--legend-color: var(--cyan)">Q/K/V prepacked · FP4 QK/PV</span>
+              <span style="--legend-color: var(--amber)">Q/K/V quant + FP4 QK/PV</span>
+              <span style="--legend-color: rgba(255, 255, 255, 0.45)">BF16 baseline · 1.0×</span>
+            </div>
+            <div class="chart-row">
+              <div class="sequence">S=512</div>
+              <div class="track" style="--kernel-width: 42.7%; --e2e-width: 6.7%">
+                <span class="bar kernel"></span><span class="bar e2e"></span>
+              </div>
+              <div class="chart-value">1.28×</div>
+            </div>
+            <div class="chart-row">
+              <div class="sequence">S=1024</div>
+              <div class="track" style="--kernel-width: 56.7%; --e2e-width: 11.3%">
+                <span class="bar kernel"></span><span class="bar e2e"></span>
+              </div>
+              <div class="chart-value">1.70×</div>
+            </div>
+            <div class="chart-row">
+              <div class="sequence">S=2048</div>
+              <div class="track" style="--kernel-width: 84.3%; --e2e-width: 15.7%">
+                <span class="bar kernel"></span><span class="bar e2e"></span>
+              </div>
+              <div class="chart-value">2.53×</div>
+            </div>
+            <div class="axis" aria-hidden="true">
+              <span>0×</span><span>1×</span><span>2×</span><span>3×</span>
+            </div>
+          </div>
+          <div class="thesis">
+            Q/K/V를 미리 FP4로 준비한 <strong>독립형 dense attention</strong> 결과다.
+            Quantization 포함 speedup은
+            <strong class="amber">0.20× · 0.34× · 0.47×</strong>.
+            Paged KV·GQA·decode가 없어 <strong>SGLang serving 결과가 아니다.</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-title="Quantization overhead" aria-roledescription="slide">
+        <div class="content">
+          <p class="eyebrow">Linear GEMM · M=2048 · Gaussian</p>
+          <h2>GEMM은 quant를 포함해도<br />4.39–5.20× 빨랐다</h2>
+          <div class="insight-row">
+            <article class="stack-card">
+              <div class="seq">QKV · BF16 0.5418 ms</div>
+              <div class="latency">0.1168 ms</div>
+              <div class="stack" style="--attention-share: 87.8%">
+                <span class="attention"></span><span class="prep"></span>
+              </div>
+              <div class="stack-label"><span>FP4 GEMM 0.1025</span><span>quant 0.0184</span></div>
+            </article>
+            <article class="stack-card">
+              <div class="seq">Gate/up · BF16 2.3497 ms</div>
+              <div class="latency">0.4517 ms</div>
+              <div class="stack" style="--attention-share: 96.4%">
+                <span class="attention"></span><span class="prep"></span>
+              </div>
+              <div class="stack-label"><span>FP4 GEMM 0.4354</span><span>quant 0.0184</span></div>
+            </article>
+            <article class="stack-card">
+              <div class="seq">Down · BF16 1.3650 ms</div>
+              <div class="latency">0.2938 ms</div>
+              <div class="stack" style="--attention-share: 82.3%">
+                <span class="attention"></span><span class="prep"></span>
+              </div>
+              <div class="stack-label"><span>FP4 GEMM 0.2418</span><span>quant 0.0532</span></div>
+            </article>
+          </div>
+          <div class="callout">
+            <strong>Dequantization:</strong> production GEMM은 scale 적용과 BF16 변환이
+            epilogue에 fused되어 별도 dequant kernel이 없다. Linear-layout diagnostic은
+            `(2048,4096)`에서 quant <strong>0.0186–0.0205 ms</strong>, dequant
+            <strong>0.0348 ms</strong>였다.
+          </div>
+          <p style="margin: 18px 2px 0; color: var(--muted); font-size: 0.82rem">
+            * 각 component는 cold-L2로 독립 측정되어 combined latency와 산술적으로 정확히 합산되지 않는다.
+          </p>
+        </div>
+      </section>
+
+      <section class="slide" data-title="Serving benchmark results" aria-roledescription="slide">
+        <div class="content">
+          <p class="eyebrow">Actual SGLang E2E · concurrency 32</p>
+          <h2>다양한 serving benchmark 조건에서<br />E2E 성능을 비교했다</h2>
+          <div class="serving-legend">
+            <div class="series" aria-label="설정 범례">
+              <span style="--series-color: rgba(255, 255, 255, 0.42)">모두 BF16</span>
+              <span style="--series-color: var(--amber)">W4A4 linear</span>
+              <span style="--series-color: var(--green)">W4A4 + NVFP4 KV</span>
+            </div>
+            <span>공통 축: BF16 대비 0–3.5× · output tok/s median</span>
+          </div>
+          <div
+            class="serving-workloads"
+            role="img"
+            aria-label="세 serving workload에서 모두 BF16, W4A4 linear와 BF16 KV, W4A4 linear와 NVFP4 KV의 output throughput 변화"
+          >
+            <article class="card serving-card">
+              <header>
+                <h3>Prefill-heavy</h3>
+                <span class="workload-shape">2048 → 128</span>
+              </header>
+              <div class="serving-stage baseline">
+                <div class="stage-heading">
+                  <span class="stage-name">BF16 linear + BF16 KV</span>
+                  <strong class="stage-value">1.00×</strong>
+                </div>
+                <div class="stage-track"><span style="--stage-width: 28.6%"></span></div>
+                <div class="stage-throughput">502.8 tok/s</div>
+              </div>
+              <div class="serving-transition" style="--transition-color: var(--amber)">
+                <span>↓ linear를 W4A4로 변경</span><strong>+228.2%</strong>
+              </div>
+              <div class="serving-stage linear">
+                <div class="stage-heading">
+                  <span class="stage-name">W4A4 linear + BF16 KV</span>
+                  <strong class="stage-value">3.28×</strong>
+                </div>
+                <div class="stage-track"><span style="--stage-width: 93.7%"></span></div>
+                <div class="stage-throughput">1,650.1 tok/s</div>
+              </div>
+              <div class="serving-transition" style="--transition-color: var(--green)">
+                <span>↓ KV를 NVFP4로 변경</span><strong>+5.8%</strong>
+              </div>
+              <div class="serving-stage full">
+                <div class="stage-heading">
+                  <span class="stage-name">W4A4 linear + NVFP4 KV</span>
+                  <strong class="stage-value">3.47×</strong>
+                </div>
+                <div class="stage-track"><span style="--stage-width: 99.1%"></span></div>
+                <div class="stage-throughput">1,746.5 tok/s</div>
+              </div>
+            </article>
+
+            <article class="card serving-card">
+              <header>
+                <h3>Balanced</h3>
+                <span class="workload-shape">1024 → 1024</span>
+              </header>
+              <div class="serving-stage baseline">
+                <div class="stage-heading">
+                  <span class="stage-name">BF16 linear + BF16 KV</span>
+                  <strong class="stage-value">1.00×</strong>
+                </div>
+                <div class="stage-track"><span style="--stage-width: 28.6%"></span></div>
+                <div class="stage-throughput">2,020.9 tok/s</div>
+              </div>
+              <div class="serving-transition" style="--transition-color: var(--amber)">
+                <span>↓ linear를 W4A4로 변경</span><strong>+88.3%</strong>
+              </div>
+              <div class="serving-stage linear">
+                <div class="stage-heading">
+                  <span class="stage-name">W4A4 linear + BF16 KV</span>
+                  <strong class="stage-value">1.88×</strong>
+                </div>
+                <div class="stage-track"><span style="--stage-width: 53.7%"></span></div>
+                <div class="stage-throughput">3,804.5 tok/s</div>
+              </div>
+              <div class="serving-transition" style="--transition-color: var(--green)">
+                <span>↓ KV를 NVFP4로 변경</span><strong>+22.0%</strong>
+              </div>
+              <div class="serving-stage full">
+                <div class="stage-heading">
+                  <span class="stage-name">W4A4 linear + NVFP4 KV</span>
+                  <strong class="stage-value">2.30×</strong>
+                </div>
+                <div class="stage-track"><span style="--stage-width: 65.7%"></span></div>
+                <div class="stage-throughput">4,642.2 tok/s</div>
+              </div>
+            </article>
+
+            <article class="card serving-card">
+              <header>
+                <h3>Decode-heavy</h3>
+                <span class="workload-shape">128 → 2048</span>
+              </header>
+              <div class="serving-stage baseline">
+                <div class="stage-heading">
+                  <span class="stage-name">BF16 linear + BF16 KV</span>
+                  <strong class="stage-value">1.00×</strong>
+                </div>
+                <div class="stage-track"><span style="--stage-width: 28.6%"></span></div>
+                <div class="stage-throughput">2,503.8 tok/s</div>
+              </div>
+              <div class="serving-transition" style="--transition-color: var(--amber)">
+                <span>↓ linear를 W4A4로 변경</span><strong>+86.1%</strong>
+              </div>
+              <div class="serving-stage linear">
+                <div class="stage-heading">
+                  <span class="stage-name">W4A4 linear + BF16 KV</span>
+                  <strong class="stage-value">1.86×</strong>
+                </div>
+                <div class="stage-track"><span style="--stage-width: 53.1%"></span></div>
+                <div class="stage-throughput">4,659.3 tok/s</div>
+              </div>
+              <div class="serving-transition" style="--transition-color: var(--green)">
+                <span>↓ KV를 NVFP4로 변경</span><strong>+14.5%</strong>
+              </div>
+              <div class="serving-stage full">
+                <div class="stage-heading">
+                  <span class="stage-name">W4A4 linear + NVFP4 KV</span>
+                  <strong class="stage-value">2.13×</strong>
+                </div>
+                <div class="stage-track"><span style="--stage-width: 60.9%"></span></div>
+                <div class="stage-throughput">5,333.2 tok/s</div>
+              </div>
+            </article>
+          </div>
+          <div class="serving-summary">
+            <span><strong>81 / 81</strong> valid results · 각 조건 3회 median</span>
+            <span>Peak memory: <strong>30.1 → 21.0 → 14.6 GiB</strong></span>
+            <span>KV allocation: <strong>9.00 → 2.68 GiB</strong></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-title="Accuracy results" aria-roledescription="slide">
+        <div class="content">
+          <p class="eyebrow">Accuracy gate · same prompts · temperature 0</p>
+          <h2>Passkey는 유지됐지만<br />GSM8K는 하락했다</h2>
+          <div class="grid-2">
+            <article class="status-column" style="--status-color: var(--rose)">
+              <h3>GSM8K · 5-shot · 200 examples</h3>
+              <div class="benchmark-example">
+                <span class="example-label">문제 형식 예시</span>
+                <p>
+                  Q. 사과 12개 중 5개를 주고 8개를 더 샀다. 지금 몇 개일까?<br />
+                  <strong>A. 12 − 5 + 8 = 15</strong>
+                </p>
+              </div>
+              <ul>
+                <li><strong>BF16:</strong> 154 / 200 · 77.0%</li>
+                <li><strong>W4A4 + BF16 KV:</strong> 137 / 200 · 68.5%</li>
+                <li><strong>W4A4 + NVFP4 KV:</strong> 129 / 200 · 64.5%</li>
+              </ul>
+            </article>
+            <article class="status-column" style="--status-color: var(--green)">
+              <h3>Exact passkey retrieval</h3>
+              <div class="benchmark-example">
+                <span class="example-label">문제 형식 예시</span>
+                <p>
+                  … 무관한 기록 … <strong>passkey는 38172645</strong> … 무관한 기록 …<br />
+                  Q. 8자리 passkey는? → <strong>38172645</strong>
+                </p>
+              </div>
+              <ul>
+                <li><strong>BF16:</strong> 4K 30/30 · 8K 30/30</li>
+                <li><strong>W4A4 + BF16 KV:</strong> 4K 30/30 · 8K 30/30</li>
+                <li><strong>W4A4 + NVFP4 KV:</strong> 4K 30/30 · 8K 30/30</li>
+              </ul>
+            </article>
+          </div>
+          <div class="thesis">
+            <strong>판단:</strong> 짧은 retrieval smoke만으로 long-context 동등성을
+            주장할 수 없다. 성능 도입 전 task-specific accuracy gate가 필수다.
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-title="Conclusion" aria-roledescription="slide">
+        <div class="content">
+          <p class="eyebrow">Conclusion · what the experiments proved</p>
+          <h2>W4A4가 주된 속도를 만들고,<br /><span class="green">NVFP4 KV가 memory와 scale을 더했다</span></h2>
+          <div class="grid-3">
+            <article class="card" style="--card-accent: var(--amber)">
+              <div class="concept-index">01 · W4A4 LINEAR</div>
+              <div class="metric-value">3.28×</div>
+              <div class="metric-label">주된 serving 가속</div>
+              <p>
+                W4A4 + BF16 KV / 모두 BF16<br />
+                <strong>Prefill 3.28× · Balanced 1.88× · Decode 1.86×</strong>
+              </p>
+            </article>
+            <article class="card" style="--card-accent: var(--green)">
+              <div class="concept-index">02 · NVFP4 KV</div>
+              <div class="metric-value" style="font-size: clamp(2.2rem, 4vw, 4.2rem)">+5.8–22%</div>
+              <div class="metric-label">고동시성에서 추가 상승</div>
+              <p>
+                W4A4 고정 · BF16 KV 대비 c32<br />
+                <strong>최종 3.47× · 2.30× · 2.13×</strong><br />
+                Peak memory 30.1 → 14.6 GiB
+              </p>
+            </article>
+            <article class="card" style="--card-accent: var(--rose)">
+              <div class="concept-index">03 · QUALITY</div>
+              <div class="metric-value" style="font-size: clamp(2.2rem, 4vw, 4.2rem)">77→64.5%</div>
+              <div class="metric-label">정확도는 아직 GATED</div>
+              <p>
+                GSM8K: BF16 → full config<br />
+                W4A4 + BF16 KV는 <strong>68.5%</strong><br />
+                Passkey 4K/8K는 모두 30/30
+              </p>
+            </article>
+          </div>
+          <div class="thesis">
+            <strong>권장:</strong> low-concurrency latency는 <span class="amber">W4A4 + BF16 KV</span>,
+            high-concurrency·capacity는 <span class="green">W4A4 + NVFP4 KV</span>.
+            단, task-specific accuracy gate 통과 후 적용한다.<br />
+            Dense FP4 attention은 <strong>SGLang 미연결 microbenchmark</strong>로 분리해 해석한다.
+          </div>
+        </div>
+      </section>
+
+      <section class="slide" data-title="Reproduction" aria-roledescription="slide">
+        <div class="content">
+          <p class="eyebrow">Reproduction & provenance</p>
+          <h2>측정 환경과 재현 명령</h2>
+          <div class="reference-grid">
+            <article class="card">
+              <h3>Environment</h3>
+              <dl class="environment">
+                <div><dt>GPU</dt><dd>RTX 5090 · 32 GiB</dd></div>
+                <div><dt>Compute</dt><dd>SM120</dd></div>
+                <div><dt>Driver</dt><dd>610.62</dd></div>
+                <div><dt>PyTorch</dt><dd>2.13.0+cu130</dd></div>
+                <div><dt>CUDA</dt><dd>13.0</dd></div>
+                <div><dt>FlashInfer</dt><dd>0.6.15.post1</dd></div>
+                <div><dt>SGLang</dt><dd>0.5.17</dd></div>
+                <div><dt>Source</dt><dd class="mono">3d00762885</dd></div>
+              </dl>
+              <div class="source-links">
+                <a href="README.md">원본 보고서</a>
+                <a href="results/2026-08-26-rtx5090/summary.json">검증된 summary</a>
+                <a href="run_serving_experiments.py">Serving runner</a>
+              </div>
+            </article>
+            <article class="card">
+              <h3>Validate all raw results</h3>
+              <pre><code>python3 benchmark/nvfp4/\
+analyze_results.py \
+  --results-dir benchmark/nvfp4/\
+results/2026-08-26-rtx5090</code></pre>
+              <p style="margin-top: 16px; font-size: 0.82rem">
+                120 GEMM + 18 attention + 81 serving cases · exact-token validation · 3-seed/repeat median
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="counter" aria-live="polite"><span id="current">01</span> / <span id="total">11</span></div>
+    <div class="help">← → / Space · F fullscreen · P print</div>
+    <nav class="controls" aria-label="슬라이드 이동">
+      <button id="prev" type="button" aria-label="이전 슬라이드" title="이전 슬라이드">←</button>
+      <button id="fullscreen" type="button" aria-label="전체 화면" title="전체 화면">⛶</button>
+      <button id="next" type="button" aria-label="다음 슬라이드" title="다음 슬라이드">→</button>
+    </nav>
+    <div class="progress-shell" aria-hidden="true"><div class="progress" id="progress"></div></div>
+
+    <script>
+      (() => {
+        const slides = [...document.querySelectorAll(".slide")];
+        const currentLabel = document.getElementById("current");
+        const totalLabel = document.getElementById("total");
+        const progress = document.getElementById("progress");
+        let index = Math.min(
+          Math.max(Number.parseInt(location.hash.slice(1), 10) - 1 || 0, 0),
+          slides.length - 1,
+        );
+
+        const pad = (value) => String(value).padStart(2, "0");
+
+        function show(nextIndex) {
+          index = Math.min(Math.max(nextIndex, 0), slides.length - 1);
+          slides.forEach((slide, slideIndex) => {
+            const active = slideIndex === index;
+            slide.classList.toggle("active", active);
+            slide.setAttribute("aria-hidden", String(!active));
+          });
+          currentLabel.textContent = pad(index + 1);
+          totalLabel.textContent = pad(slides.length);
+          progress.style.width = `${((index + 1) / slides.length) * 100}%`;
+          history.replaceState(null, "", `#${index + 1}`);
+          document.title = `${slides[index].dataset.title} · NVFP4 on RTX 5090`;
+        }
+
+        function toggleFullscreen() {
+          if (document.fullscreenElement) {
+            document.exitFullscreen();
+          } else {
+            document.documentElement.requestFullscreen();
+          }
+        }
+
+        document.getElementById("prev").addEventListener("click", () => show(index - 1));
+        document.getElementById("next").addEventListener("click", () => show(index + 1));
+        document.getElementById("fullscreen").addEventListener("click", toggleFullscreen);
+
+        window.addEventListener("keydown", (event) => {
+          if (["ArrowRight", "PageDown", " "].includes(event.key)) {
+            event.preventDefault();
+            show(index + 1);
+          } else if (["ArrowLeft", "PageUp"].includes(event.key)) {
+            event.preventDefault();
+            show(index - 1);
+          } else if (event.key === "Home") {
+            show(0);
+          } else if (event.key === "End") {
+            show(slides.length - 1);
+          } else if (event.key.toLowerCase() === "f") {
+            toggleFullscreen();
+          } else if (event.key.toLowerCase() === "p") {
+            window.print();
+          }
+        });
+
+        window.addEventListener("hashchange", () => {
+          const requested = Number.parseInt(location.hash.slice(1), 10);
+          if (Number.isFinite(requested)) show(requested - 1);
+        });
+
+        show(index);
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,649 @@
+{
+  "schema_version": 1,
+  "tokenizer": "/home/sukwoo24/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659",
+  "seed": 42,
+  "cases_per_length": 30,
+  "parallel": 8,
+  "duration_s": 20.8886855439996,
+  "summary": {
+    "4096": {
+      "cases": 30,
+      "exact_matches": 30,
+      "accuracy": 1.0,
+      "mean_latency_s": 2.011198714466688
+    },
+    "8192": {
+      "cases": 30,
+      "exact_matches": 30,
+      "accuracy": 1.0,
+      "mean_latency_s": 3.292718162633264
+    }
+  },
+  "results": [
+    {
+      "context_tokens": 4096,
+      "case_index": 0,
+      "passkey": "13614023",
+      "generated_text": " 13614023. End of test. You may now close this window. 13614023. 13614023. 13614023. ",
+      "exact_match": true,
+      "latency_s": 2.062093685999571,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 1,
+      "passkey": "38544443",
+      "generated_text": " 38544443. You passed the memory test. You have a good memory. You can remember the passkey. You can remember the eight-digit passkey",
+      "exact_match": true,
+      "latency_s": 2.062152784999853,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 2,
+      "passkey": "51528108",
+      "generated_text": " 51528108. End of test. You may now forget the passkey. It is no longer needed. You may now forget the passkey. It",
+      "exact_match": true,
+      "latency_s": 2.0611964310000985,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 3,
+      "passkey": "62180278",
+      "generated_text": " 62180278. End of test. You may now close this window. 62180278. 62180278. 62180278. ",
+      "exact_match": true,
+      "latency_s": 2.0607396960003825,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 4,
+      "passkey": "51946918",
+      "generated_text": " 51946918. End of test. You may now close this window. 51946918. 51946918. 51946918. ",
+      "exact_match": true,
+      "latency_s": 2.063043430000107,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 5,
+      "passkey": "23384717",
+      "generated_text": " 23384717. End of test. You may now forget the passkey. It is no longer needed. You may now forget the passkey. It",
+      "exact_match": true,
+      "latency_s": 2.061158950999925,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 6,
+      "passkey": "79765641",
+      "generated_text": " 79765641. End of test. You may now close this window. 79765641. 79765641. 79765641. ",
+      "exact_match": true,
+      "latency_s": 2.06132285700005,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 7,
+      "passkey": "29125212",
+      "generated_text": " 29125212. You passed the memory test. You have a good memory. You can remember the passkey. You can remember the eight-digit passkey",
+      "exact_match": true,
+      "latency_s": 2.0587890960005097,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 8,
+      "passkey": "79648030",
+      "generated_text": " 79648030. End of test. You may now close this window. 79648030. 79648030. 79648030. ",
+      "exact_match": true,
+      "latency_s": 1.8160018460002902,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 9,
+      "passkey": "84878459",
+      "generated_text": " 84878459. End of test. You may now erase the records. 84878459. End of test. You may now erase the records.",
+      "exact_match": true,
+      "latency_s": 1.8187635949998366,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 10,
+      "passkey": "93207799",
+      "generated_text": " 93207799. You passed the memory test. You have a good memory. You can remember the passkey. You can remember the eight-digit passkey",
+      "exact_match": true,
+      "latency_s": 1.8202689500003544,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 11,
+      "passkey": "51000105",
+      "generated_text": " 51000105. (The answer is the passkey, 51000105.) (The answer is the passkey, 51000105.) (",
+      "exact_match": true,
+      "latency_s": 1.8174226420005652,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 12,
+      "passkey": "82860839",
+      "generated_text": " 82860839. End of test. You may now forget the passkey. It is no longer needed. You may now forget the passkey. It",
+      "exact_match": true,
+      "latency_s": 1.8171656989998155,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 13,
+      "passkey": "70536651",
+      "generated_text": " 70536651. End of test. You may now close this window. 70536651. 70536651. 70536651. ",
+      "exact_match": true,
+      "latency_s": 1.8177745120001418,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 14,
+      "passkey": "13051088",
+      "generated_text": " 13051088. End of test. You passed. You have a good memory. You can remember the passkey. You can remember the passkey.",
+      "exact_match": true,
+      "latency_s": 1.817950316999486,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 15,
+      "passkey": "99349219",
+      "generated_text": " 99349219. You have passed the memory test. You have a good memory. You are a good student. You are a good person. You are",
+      "exact_match": true,
+      "latency_s": 1.8152834299999085,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 16,
+      "passkey": "31019831",
+      "generated_text": " 31019831. End of test. You may now close this window. 31019831. 31019831. 31019831. ",
+      "exact_match": true,
+      "latency_s": 1.8291068320004342,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 17,
+      "passkey": "32326264",
+      "generated_text": " 32326264. End of test. You may now close the window. 32326264. 32326264. 32326264. ",
+      "exact_match": true,
+      "latency_s": 1.8282948119995126,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 18,
+      "passkey": "62292142",
+      "generated_text": " 62292142. End of test. You may now erase the records. 62292142. End of test. You may now erase the records.",
+      "exact_match": true,
+      "latency_s": 1.8280052039999646,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 19,
+      "passkey": "85022326",
+      "generated_text": " 85022326. End of test. You may now erase the records. 85022326. End of test. You may now erase the records.",
+      "exact_match": true,
+      "latency_s": 1.8275019089996931,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 20,
+      "passkey": "80636883",
+      "generated_text": " 80636883. End of test. You may now close this window. 80636883. 80636883. 80636883. ",
+      "exact_match": true,
+      "latency_s": 1.8253180239998983,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 21,
+      "passkey": "39484397",
+      "generated_text": " 39484397. You passed the memory test. You have a good memory. You can remember the passkey. You can remember the passkey. You",
+      "exact_match": true,
+      "latency_s": 1.8298868129995753,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 22,
+      "passkey": "96242134",
+      "generated_text": " 96242134. End of test. You may now close this window. 96242134. 96242134. 96242134. ",
+      "exact_match": true,
+      "latency_s": 1.8274548549998144,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 23,
+      "passkey": "95637506",
+      "generated_text": " 95637506. You passed the memory test. You have a good memory. You can remember the passkey. You can remember the eight-digit passkey",
+      "exact_match": true,
+      "latency_s": 1.827344988000732,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 24,
+      "passkey": "59816319",
+      "generated_text": " 59816319. You passed the memory test. You have a good memory. You can remember the passkey. You can remember the eight-digit passkey",
+      "exact_match": true,
+      "latency_s": 2.4479474630006735,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 25,
+      "passkey": "30993868",
+      "generated_text": " 30993868. End of test. You may now close this window. 30993868. 30993868. 30993868. ",
+      "exact_match": true,
+      "latency_s": 2.45008160999987,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 26,
+      "passkey": "60036876",
+      "generated_text": " 60036876. End of test. You may now close this window. 60036876. 60036876. 60036876. ",
+      "exact_match": true,
+      "latency_s": 2.4465830500002994,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 27,
+      "passkey": "15721553",
+      "generated_text": " 15721553. End of test. You passed. You have a good memory. You can remember the passkey. You can remember the passkey.",
+      "exact_match": true,
+      "latency_s": 2.446780684999794,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 28,
+      "passkey": "64209413",
+      "generated_text": " 64209413. You passed the memory test. You have a good memory. You can remember the passkey. You can remember the eight-digit passkey",
+      "exact_match": true,
+      "latency_s": 2.446696105999763,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 29,
+      "passkey": "19366988",
+      "generated_text": " 19366988. End of test. You may now close this window. 19366988. 19366988. 19366988. ",
+      "exact_match": true,
+      "latency_s": 2.443831159999718,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 0,
+      "passkey": "60329905",
+      "generated_text": " 60329905. End of test. You may now close the browser window. If you are a human, you may want to take a break and come",
+      "exact_match": true,
+      "latency_s": 2.4483592950000457,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 1,
+      "passkey": "30363469",
+      "generated_text": " 30363469. End of test. You may now close the window. 30363469. 30363469. 30363469. ",
+      "exact_match": true,
+      "latency_s": 2.4453204080000432,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 2,
+      "passkey": "20684944",
+      "generated_text": " 20684944. End of test. You may now close the window. 20684944. 20684944. 20684944. ",
+      "exact_match": true,
+      "latency_s": 3.5814927270002954,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 3,
+      "passkey": "27596197",
+      "generated_text": " 27596197. End of test. You may now close the browser window. If you are a human, you may want to take a break and come",
+      "exact_match": true,
+      "latency_s": 3.5793477279994477,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 4,
+      "passkey": "11648242",
+      "generated_text": " 11648242. End of test. You may now close the window. 11648242. 11648242. 11648242. ",
+      "exact_match": true,
+      "latency_s": 3.580033349000587,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 5,
+      "passkey": "51649021",
+      "generated_text": " 51649021. End of test. You may now close the window. 51649021. 51649021. 51649021. ",
+      "exact_match": true,
+      "latency_s": 3.578682714999559,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 6,
+      "passkey": "79524490",
+      "generated_text": " 79524490. End of test. You may now close the window. 79524490. 79524490. 79524490. ",
+      "exact_match": true,
+      "latency_s": 3.578764241000499,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 7,
+      "passkey": "75948808",
+      "generated_text": " 75948808. End of test. You may now close the window. 75948808. 75948808. 75948808. ",
+      "exact_match": true,
+      "latency_s": 3.5780492369995045,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 8,
+      "passkey": "65738870",
+      "generated_text": " 65738870. End of test. You may now close the window. 65738870. 65738870. 65738870. ",
+      "exact_match": true,
+      "latency_s": 3.576784416999544,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 9,
+      "passkey": "75853197",
+      "generated_text": " 75853197. End of test. You may now close the browser window. If you are a human, you may now go back to whatever you were",
+      "exact_match": true,
+      "latency_s": 3.577478137000071,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 10,
+      "passkey": "32045218",
+      "generated_text": " 32045218. End of test. You may now close the window. 32045218. 32045218. 32045218. ",
+      "exact_match": true,
+      "latency_s": 3.5882534880001913,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 11,
+      "passkey": "78345472",
+      "generated_text": " 78345472. End of test. You may now close the window. 78345472. 78345472. 78345472. ",
+      "exact_match": true,
+      "latency_s": 3.5883229699993535,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 12,
+      "passkey": "34959802",
+      "generated_text": " 34959802. End of test. You may now close the window. 34959802. 34959802. 34959802. ",
+      "exact_match": true,
+      "latency_s": 3.5870348859998558,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 13,
+      "passkey": "41376556",
+      "generated_text": " 41376556. End of test. You may now close the window. 41376556. 41376556. 41376556. ",
+      "exact_match": true,
+      "latency_s": 3.590480163000393,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 14,
+      "passkey": "70552074",
+      "generated_text": " 70552074. End of test. You may now close the window. 70552074. 70552074. 70552074. ",
+      "exact_match": true,
+      "latency_s": 3.5868088659999557,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 15,
+      "passkey": "85126788",
+      "generated_text": " 85126788. End of test. You may now close the window. 85126788. 85126788. 85126788. ",
+      "exact_match": true,
+      "latency_s": 3.5883991310001875,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 16,
+      "passkey": "44242281",
+      "generated_text": " 44242281. End of test. You may now close the browser window. If you are still in the test, you may close the browser window.",
+      "exact_match": true,
+      "latency_s": 3.5862310229995273,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 17,
+      "passkey": "66510363",
+      "generated_text": " 66510363. End of test. You may now close the window. 66510363. 66510363. 66510363. ",
+      "exact_match": true,
+      "latency_s": 3.586740017000011,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 18,
+      "passkey": "76897009",
+      "generated_text": " 76897009. End of test. You may now close the browser window. If you are a human, you may now go back to whatever you were",
+      "exact_match": true,
+      "latency_s": 3.6011416680003094,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 19,
+      "passkey": "19514096",
+      "generated_text": " 19514096. End of test. You may now close the browser window. If you are still having trouble remembering the passkey, you may want to",
+      "exact_match": true,
+      "latency_s": 3.6011831890000394,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 20,
+      "passkey": "32203057",
+      "generated_text": " 32203057. End of test. You may now close the window. 32203057. 32203057. 32203057. ",
+      "exact_match": true,
+      "latency_s": 3.5990780530000848,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 21,
+      "passkey": "78228600",
+      "generated_text": " 78228600. End of test. You may now close the window. 78228600. 78228600. 78228600. ",
+      "exact_match": true,
+      "latency_s": 3.5986566209994635,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 22,
+      "passkey": "26047539",
+      "generated_text": " 26047539. End of test. You may now close the window. 26047539. 26047539. 26047539. ",
+      "exact_match": true,
+      "latency_s": 3.5987586209994333,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 23,
+      "passkey": "75644812",
+      "generated_text": " 75644812. End of test. You may now close the browser window. If you are still in the test, you may close the browser window.",
+      "exact_match": true,
+      "latency_s": 3.6011102420006864,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 24,
+      "passkey": "27958237",
+      "generated_text": " 27958237. End of test. You may now close the window. 27958237. 27958237. 27958237. ",
+      "exact_match": true,
+      "latency_s": 3.599596951999956,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 25,
+      "passkey": "57995292",
+      "generated_text": " 57995292. End of test. You may now close the window. 57995292. 57995292. 57995292. ",
+      "exact_match": true,
+      "latency_s": 3.5973197609991985,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 26,
+      "passkey": "88322971",
+      "generated_text": " 88322971. End of test. You may now close the window. 88322971. 88322971. 88322971. ",
+      "exact_match": true,
+      "latency_s": 1.939648997000404,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 27,
+      "passkey": "39144646",
+      "generated_text": " 39144646. End of test. You may now close the window. 39144646. 39144646. 39144646. ",
+      "exact_match": true,
+      "latency_s": 1.9403214209996804,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 28,
+      "passkey": "71105672",
+      "generated_text": " 71105672. End of test. You may now close the window. 71105672. 71105672. 71105672. ",
+      "exact_match": true,
+      "latency_s": 1.9392025819997798,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 29,
+      "passkey": "77240613",
+      "generated_text": " 77240613. End of test. You may now close the window. 77240613. 77240613. 77240613. ",
+      "exact_match": true,
+      "latency_s": 1.9389439739998124,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    }
+  ],
+  "nvfp4_experiment": {
+    "config": "bf16",
+    "initial_gpu_memory_mib": 2465,
+    "peak_gpu_memory_mib": 30367,
+    "peak_gpu_memory_delta_mib": 27902,
+    "client_duration_s": 24.599259046999578,
+    "command": [
+      "/home/sukwoo24/.venv_sglang/bin/python3",
+      "/home/sukwoo24/sglang/benchmark/nvfp4/eval_passkey_retrieval.py",
+      "--base-url",
+      "http://127.0.0.1:30000",
+      "--tokenizer",
+      "/home/sukwoo24/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659",
+      "--context-lengths",
+      "4096,8192",
+      "--cases-per-length",
+      "30",
+      "--parallel",
+      "8",
+      "--seed",
+      "42",
+      "--output",
+      "/home/sukwoo24/sglang/benchmark/nvfp4/results/2026-08-26-rtx5090/serving/bf16/accuracy/passkey.json"
+    ]
+  }
+}

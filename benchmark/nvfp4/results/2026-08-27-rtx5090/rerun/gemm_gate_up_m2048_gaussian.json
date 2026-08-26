@@ -1,0 +1,219 @@
+{
+  "schema_version": 2,
+  "created_at": "2026-08-27T07:24:46+0900",
+  "command": [
+    "/home/sukwoo24/.venv_sglang/bin/python",
+    "benchmark/kernels/quantization/bench_nvfp4_gemm_sm120.py",
+    "--batch-sizes",
+    "2048",
+    "--projections",
+    "gate_up",
+    "--distributions",
+    "gaussian",
+    "--seeds",
+    "0,1,2",
+    "--backend",
+    "cutlass",
+    "--warmup-ms",
+    "10",
+    "--measure-ms",
+    "30",
+    "--output-json",
+    "benchmark/nvfp4/results/2026-08-27-rtx5090/rerun/gemm_gate_up_m2048_gaussian.json"
+  ],
+  "git_commit": "3d00762885335bcef69246344306e16ebca4db60",
+  "git_branch": "exp/nvfp4-core-evaluation",
+  "platform": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "flashinfer": "0.6.15.post1",
+  "nvidia_smi": "NVIDIA GeForce RTX 5090, 610.62, 32607 MiB, 12.0",
+  "gpu": "NVIDIA GeForce RTX 5090",
+  "compute_capability": [
+    12,
+    0
+  ],
+  "backend": "cutlass",
+  "dtype": "bfloat16",
+  "l2": "cold",
+  "warmup_ms": 10,
+  "measure_ms": 30,
+  "global_scale_calibration": "per synthetic tensor, outside timing",
+  "weight_quantization": "outside timing (serialized-checkpoint analogue)",
+  "gemm_activation_quantization": "FlashInfer FP4 quantization with swizzled block-scale layout",
+  "standalone_dequantization": "diagnostic FlashInfer NVFP4 KV linear-layout kernel; not part of the FP4 GEMM hot path, whose output scaling is fused",
+  "pipeline_residual": "FP4 end-to-end median minus separately timed GEMM-layout quantization and prequantized GEMM medians; cache handoff and independent sampling mean this value is diagnostic, not additive",
+  "p99_absolute_error": "exact when the output has at most 1,000,000 values; otherwise computed from at most 1,000,000 deterministically strided samples",
+  "max_jit_jobs": "2",
+  "results": [
+    {
+      "projection": "gate_up",
+      "distribution": "gaussian",
+      "seed": 0,
+      "m": 2048,
+      "n": 28672,
+      "k": 4096,
+      "bf16": {
+        "median_ms": 2.3434239625930786,
+        "p95_ms": 2.4963615894317623,
+        "samples": 12
+      },
+      "activation_quant": {
+        "median_ms": 0.022495999932289124,
+        "p95_ms": 0.022655999287962914,
+        "samples": 228
+      },
+      "fp4_gemm": {
+        "median_ms": 0.43640001118183136,
+        "p95_ms": 0.9680400192737579,
+        "samples": 56
+      },
+      "fp4_end_to_end": {
+        "median_ms": 0.4546560049057007,
+        "p95_ms": 0.47114879488945005,
+        "samples": 53
+      },
+      "linear_layout_quant": {
+        "median_ms": 0.0225600004196167,
+        "p95_ms": 0.0323840007185936,
+        "samples": 235
+      },
+      "linear_layout_dequant": {
+        "median_ms": 0.03465599939227104,
+        "p95_ms": 0.04542879946529865,
+        "samples": 210
+      },
+      "fp4_gemm_speedup": 5.369898951759335,
+      "fp4_end_to_end_speedup": 5.154279141389815,
+      "pipeline_residual_ms": -0.0042400062084198,
+      "bf16_tflops": 205.27072558382346,
+      "fp4_gemm_tflops": 1102.2830541394517,
+      "relative_rmse": 0.13440477848052979,
+      "cosine_similarity": 0.9909684062004089,
+      "sqnr_db": 17.431705943447376,
+      "p99_absolute_error": 22.0625,
+      "error_quantile_samples": 995259,
+      "error_total_values": 58720256,
+      "max_absolute_error": 49.25,
+      "nan_count": 0,
+      "inf_count": 0,
+      "linear_roundtrip_relative_rmse": 0.095135897397995,
+      "linear_roundtrip_cosine_similarity": 0.9954753518104553,
+      "linear_roundtrip_nan_count": 0,
+      "linear_roundtrip_inf_count": 0
+    },
+    {
+      "projection": "gate_up",
+      "distribution": "gaussian",
+      "seed": 1,
+      "m": 2048,
+      "n": 28672,
+      "k": 4096,
+      "bf16": {
+        "median_ms": 2.341871976852417,
+        "p95_ms": 2.642694425582885,
+        "samples": 12
+      },
+      "activation_quant": {
+        "median_ms": 0.018432000651955605,
+        "p95_ms": 0.018939200788736343,
+        "samples": 244
+      },
+      "fp4_gemm": {
+        "median_ms": 0.4352959990501404,
+        "p95_ms": 0.4459296107292175,
+        "samples": 55
+      },
+      "fp4_end_to_end": {
+        "median_ms": 0.450640007853508,
+        "p95_ms": 0.46526399850845335,
+        "samples": 54
+      },
+      "linear_layout_quant": {
+        "median_ms": 0.020479999482631683,
+        "p95_ms": 0.030343999993056057,
+        "samples": 240
+      },
+      "linear_layout_dequant": {
+        "median_ms": 0.03488000109791756,
+        "p95_ms": 0.04281599819660187,
+        "samples": 221
+      },
+      "fp4_gemm_speedup": 5.379952910117752,
+      "fp4_end_to_end_speedup": 5.196768897655669,
+      "pipeline_residual_ms": -0.00308799184858799,
+      "bf16_tflops": 205.40676087620076,
+      "fp4_gemm_tflops": 1105.0787009337776,
+      "relative_rmse": 0.1343534141778946,
+      "cosine_similarity": 0.9909726977348328,
+      "sqnr_db": 17.435025855266083,
+      "p99_absolute_error": 22.0,
+      "error_quantile_samples": 995259,
+      "error_total_values": 58720256,
+      "max_absolute_error": 49.75,
+      "nan_count": 0,
+      "inf_count": 0,
+      "linear_roundtrip_relative_rmse": 0.09534519165754318,
+      "linear_roundtrip_cosine_similarity": 0.9954557418823242,
+      "linear_roundtrip_nan_count": 0,
+      "linear_roundtrip_inf_count": 0
+    },
+    {
+      "projection": "gate_up",
+      "distribution": "gaussian",
+      "seed": 2,
+      "m": 2048,
+      "n": 28672,
+      "k": 4096,
+      "bf16": {
+        "median_ms": 2.3398399353027344,
+        "p95_ms": 2.612510418891907,
+        "samples": 12
+      },
+      "activation_quant": {
+        "median_ms": 0.018432000651955605,
+        "p95_ms": 0.01945599913597107,
+        "samples": 244
+      },
+      "fp4_gemm": {
+        "median_ms": 0.4341759979724884,
+        "p95_ms": 0.44777279198169706,
+        "samples": 55
+      },
+      "fp4_end_to_end": {
+        "median_ms": 0.45100800693035126,
+        "p95_ms": 0.7713791906833636,
+        "samples": 54
+      },
+      "linear_layout_quant": {
+        "median_ms": 0.020479999482631683,
+        "p95_ms": 0.03203200176358223,
+        "samples": 239
+      },
+      "linear_layout_dequant": {
+        "median_ms": 0.03494400158524513,
+        "p95_ms": 0.045156801119446754,
+        "samples": 218
+      },
+      "fp4_gemm_speedup": 5.389150819550828,
+      "fp4_end_to_end_speedup": 5.188023049143058,
+      "pipeline_residual_ms": -0.0015999916940927505,
+      "bf16_tflops": 205.58514704116388,
+      "fp4_gemm_tflops": 1107.9293636643656,
+      "relative_rmse": 0.13437409698963165,
+      "cosine_similarity": 0.9909672141075134,
+      "sqnr_db": 17.433689138098337,
+      "p99_absolute_error": 22.125,
+      "error_quantile_samples": 995259,
+      "error_total_values": 58720256,
+      "max_absolute_error": 48.0625,
+      "nan_count": 0,
+      "inf_count": 0,
+      "linear_roundtrip_relative_rmse": 0.0951015055179596,
+      "linear_roundtrip_cosine_similarity": 0.9954768419265747,
+      "linear_roundtrip_nan_count": 0,
+      "linear_roundtrip_inf_count": 0
+    }
+  ]
+}

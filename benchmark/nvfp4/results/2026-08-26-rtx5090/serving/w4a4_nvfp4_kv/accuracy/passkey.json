@@ -1,0 +1,649 @@
+{
+  "schema_version": 1,
+  "tokenizer": "/home/sukwoo24/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659",
+  "seed": 42,
+  "cases_per_length": 30,
+  "parallel": 8,
+  "duration_s": 9.14064138699996,
+  "summary": {
+    "4096": {
+      "cases": 30,
+      "exact_matches": 30,
+      "accuracy": 1.0,
+      "mean_latency_s": 0.8588812787665423
+    },
+    "8192": {
+      "cases": 30,
+      "exact_matches": 30,
+      "accuracy": 1.0,
+      "mean_latency_s": 1.4543631307000395
+    }
+  },
+  "results": [
+    {
+      "context_tokens": 4096,
+      "case_index": 0,
+      "passkey": "13614023",
+      "generated_text": " 13614023. End. Memory test complete. End. End. End. End. End. End. End. End. End. End. End",
+      "exact_match": true,
+      "latency_s": 0.8660201900001994,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 1,
+      "passkey": "38544443",
+      "generated_text": " 38544443. You have passed the memory test. The passkey is 38544443. You have passed the memory test. The passkey is",
+      "exact_match": true,
+      "latency_s": 0.8648635400004423,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 2,
+      "passkey": "51528108",
+      "generated_text": " 51528108. The passkey is 51528108. You have passed the memory test. Congratulations. You have a good memory. You are a",
+      "exact_match": true,
+      "latency_s": 0.868012373000056,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 3,
+      "passkey": "62180278",
+      "generated_text": " 62180278. End. (The test is over.) (The test is over.) (The test is over.) (The test is over.) (",
+      "exact_match": true,
+      "latency_s": 0.8659302159994695,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 4,
+      "passkey": "51946918",
+      "generated_text": " 51946918. You have passed the memory test. You are now ready to proceed. Enter the passkey to continue. Enter 51946918.",
+      "exact_match": true,
+      "latency_s": 0.8652760059994762,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 5,
+      "passkey": "23384717",
+      "generated_text": " 23384717. End of test. You may now enter the eight-digit passkey to access the records. 23384717. End of test.",
+      "exact_match": true,
+      "latency_s": 0.8663814000001366,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 6,
+      "passkey": "79765641",
+      "generated_text": " 79765641. You have passed the memory test. Congratulations! You have demonstrated your ability to remember a long sequence of neutral sentences and retrieve the eight-digit",
+      "exact_match": true,
+      "latency_s": 0.865655304000029,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 7,
+      "passkey": "29125212",
+      "generated_text": " 29125212. You have passed the memory test. Congratulations. You have demonstrated your ability to remember a long sequence of unrelated sentences. You have also demonstrated",
+      "exact_match": true,
+      "latency_s": 0.8628482820004137,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 8,
+      "passkey": "79648030",
+      "generated_text": " 79648030. End. (The passkey is 79648030.) (The passkey is 79648030.) (The passkey is",
+      "exact_match": true,
+      "latency_s": 0.802657700999589,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 9,
+      "passkey": "84878459",
+      "generated_text": " 84878459. You have passed the memory test. You have a good memory. You are a good candidate. You are qualified to work for the company",
+      "exact_match": true,
+      "latency_s": 0.801549905999309,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 10,
+      "passkey": "93207799",
+      "generated_text": " 93207799. End. (The passkey is 93207799.) (The passkey is 93207799.) (The passkey is",
+      "exact_match": true,
+      "latency_s": 0.801094952999847,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 11,
+      "passkey": "51000105",
+      "generated_text": " 51000105. End. 51000105. End. 51000105. End. 51000105. End. 51000105",
+      "exact_match": true,
+      "latency_s": 0.8013525679998565,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 12,
+      "passkey": "82860839",
+      "generated_text": " 82860839. End of test. You have passed. You may now exit. Goodbye. 82860839. 82860839. ",
+      "exact_match": true,
+      "latency_s": 0.8028140129999883,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 13,
+      "passkey": "70536651",
+      "generated_text": " 70536651. The passkey is 70536651. You have passed the memory test. You may now enter the secret area. 705366",
+      "exact_match": true,
+      "latency_s": 0.7991859439998734,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 14,
+      "passkey": "13051088",
+      "generated_text": " 13051088. End of test. You have passed. You may now proceed to the next test. 13051088. 13051088.",
+      "exact_match": true,
+      "latency_s": 0.8009257370003979,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 15,
+      "passkey": "99349219",
+      "generated_text": " 99349219",
+      "exact_match": true,
+      "latency_s": 0.5781623990005755,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 5
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 16,
+      "passkey": "31019831",
+      "generated_text": " 31019831. End of test. You may now enter the passkey to access the records. 31019831. End of test. You may",
+      "exact_match": true,
+      "latency_s": 0.7348566789996767,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 17,
+      "passkey": "32326264",
+      "generated_text": " 32326264. End of test. You may now enter the passkey to access the records. 32326264. End of test. You may",
+      "exact_match": true,
+      "latency_s": 0.7379920129997117,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 18,
+      "passkey": "62292142",
+      "generated_text": " 62292142. End of test. You have passed the memory test. You have passed the memory test. You have passed the memory test. You have",
+      "exact_match": true,
+      "latency_s": 0.7342655120000927,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 19,
+      "passkey": "85022326",
+      "generated_text": " 85022326. 85022326. 85022326. 85022326. 85022326. 85022326. 850",
+      "exact_match": true,
+      "latency_s": 0.7368079770003533,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 20,
+      "passkey": "80636883",
+      "generated_text": " 80636883. End. 80636883. End. 80636883. End. 80636883. End. 80636883",
+      "exact_match": true,
+      "latency_s": 0.7377792959996441,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 21,
+      "passkey": "39484397",
+      "generated_text": " 39484397. You have passed the memory test. You are now a certified memory test taker. You may now proceed to the next test. You",
+      "exact_match": true,
+      "latency_s": 0.7375852519999171,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 22,
+      "passkey": "96242134",
+      "generated_text": " 96242134. End. (The passkey is 96242134.) (The passkey is 96242134.) (The passkey is",
+      "exact_match": true,
+      "latency_s": 0.7344178180001109,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 23,
+      "passkey": "95637506",
+      "generated_text": " 95637506. End of test. You have passed. You have failed. You have failed. You have failed. You have failed. You have failed",
+      "exact_match": true,
+      "latency_s": 0.736068716999398,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 24,
+      "passkey": "59816319",
+      "generated_text": " 59816319.  The passkey is 59816319. You have passed the memory test.  You have passed the memory test.  You",
+      "exact_match": true,
+      "latency_s": 1.0177768429994103,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 25,
+      "passkey": "30993868",
+      "generated_text": " 30993868. End. 30993868. End. 30993868. End. 30993868. End. 30993868",
+      "exact_match": true,
+      "latency_s": 1.1492860219996146,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 26,
+      "passkey": "60036876",
+      "generated_text": " 60036876. You have passed the memory test. Congratulations! You have demonstrated that you can remember a passkey of eight digits. You have also demonstrated",
+      "exact_match": true,
+      "latency_s": 1.149338319999515,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 27,
+      "passkey": "15721553",
+      "generated_text": " 15721553. You have passed the memory test. You have been granted access to the secret information. You may now read the secret information. The secret",
+      "exact_match": true,
+      "latency_s": 1.149720497999624,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 28,
+      "passkey": "64209413",
+      "generated_text": " 64209413. End of test. You have passed the memory test. You may now proceed to the next level. Good luck. You will need it",
+      "exact_match": true,
+      "latency_s": 1.1498286949999965,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 4096,
+      "case_index": 29,
+      "passkey": "19366988",
+      "generated_text": " 19366988. You have passed the memory test. The passkey is 19366988. You have passed the memory test. The passkey is",
+      "exact_match": true,
+      "latency_s": 1.1479841889995441,
+      "server_prompt_tokens": 4096,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 0,
+      "passkey": "60329905",
+      "generated_text": " 60329905. End. 60329905. End. 60329905. End. 60329905. End. 60329905",
+      "exact_match": true,
+      "latency_s": 1.148685822000516,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 1,
+      "passkey": "30363469",
+      "generated_text": " 30363469. The passkey is 30363469. The passkey is 30363469. The passkey is 30363469.",
+      "exact_match": true,
+      "latency_s": 1.1471065229998203,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 2,
+      "passkey": "20684944",
+      "generated_text": " 20684944. End of test. You may now enter the passkey to access the secret information. 20684944. End of test. You",
+      "exact_match": true,
+      "latency_s": 1.6144328339996719,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 3,
+      "passkey": "27596197",
+      "generated_text": " 27596197. End of test. Congratulations. You have passed the memory test. You have demonstrated that you can remember a long sequence of numbers. You",
+      "exact_match": true,
+      "latency_s": 1.6250841979999677,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 4,
+      "passkey": "11648242",
+      "generated_text": " 11648242. End. (The passkey is 11648242.) (The passkey is 11648242.) (The passkey is",
+      "exact_match": true,
+      "latency_s": 1.6213649969995458,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 5,
+      "passkey": "51649021",
+      "generated_text": " 51649021. End. (The passkey is 51649021.) (The passkey is 51649021.) (The passkey is",
+      "exact_match": true,
+      "latency_s": 1.6208928010000818,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 6,
+      "passkey": "79524490",
+      "generated_text": " 79524490. End of test. You passed. You may now exit. 79524490. End of test. You passed. You may now",
+      "exact_match": true,
+      "latency_s": 1.6229745670007105,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 7,
+      "passkey": "75948808",
+      "generated_text": " 75948808. End of test. You have passed. You may now exit the program. Goodbye. (The program ends.) (The program ends",
+      "exact_match": true,
+      "latency_s": 1.6212283089998891,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 8,
+      "passkey": "65738870",
+      "generated_text": " 65738870. End of test.  End of test.  End of test.  End of test.  End of test.  End of",
+      "exact_match": true,
+      "latency_s": 1.6223337369992805,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 9,
+      "passkey": "75853197",
+      "generated_text": " 75853197. End of test. You have passed the memory test. You may now proceed to the next test. If you have any questions, please",
+      "exact_match": true,
+      "latency_s": 1.621735921000436,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 10,
+      "passkey": "32045218",
+      "generated_text": " 32045218. End of test. You have passed. You may now exit. 32045218. 32045218. 32045218",
+      "exact_match": true,
+      "latency_s": 0.3924599310003032,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 11,
+      "passkey": "78345472",
+      "generated_text": " 78345472. 78345472. 78345472. 78345472. 78345472. 78345472. 783",
+      "exact_match": true,
+      "latency_s": 1.6203428130002067,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 12,
+      "passkey": "34959802",
+      "generated_text": " 34959802. 34959802. 34959802. 34959802. 34959802. 34959802. 349",
+      "exact_match": true,
+      "latency_s": 1.6202210659994307,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 13,
+      "passkey": "41376556",
+      "generated_text": " 41376556. End. 41376556. End. 41376556. End. 41376556. End. 41376556",
+      "exact_match": true,
+      "latency_s": 1.6218639280004936,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 14,
+      "passkey": "70552074",
+      "generated_text": " 70552074. End of test. The passkey is 70552074. You have passed the test. You are now ready to enter the system",
+      "exact_match": true,
+      "latency_s": 1.6177334809999593,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 15,
+      "passkey": "85126788",
+      "generated_text": " 85126788. You have passed the memory test. You are now ready to proceed to the next test. Good luck. You will need it. You",
+      "exact_match": true,
+      "latency_s": 1.618868886999735,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 16,
+      "passkey": "44242281",
+      "generated_text": " 44242281. End. 44242281. 44242281. 44242281. 44242281. 44242281.",
+      "exact_match": true,
+      "latency_s": 1.6193582269997933,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 17,
+      "passkey": "66510363",
+      "generated_text": " 66510363. End of test. You have passed. Congratulations. You have been awarded 100 points. You have been awarded 100 points. You",
+      "exact_match": true,
+      "latency_s": 1.618985452000743,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 18,
+      "passkey": "76897009",
+      "generated_text": " 76897009. End. 76897009. 76897009. 76897009. 76897009. 76897009.",
+      "exact_match": true,
+      "latency_s": 1.5997447919999104,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 19,
+      "passkey": "19514096",
+      "generated_text": " 19514096. The passkey is 19514096. The passkey is 19514096. The passkey is 19514096.",
+      "exact_match": true,
+      "latency_s": 1.6155434889997196,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 20,
+      "passkey": "32203057",
+      "generated_text": " 32203057. End of test. 32203057. 32203057. 32203057. 32203057. 322030",
+      "exact_match": true,
+      "latency_s": 1.6168962350002403,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 21,
+      "passkey": "78228600",
+      "generated_text": " 78228600. End of test. You may now enter the passkey to access the secret information. If you entered the passkey correctly, you should",
+      "exact_match": true,
+      "latency_s": 1.6183342639997136,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 22,
+      "passkey": "26047539",
+      "generated_text": " 26047539. 26047539. 26047539. 26047539. 26047539. 26047539. 260",
+      "exact_match": true,
+      "latency_s": 1.6179922370001805,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 23,
+      "passkey": "75644812",
+      "generated_text": " 75644812. End. (The passkey is 75644812.) (The passkey is 75644812.) (The passkey is",
+      "exact_match": true,
+      "latency_s": 1.614200664999771,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 24,
+      "passkey": "27958237",
+      "generated_text": " 27958237. 27958237. 27958237. 27958237. 27958237. 27958237. 279",
+      "exact_match": true,
+      "latency_s": 1.6164733060004437,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 25,
+      "passkey": "57995292",
+      "generated_text": " 57995292. End of test. You have passed. You have been given the passkey. You may now enter the passkey to access the secret",
+      "exact_match": true,
+      "latency_s": 1.6149865260003935,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 26,
+      "passkey": "88322971",
+      "generated_text": " 88322971. End of test. You may now enter the passkey. 88322971. End of test. You may now enter the pass",
+      "exact_match": true,
+      "latency_s": 1.6153391299994837,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 27,
+      "passkey": "39144646",
+      "generated_text": " 39144646. The passkey is 39144646. You have passed the memory test. You are now ready to proceed. 39144646",
+      "exact_match": true,
+      "latency_s": 0.7021750570002041,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 28,
+      "passkey": "71105672",
+      "generated_text": " 71105672. End of test. 71105672. End of test. 71105672. End of test. 71105672.",
+      "exact_match": true,
+      "latency_s": 0.7020401549998496,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    },
+    {
+      "context_tokens": 8192,
+      "case_index": 29,
+      "passkey": "77240613",
+      "generated_text": " 77240613. End of test. You may now close this window. 77240613. End of test. You may now close this window.",
+      "exact_match": true,
+      "latency_s": 0.7014945710006941,
+      "server_prompt_tokens": 8192,
+      "completion_tokens": 32
+    }
+  ],
+  "nvfp4_experiment": {
+    "config": "w4a4_nvfp4_kv",
+    "initial_gpu_memory_mib": 2465,
+    "peak_gpu_memory_mib": 14621,
+    "peak_gpu_memory_delta_mib": 12156,
+    "client_duration_s": 12.973710946999745,
+    "command": [
+      "/home/sukwoo24/.venv_sglang/bin/python3",
+      "/home/sukwoo24/sglang/benchmark/nvfp4/eval_passkey_retrieval.py",
+      "--base-url",
+      "http://127.0.0.1:30000",
+      "--tokenizer",
+      "/home/sukwoo24/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659",
+      "--context-lengths",
+      "4096,8192",
+      "--cases-per-length",
+      "30",
+      "--parallel",
+      "8",
+      "--seed",
+      "42",
+      "--output",
+      "/home/sukwoo24/sglang/benchmark/nvfp4/results/2026-08-26-rtx5090/serving/w4a4_nvfp4_kv/accuracy/passkey.json"
+    ]
+  }
+}

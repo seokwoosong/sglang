@@ -1,0 +1,252 @@
+{
+  "schema_version": 3,
+  "created_at": "2026-08-27T07:32:31+0900",
+  "command": [
+    "/home/sukwoo24/.venv_sglang/bin/python",
+    "benchmark/kernels/quantization/bench_nvfp4_gemm_sm120.py",
+    "--batch-sizes",
+    "2048",
+    "--projections",
+    "gate_up",
+    "--distributions",
+    "gaussian",
+    "--seeds",
+    "0,1,2",
+    "--backend",
+    "cutlass",
+    "--bf16-backend",
+    "cublaslt",
+    "--warmup-ms",
+    "10",
+    "--measure-ms",
+    "30",
+    "--output-json",
+    "benchmark/nvfp4/results/2026-08-27-rtx5090/rerun/gemm_gate_up_m2048_bf16_backend_comparison.json"
+  ],
+  "git_commit": "3d00762885335bcef69246344306e16ebca4db60",
+  "git_branch": "exp/nvfp4-core-evaluation",
+  "platform": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "flashinfer": "0.6.15.post1",
+  "nvidia_smi": "NVIDIA GeForce RTX 5090, 610.62, 32607 MiB, 12.0",
+  "gpu": "NVIDIA GeForce RTX 5090",
+  "compute_capability": [
+    12,
+    0
+  ],
+  "backend": "cutlass",
+  "bf16_backend": "cublaslt",
+  "dtype": "bfloat16",
+  "l2": "cold",
+  "warmup_ms": 10,
+  "measure_ms": 30,
+  "global_scale_calibration": "per synthetic tensor, outside timing",
+  "weight_quantization": "outside timing (serialized-checkpoint analogue)",
+  "gemm_activation_quantization": "FlashInfer FP4 quantization with swizzled block-scale layout",
+  "standalone_dequantization": "diagnostic FlashInfer NVFP4 KV linear-layout kernel; not part of the FP4 GEMM hot path, whose output scaling is fused",
+  "pipeline_residual": "FP4 end-to-end median minus separately timed GEMM-layout quantization and prequantized GEMM medians; cache handoff and independent sampling mean this value is diagnostic, not additive",
+  "p99_absolute_error": "exact when the output has at most 1,000,000 values; otherwise computed from at most 1,000,000 deterministically strided samples",
+  "max_jit_jobs": "2",
+  "results": [
+    {
+      "projection": "gate_up",
+      "distribution": "gaussian",
+      "seed": 0,
+      "m": 2048,
+      "n": 28672,
+      "k": 4096,
+      "bf16": {
+        "median_ms": 2.339855909347534,
+        "p95_ms": 2.4802767753601076,
+        "samples": 12
+      },
+      "flashinfer_bf16": {
+        "median_ms": 2.3464640378952026,
+        "p95_ms": 2.5285615444183347,
+        "samples": 10
+      },
+      "activation_quant": {
+        "median_ms": 0.018432000651955605,
+        "p95_ms": 0.020479999482631683,
+        "samples": 244
+      },
+      "fp4_gemm": {
+        "median_ms": 0.4361120015382767,
+        "p95_ms": 0.9628719985485077,
+        "samples": 56
+      },
+      "fp4_end_to_end": {
+        "median_ms": 0.4505760073661804,
+        "p95_ms": 0.4650224015116692,
+        "samples": 54
+      },
+      "linear_layout_quant": {
+        "median_ms": 0.020479999482631683,
+        "p95_ms": 0.03168319910764694,
+        "samples": 239
+      },
+      "linear_layout_dequant": {
+        "median_ms": 0.03481600061058998,
+        "p95_ms": 0.04505600035190582,
+        "samples": 223
+      },
+      "flashinfer_bf16_speedup_vs_torch": 0.9971837929578516,
+      "fp4_gemm_speedup": 5.365263742098989,
+      "fp4_end_to_end_speedup": 5.193032631775147,
+      "fp4_gemm_speedup_vs_flashinfer_bf16": 5.380416107831553,
+      "fp4_end_to_end_speedup_vs_flashinfer_bf16": 5.207698589215482,
+      "pipeline_residual_ms": -0.003967994824051857,
+      "bf16_tflops": 205.58374352467555,
+      "flashinfer_bf16_tflops": 205.00477713841016,
+      "fp4_gemm_tflops": 1103.0110050979197,
+      "flashinfer_bf16_max_absolute_difference": 0.0,
+      "relative_rmse": 0.13440477848052979,
+      "cosine_similarity": 0.9909684062004089,
+      "sqnr_db": 17.431705943447376,
+      "p99_absolute_error": 22.0625,
+      "error_quantile_samples": 995259,
+      "error_total_values": 58720256,
+      "max_absolute_error": 49.25,
+      "nan_count": 0,
+      "inf_count": 0,
+      "linear_roundtrip_relative_rmse": 0.095135897397995,
+      "linear_roundtrip_cosine_similarity": 0.9954753518104553,
+      "linear_roundtrip_nan_count": 0,
+      "linear_roundtrip_inf_count": 0
+    },
+    {
+      "projection": "gate_up",
+      "distribution": "gaussian",
+      "seed": 1,
+      "m": 2048,
+      "n": 28672,
+      "k": 4096,
+      "bf16": {
+        "median_ms": 2.342816114425659,
+        "p95_ms": 2.493839979171753,
+        "samples": 11
+      },
+      "flashinfer_bf16": {
+        "median_ms": 2.3433279991149902,
+        "p95_ms": 2.3564000010490416,
+        "samples": 12
+      },
+      "activation_quant": {
+        "median_ms": 0.018432000651955605,
+        "p95_ms": 0.02014720076695083,
+        "samples": 228
+      },
+      "fp4_gemm": {
+        "median_ms": 0.4350239932537079,
+        "p95_ms": 0.7165679782629013,
+        "samples": 56
+      },
+      "fp4_end_to_end": {
+        "median_ms": 0.45054399967193604,
+        "p95_ms": 0.46338719427585606,
+        "samples": 54
+      },
+      "linear_layout_quant": {
+        "median_ms": 0.020479999482631683,
+        "p95_ms": 0.03177599981427193,
+        "samples": 239
+      },
+      "linear_layout_dequant": {
+        "median_ms": 0.03481600061058998,
+        "p95_ms": 0.045334398932754996,
+        "samples": 222
+      },
+      "flashinfer_bf16_speedup_vs_torch": 0.9997815565343288,
+      "fp4_gemm_speedup": 5.385487124291369,
+      "fp4_end_to_end_speedup": 5.199971847658792,
+      "fp4_gemm_speedup_vs_flashinfer_bf16": 5.386663805801514,
+      "fp4_end_to_end_speedup_vs_flashinfer_bf16": 5.201107995714706,
+      "pipeline_residual_ms": -0.002911994233727455,
+      "bf16_tflops": 205.3239834701777,
+      "flashinfer_bf16_tflops": 205.27913178764302,
+      "fp4_gemm_tflops": 1105.7696692868558,
+      "flashinfer_bf16_max_absolute_difference": 0.0,
+      "relative_rmse": 0.1343534141778946,
+      "cosine_similarity": 0.9909726977348328,
+      "sqnr_db": 17.435025855266083,
+      "p99_absolute_error": 22.0,
+      "error_quantile_samples": 995259,
+      "error_total_values": 58720256,
+      "max_absolute_error": 49.75,
+      "nan_count": 0,
+      "inf_count": 0,
+      "linear_roundtrip_relative_rmse": 0.09534519165754318,
+      "linear_roundtrip_cosine_similarity": 0.9954557418823242,
+      "linear_roundtrip_nan_count": 0,
+      "linear_roundtrip_inf_count": 0
+    },
+    {
+      "projection": "gate_up",
+      "distribution": "gaussian",
+      "seed": 2,
+      "m": 2048,
+      "n": 28672,
+      "k": 4096,
+      "bf16": {
+        "median_ms": 2.3428800106048584,
+        "p95_ms": 2.4910752058029173,
+        "samples": 12
+      },
+      "flashinfer_bf16": {
+        "median_ms": 2.3434720039367676,
+        "p95_ms": 3.4028239846229544,
+        "samples": 12
+      },
+      "activation_quant": {
+        "median_ms": 0.018432000651955605,
+        "p95_ms": 0.02023039981722831,
+        "samples": 233
+      },
+      "fp4_gemm": {
+        "median_ms": 0.43404799699783325,
+        "p95_ms": 0.44730879962444303,
+        "samples": 55
+      },
+      "fp4_end_to_end": {
+        "median_ms": 0.4513919949531555,
+        "p95_ms": 0.4644815951585769,
+        "samples": 54
+      },
+      "linear_layout_quant": {
+        "median_ms": 0.020479999482631683,
+        "p95_ms": 0.030318399891257286,
+        "samples": 232
+      },
+      "linear_layout_dequant": {
+        "median_ms": 0.03481600061058998,
+        "p95_ms": 0.042076800018548965,
+        "samples": 222
+      },
+      "flashinfer_bf16_speedup_vs_torch": 0.9997473862154467,
+      "fp4_gemm_speedup": 5.3977440900771025,
+      "fp4_end_to_end_speedup": 5.190344615765722,
+      "fp4_gemm_speedup_vs_flashinfer_bf16": 5.399107979176934,
+      "fp4_end_to_end_speedup_vs_flashinfer_bf16": 5.191656099661156,
+      "pipeline_residual_ms": -0.001088002696633339,
+      "bf16_tflops": 205.31838377323106,
+      "flashinfer_bf16_tflops": 205.26651751926775,
+      "fp4_gemm_tflops": 1108.2560925961404,
+      "flashinfer_bf16_max_absolute_difference": 0.0,
+      "relative_rmse": 0.13437409698963165,
+      "cosine_similarity": 0.9909672141075134,
+      "sqnr_db": 17.433689138098337,
+      "p99_absolute_error": 22.125,
+      "error_quantile_samples": 995259,
+      "error_total_values": 58720256,
+      "max_absolute_error": 48.0625,
+      "nan_count": 0,
+      "inf_count": 0,
+      "linear_roundtrip_relative_rmse": 0.0951015055179596,
+      "linear_roundtrip_cosine_similarity": 0.9954768419265747,
+      "linear_roundtrip_nan_count": 0,
+      "linear_roundtrip_inf_count": 0
+    }
+  ]
+}

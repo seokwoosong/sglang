@@ -1,0 +1,39 @@
+{
+  "score:std": 0.46451587701606073,
+  "score": 0.685,
+  "latency": 5.041468788999737,
+  "output_throughput": 3477.1612666232686,
+  "nvfp4_experiment": {
+    "config": "w4a4_bf16_kv",
+    "examples": 200,
+    "initial_gpu_memory_mib": 2465,
+    "peak_gpu_memory_mib": 21027,
+    "peak_gpu_memory_delta_mib": 18562,
+    "client_duration_s": 11.280985843000053,
+    "command": [
+      "/home/sukwoo24/.venv_sglang/bin/python3",
+      "-m",
+      "sglang.test.run_eval",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "30000",
+      "--model",
+      "nvfp4-eval",
+      "--eval-name",
+      "gsm8k",
+      "--api",
+      "generate",
+      "--num-examples",
+      "200",
+      "--num-threads",
+      "32",
+      "--num-shots",
+      "5",
+      "--max-tokens",
+      "512",
+      "--temperature",
+      "0"
+    ]
+  }
+}

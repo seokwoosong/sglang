@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
+import math
 import statistics
-from typing import NamedTuple
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -27,7 +30,11 @@ from flashinfer.testing import bench_gpu_time
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 
-class Result(NamedTuple):
+@dataclass
+class Result:
+    seed: int
+    batch_size: int
+    num_heads: int
     seq_len: int
     head_dim: int
     baseline_ms: float
@@ -35,6 +42,11 @@ class Result(NamedTuple):
     fp4_end_to_end_ms: float
     relative_rmse: float
     cosine_similarity: float
+    sqnr_db: float
+    p99_absolute_error: float
+    max_absolute_error: float
+    nan_count: int
+    inf_count: int
 
 
 def parse_int_list(value: str) -> list[int]:
@@ -60,8 +72,10 @@ def benchmark_shape(
     seq_len: int,
     head_dim: int,
     dtype: torch.dtype,
+    seed: int,
     args: argparse.Namespace,
 ) -> Result:
+    torch.manual_seed(seed)
     shape = (batch_size, num_heads, seq_len, head_dim)
     q = torch.randn(shape, device="cuda", dtype=dtype)
     k = torch.randn(shape, device="cuda", dtype=dtype)
@@ -96,12 +110,24 @@ def benchmark_shape(
     fp4_attention()
     torch.cuda.synchronize()
     difference = out.float() - reference.float()
+    reference_rms = torch.sqrt(reference.float().square().mean())
+    error_rms = torch.sqrt(difference.square().mean())
     relative_rmse = float(
-        torch.sqrt(difference.square().mean() / reference.float().square().mean())
+        error_rms / reference_rms.clamp_min(torch.finfo(torch.float32).tiny)
     )
     cosine_similarity = float(
         F.cosine_similarity(out.float().flatten(), reference.float().flatten(), dim=0)
     )
+    sqnr_db = (
+        math.inf
+        if float(error_rms) == 0.0
+        else 20.0 * math.log10(float(reference_rms / error_rms))
+    )
+    absolute_error = difference.abs().flatten()
+    p99_absolute_error = float(torch.quantile(absolute_error, 0.99))
+    max_absolute_error = float(absolute_error.max())
+    nan_count = int(torch.isnan(out).sum())
+    inf_count = int(torch.isinf(out).sum())
     fp4_attention_ms = median_gpu_time(fn=fp4_attention, args=args)
 
     def fp4_end_to_end():
@@ -118,6 +144,9 @@ def benchmark_shape(
 
     fp4_end_to_end_ms = median_gpu_time(fn=fp4_end_to_end, args=args)
     return Result(
+        seed=seed,
+        batch_size=batch_size,
+        num_heads=num_heads,
         seq_len=seq_len,
         head_dim=head_dim,
         baseline_ms=baseline_ms,
@@ -125,6 +154,11 @@ def benchmark_shape(
         fp4_end_to_end_ms=fp4_end_to_end_ms,
         relative_rmse=relative_rmse,
         cosine_similarity=cosine_similarity,
+        sqnr_db=sqnr_db,
+        p99_absolute_error=p99_absolute_error,
+        max_absolute_error=max_absolute_error,
+        nan_count=nan_count,
+        inf_count=inf_count,
     )
 
 
@@ -132,18 +166,22 @@ def print_results(results: list[Result], dtype: torch.dtype) -> None:
     baseline_label = "BF16" if dtype == torch.bfloat16 else "FP16"
     print()
     print(
-        f"| S | D | {baseline_label} Flash SDPA (ms) | NVFP4 attention (ms) | "
-        "speedup | NVFP4 end-to-end (ms) | speedup | rel. RMSE | cosine |"
+        f"| seed | S | D | {baseline_label} Flash SDPA (ms) | "
+        "NVFP4 attention (ms) | speedup | NVFP4 end-to-end (ms) | speedup | "
+        "rel. RMSE | cosine | SQNR (dB) | p99 abs. | NaN/Inf |"
     )
-    print("|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    print("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for result in results:
         print(
-            f"| {result.seq_len} | {result.head_dim} | {result.baseline_ms:.4f} | "
+            f"| {result.seed} | {result.seq_len} | {result.head_dim} | "
+            f"{result.baseline_ms:.4f} | "
             f"{result.fp4_attention_ms:.4f} | "
             f"{result.baseline_ms / result.fp4_attention_ms:.2f}x | "
             f"{result.fp4_end_to_end_ms:.4f} | "
             f"{result.baseline_ms / result.fp4_end_to_end_ms:.2f}x | "
-            f"{result.relative_rmse:.4f} | {result.cosine_similarity:.6f} |"
+            f"{result.relative_rmse:.4f} | {result.cosine_similarity:.6f} | "
+            f"{result.sqnr_db:.2f} | {result.p99_absolute_error:.5f} | "
+            f"{result.nan_count}/{result.inf_count} |"
         )
 
 
@@ -153,6 +191,7 @@ def main() -> None:
     parser.add_argument("--num-heads", type=int, default=8)
     parser.add_argument("--seq-lens", type=parse_int_list, default=[512, 1024, 2048])
     parser.add_argument("--head-dims", type=parse_int_list, default=[128])
+    parser.add_argument("--seeds", type=parse_int_list, default=[0, 1, 2])
     parser.add_argument("--dtype", choices=("bfloat16", "float16"), default="bfloat16")
     parser.add_argument("--causal", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
@@ -165,6 +204,7 @@ def main() -> None:
         action="store_true",
         help="do not flush L2 between iterations (the default measures cold L2)",
     )
+    parser.add_argument("--output-json", type=Path)
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -186,7 +226,6 @@ def main() -> None:
         )
 
     dtype = getattr(torch, args.dtype)
-    torch.manual_seed(0)
     print(f"GPU: {torch.cuda.get_device_name()}")
     print(
         f"B={args.batch_size}, H={args.num_heads}, dtype={args.dtype}, "
@@ -199,20 +238,41 @@ def main() -> None:
     results: list[Result] = []
     for head_dim in args.head_dims:
         for seq_len in args.seq_lens:
-            print(f"Benchmarking S={seq_len}, D={head_dim} ...", flush=True)
-            results.append(
-                benchmark_shape(
-                    batch_size=args.batch_size,
-                    num_heads=args.num_heads,
-                    seq_len=seq_len,
-                    head_dim=head_dim,
-                    dtype=dtype,
-                    args=args,
+            for seed in args.seeds:
+                print(
+                    f"Benchmarking S={seq_len}, D={head_dim}, seed={seed} ...",
+                    flush=True,
                 )
-            )
-            gc.collect()
-            torch.cuda.empty_cache()
+                results.append(
+                    benchmark_shape(
+                        batch_size=args.batch_size,
+                        num_heads=args.num_heads,
+                        seq_len=seq_len,
+                        head_dim=head_dim,
+                        dtype=dtype,
+                        seed=seed,
+                        args=args,
+                    )
+                )
+                gc.collect()
+                torch.cuda.empty_cache()
     print_results(results=results, dtype=dtype)
+    if args.output_json:
+        payload = {
+            "schema_version": 1,
+            "gpu": torch.cuda.get_device_name(),
+            "compute_capability": list(torch.cuda.get_device_capability()),
+            "dtype": args.dtype,
+            "causal": args.causal,
+            "per_block_mean": args.per_block_mean,
+            "l2": "warm" if args.warm_l2 else "cold",
+            "warmup_ms": args.warmup_ms,
+            "measure_ms": args.measure_ms,
+            "scope": "dense MHA self-attention; not SGLang paged serving",
+            "results": [asdict(result) for result in results],
+        }
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        args.output_json.write_text(json.dumps(payload, indent=2) + "\n")
 
 
 if __name__ == "__main__":
