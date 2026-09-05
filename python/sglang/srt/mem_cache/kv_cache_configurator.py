@@ -692,6 +692,7 @@ class KVCacheConfigurator:
             enable_mamba_extra_buffer=mamba_extra_buffer_enabled(),
             speculative_num_draft_tokens=get_spec().speculative_num_draft_tokens,
             disable_overlap_schedule=get_schedule().disable_overlap_schedule,
+            enable_mamba_extra_buffer_lazy=mamba_extra_buffer_lazy_enabled(),
             need_sort=get_disagg().disaggregation_mode in ("decode", "prefill"),
             decode_pre_alloc_size=(
                 get_disagg().disaggregation_decode_extra_slots
@@ -812,6 +813,7 @@ class KVCacheConfigurator:
             max_num_reqs=max_num_reqs,
             enable_memory_saver=get_exec().features.enable_memory_saver,
             enable_mamba_extra_buffer=self.server_args.enable_mamba_extra_buffer(),
+            enable_mamba_extra_buffer_lazy=mamba_extra_buffer_lazy_enabled(),
             disable_overlap_schedule=get_schedule().disable_overlap_schedule,
             need_sort=get_disagg().disaggregation_mode in ("decode", "prefill"),
             speculative_num_draft_tokens=get_spec().speculative_num_draft_tokens,
