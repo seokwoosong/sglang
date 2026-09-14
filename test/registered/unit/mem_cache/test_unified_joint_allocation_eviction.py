@@ -268,9 +268,11 @@ class TestUnifiedJointAllocationEviction(CustomTestCase):
             UnifiedSWAAllocatorBase.get_extend_allocation_demand,
             BaseTokenToKVPoolAllocator.get_extend_allocation_demand,
         )
-        self.assertIs(
-            UnifiedMambaSWATokenToKVPoolAllocator.get_extend_allocation_demand,
-            BaseTokenToKVPoolAllocator.get_extend_allocation_demand,
+        self.assertEqual(
+            UnifiedMambaSWATokenToKVPoolAllocator.get_extend_allocation_demand(
+                allocator, prefix, seq, **kwargs
+            ),
+            8,
         )
         self.assertEqual(
             BaseTokenToKVPoolAllocator.get_extend_allocation_demand(
