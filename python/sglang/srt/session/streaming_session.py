@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 import torch
 
@@ -373,8 +373,15 @@ class StreamingSession(BasePrefixCache):
     def evict(self, params: EvictParams) -> EvictResult:
         return self.inner.evict(params)
 
-    def evict_for_alloc(self, params: EvictParams) -> EvictResult:
-        return self.inner.evict_for_alloc(params)
+    def evict_for_alloc(
+        self,
+        params: EvictParams,
+        *,
+        allocation_reclaim_satisfied: Optional[Callable[[], bool]] = None,
+    ) -> EvictResult:
+        return self.inner.evict_for_alloc(
+            params, allocation_reclaim_satisfied=allocation_reclaim_satisfied
+        )
 
     def inc_lock_ref(self, node: Any) -> IncLockRefResult:
         result = self.try_inc_lock_ref(node)

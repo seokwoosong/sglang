@@ -40,6 +40,7 @@ from sglang.srt.mem_cache.allocator.unified_sub_pool import (
 )
 from sglang.srt.mem_cache.unified_memory_pool import UnifiedKVPool
 from sglang.srt.utils.common import get_num_new_pages
+from sglang.srt.utils.rank_consensus_checker import rank_consensus
 
 logger = logging.getLogger(__name__)
 
@@ -1086,11 +1087,32 @@ class UnifiedSWATokenToKVPoolAllocator(UnifiedSWAAllocatorBase):
                 hi = mid - 1
         return lo
 
+    def get_extend_allocation_demand(
+        self,
+        prefix_lens_cpu: torch.Tensor,
+        seq_lens_cpu: torch.Tensor,
+        *,
+        conservative_num_tokens: int,
+        shard_size: int,
+    ) -> int:
+        if shard_size != 1:
+            return conservative_num_tokens
+        return self.page_size * get_num_new_pages(
+            seq_lens=seq_lens_cpu,
+            page_size=self.page_size,
+            prefix_lens=prefix_lens_cpu,
+        )
+
+    @rank_consensus(same_params=["num_tokens"], same_results=True)
     def evict_to_free_tokens(self, tree_cache, num_tokens: int) -> bool | None:
         from sglang.srt.mem_cache.base_prefix_cache import EvictParams
 
         if tree_cache is None or tree_cache.is_chunk_cache():
             return
+        _flush_deferred_free_group(
+            self,
+            (self.free_group, self.free_page_reps_group, self.full_free_group),
+        )
         reclaim_plan = self.reclaim_plan(
             num_tokens,
             num_tokens,
@@ -1102,7 +1124,10 @@ class UnifiedSWATokenToKVPoolAllocator(UnifiedSWAAllocatorBase):
         full_reclaim, swa_reclaim = reclaim_plan
         if full_reclaim or swa_reclaim:
             tree_cache.evict_for_alloc(
-                EvictParams(num_tokens=full_reclaim, swa_num_tokens=swa_reclaim)
+                EvictParams(num_tokens=full_reclaim, swa_num_tokens=swa_reclaim),
+                allocation_reclaim_satisfied=lambda: (
+                    self.reclaim_plan(num_tokens, num_tokens) == (0, 0)
+                ),
             )
         # A zero-reclaim plan can still depend on compaction before allocation.
         return self.ensure_capacity(num_tokens, num_tokens)

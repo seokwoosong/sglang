@@ -95,6 +95,17 @@ class BaseTokenToKVPoolAllocator(abc.ABC):
             0, min(max_new_tokens, token_capacity - paged_input - self.page_size - 1)
         )
 
+    def get_extend_allocation_demand(
+        self,
+        prefix_lens_cpu: torch.Tensor,
+        seq_lens_cpu: torch.Tensor,
+        *,
+        conservative_num_tokens: int,
+        shard_size: int,
+    ) -> int:
+        """Token demand for eviction before paged extend."""
+        return conservative_num_tokens
+
     def evict_to_free_tokens(self, tree_cache, num_tokens: int) -> bool | None:
         """Evict unlocked prefix-cache entries until this allocator can serve
         ``num_tokens`` or nothing evictable remains.
