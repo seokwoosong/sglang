@@ -1,0 +1,11 @@
+# Tri capacity contract amendment
+
+The candidate's addition of conserve caps to ensure_capacity breaks 72 existing subcases in `TestJointCapacityIsHonoured.test_fresh_boot_alloc_of_available_size_succeeds`; see `tri-existing-initial.log`. Prior tests all passed on the frozen base. This is a real candidate regression, not a test expectation to change.
+
+At frozen #36729, tri `available_size()` computes physical page feasibility, and actual `alloc` always calls `ensure_capacity`. The preexisting ensure checked equal demand, then `available_size`, then recovery; it did NOT enforce `_full_max_total_num_tokens`/`_swa_max_total_num_tokens`. The conservation methods are explicitly documented bookkeeping views, and the tri inherits Base.check_decode_capacity (`evict_to_free_tokens` then `available_size>=num_tokens`) as well. Thus enforcing nominal partition sizes as hard allocation limits changes the current branch contract. This is analogous to the earlier two-pool static-cap mismatch, and my plan overgeneralized the legacy cap.
+
+Proposed correction, without modifying existing capacity tests or admission/reporting: use actual FULL owner free virtual IDs and physical page envelope limits for `_token_id_capacity`, pure certificate and optimistic cache-reclaim guard. Remove nominal conservation caps from these new hard rejection paths. Keep all existing conserve/full_available/swa_available APIs and scheduler admission untouched. Physical required-pair bytes plus pinned live bytes/sink still guard impossible requests before eviction; the virtual-ID namespace guard remains independent. Callback immediate readiness and executor must agree with the existing actual allocation contract. Existing 95-prefix and strict live payload regressions remain mandatory.
+
+This does mean experimental temporal `demand = available_size()+1` can differ from cap-limited admission, as already observed; tests will declare the actual demanded size and derive retention expectations from real allocation, not label nominal ceilings physical impossibility.
+
+Please approve this contract correction as an amendment. Source/test diff remains isolated; no final claim or remote mutation. The shared FLOAT gate owner guard is implemented per approved supplement.

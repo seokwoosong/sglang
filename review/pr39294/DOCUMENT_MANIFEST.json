@@ -1,0 +1,245 @@
+{
+  "base_commit": "6c8bbdf610fae5a3ddba826162bc7ca91e79dbfb",
+  "validated_code_tree": "fe601ec6fc21ca0efc9c914385f9e3ffc77ccacf",
+  "code_commits": [
+    {
+      "commit": "7b98cd9a8693581d95b981b8bc48ffae404c9ae2",
+      "tree": "e4adfed934c78ebd659152d2990de85f6e3e17dc",
+      "title": "fix(mem-cache): bound unified joint allocation reclaim"
+    },
+    {
+      "commit": "899fe03521d208cb118ef725334b5bae8774185f",
+      "tree": "49db88df391369e7c713546811cbf2806a574f4f",
+      "title": "fix(mem-cache): respect FLOAT movement gates"
+    },
+    {
+      "commit": "c3903a5be81e1af075b240d17f15b1b7b9785ee9",
+      "tree": "fe601ec6fc21ca0efc9c914385f9e3ffc77ccacf",
+      "title": "fix(mem-cache): preserve tri-pool prefixes during joint reclaim"
+    }
+  ],
+  "documents": [
+    {
+      "path": "review/pr39294/history/CANDIDATE_ACCEPTANCE.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/CANDIDATE_ACCEPTANCE.md",
+      "source_sha256": "37396ade81283ac4afa5d75c88bbff733c61e8c1c1177c849866f23f9302f006",
+      "bundled_sha256": "37396ade81283ac4afa5d75c88bbff733c61e8c1c1177c849866f23f9302f006"
+    },
+    {
+      "path": "review/pr39294/history/CANDIDATE_REVIEW.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/CANDIDATE_REVIEW.md",
+      "source_sha256": "508022ff54d40cb62a195b0a53c5853948dc7a0aa952c66ea43e278a73dbf8fb",
+      "bundled_sha256": "508022ff54d40cb62a195b0a53c5853948dc7a0aa952c66ea43e278a73dbf8fb"
+    },
+    {
+      "path": "review/pr39294/history/COORDINATION_COMMENT_READY.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/COORDINATION_COMMENT_READY.md",
+      "source_sha256": "d19e0a40504cbb70a88cc79832e20fe52989ef0e64b0cfa7e100a94c2e4f9edd",
+      "bundled_sha256": "d19e0a40504cbb70a88cc79832e20fe52989ef0e64b0cfa7e100a94c2e4f9edd"
+    },
+    {
+      "path": "review/pr39294/history/FINAL_STATUS_KO.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/FINAL_STATUS_KO.md",
+      "source_sha256": "72ba49f9f6fb707a07858588c24e87152bd155bcf173e7ceb6e2cba067129ba3",
+      "bundled_sha256": "72ba49f9f6fb707a07858588c24e87152bd155bcf173e7ceb6e2cba067129ba3"
+    },
+    {
+      "path": "review/pr39294/history/GPU_JOINT_EXTRA_REVIEW.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/GPU_JOINT_EXTRA_REVIEW.md",
+      "source_sha256": "2d485727ac41cc0751784ba0470a11973ffdc87b6a8b7b3921b4a6e93dd6bf6a",
+      "bundled_sha256": "2d485727ac41cc0751784ba0470a11973ffdc87b6a8b7b3921b4a6e93dd6bf6a"
+    },
+    {
+      "path": "review/pr39294/history/GPU_RESULTS_ACCEPTANCE.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/GPU_RESULTS_ACCEPTANCE.md",
+      "source_sha256": "ee543bc5aa146f229b893a4a02f677d027563c11ac5eea0688e96e0081d79fb0",
+      "bundled_sha256": "ee543bc5aa146f229b893a4a02f677d027563c11ac5eea0688e96e0081d79fb0"
+    },
+    {
+      "path": "review/pr39294/history/GPU_RESULTS_REVIEW_REQUEST.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/GPU_RESULTS_REVIEW_REQUEST.md",
+      "source_sha256": "fdbc17220efb668e20b4e249a1959150db58d25488e8bac62b0fc48ea50ccc9f",
+      "bundled_sha256": "fdbc17220efb668e20b4e249a1959150db58d25488e8bac62b0fc48ea50ccc9f"
+    },
+    {
+      "path": "review/pr39294/history/PLAN.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/PLAN.md",
+      "source_sha256": "dd62c1e2eda2bc45388b3f0aaec52bd02e004928b7fd75f990250a7d1f452eec",
+      "bundled_sha256": "dd62c1e2eda2bc45388b3f0aaec52bd02e004928b7fd75f990250a7d1f452eec"
+    },
+    {
+      "path": "review/pr39294/history/PLAN_REVIEW.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/PLAN_REVIEW.md",
+      "source_sha256": "6f5c503624510c6d34220a2653977688bba6004462a4fce26b5e75a7d1cf25fb",
+      "bundled_sha256": "6f5c503624510c6d34220a2653977688bba6004462a4fce26b5e75a7d1cf25fb"
+    },
+    {
+      "path": "review/pr39294/history/PR_UNIFIED_JOINT_ALLOCATION_REVIEW_UPDATE.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/PR_UNIFIED_JOINT_ALLOCATION_REVIEW_UPDATE.md",
+      "source_sha256": "50ba23f204c94893e88d354727a0236309f1cb6899d6ac31060500c152733293",
+      "bundled_sha256": "50ba23f204c94893e88d354727a0236309f1cb6899d6ac31060500c152733293"
+    },
+    {
+      "path": "review/pr39294/history/REVIEW_KO.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/REVIEW_KO.md",
+      "source_sha256": "a12a522c3029997ba22948fc9faf50863173584a7c0ebe954606540181a4a2a8",
+      "bundled_sha256": "a12a522c3029997ba22948fc9faf50863173584a7c0ebe954606540181a4a2a8"
+    },
+    {
+      "path": "review/pr39294/history/REVIEW_REPLIES_FLOAT_DRAFT.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/REVIEW_REPLIES_FLOAT_DRAFT.md",
+      "source_sha256": "4aa70505fccd1417567a3fa52c5d3048278caf55ffb92d44edde8109a3670f7c",
+      "bundled_sha256": "4aa70505fccd1417567a3fa52c5d3048278caf55ffb92d44edde8109a3670f7c"
+    },
+    {
+      "path": "review/pr39294/history/REVIEW_REPLIES_READY.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/REVIEW_REPLIES_READY.md",
+      "source_sha256": "b80b4d65a849c11553ae8d43f976d96c93bfdd4f1014a52c63713919db3b6bc0",
+      "bundled_sha256": "b80b4d65a849c11553ae8d43f976d96c93bfdd4f1014a52c63713919db3b6bc0"
+    },
+    {
+      "path": "review/pr39294/history/REVIEW_REPLY_DRAFTS.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/REVIEW_REPLY_DRAFTS.md",
+      "source_sha256": "fe34fe7599cc2a1f6f1509da84dc29dfede00e24880f084e2c7a6ce288292e87",
+      "bundled_sha256": "fe34fe7599cc2a1f6f1509da84dc29dfede00e24880f084e2c7a6ce288292e87"
+    },
+    {
+      "path": "review/pr39294/history/STAGE_B_REVIEW.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/STAGE_B_REVIEW.md",
+      "source_sha256": "9c67bb9f956b9e7de6cdc1b76adbb1b4db243a0e565ee675e947d0f42da9e23b",
+      "bundled_sha256": "9c67bb9f956b9e7de6cdc1b76adbb1b4db243a0e565ee675e947d0f42da9e23b"
+    },
+    {
+      "path": "review/pr39294/history/TRI_CANDIDATE_ACCEPTANCE.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_CANDIDATE_ACCEPTANCE.md",
+      "source_sha256": "94f1fbb1df141f97ee3842e19fe6c19a87aad25a97e052d1b35210999a246afc",
+      "bundled_sha256": "94f1fbb1df141f97ee3842e19fe6c19a87aad25a97e052d1b35210999a246afc"
+    },
+    {
+      "path": "review/pr39294/history/TRI_CANDIDATE_REVIEW.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_CANDIDATE_REVIEW.md",
+      "source_sha256": "b3099d79e517913e038c04dc3cd2fe337d1df1950f468427db1bb7cb8bb24966",
+      "bundled_sha256": "b3099d79e517913e038c04dc3cd2fe337d1df1950f468427db1bb7cb8bb24966"
+    },
+    {
+      "path": "review/pr39294/history/TRI_CAPACITY_AMENDMENT.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_CAPACITY_AMENDMENT.md",
+      "source_sha256": "961e8e59e7ef42827e4630cee762cc6b3fb2695beeaafc737b8249c48b035fe2",
+      "bundled_sha256": "961e8e59e7ef42827e4630cee762cc6b3fb2695beeaafc737b8249c48b035fe2"
+    },
+    {
+      "path": "review/pr39294/history/TRI_DESIGN_ADVICE.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_DESIGN_ADVICE.md",
+      "source_sha256": "18cc3f0e372328b8e01b23f2187f286b2fd2fce4f5e678b67dd08e9ded314f5e",
+      "bundled_sha256": "18cc3f0e372328b8e01b23f2187f286b2fd2fce4f5e678b67dd08e9ded314f5e"
+    },
+    {
+      "path": "review/pr39294/history/TRI_FLOAT_CANDIDATE_ACCEPTANCE.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_FLOAT_CANDIDATE_ACCEPTANCE.md",
+      "source_sha256": "b64ffefd5b703deea09e5fff9b911212dd26f897e85b34e813b1b3036e3e53ce",
+      "bundled_sha256": "b64ffefd5b703deea09e5fff9b911212dd26f897e85b34e813b1b3036e3e53ce"
+    },
+    {
+      "path": "review/pr39294/history/TRI_FLOAT_CANDIDATE_REVIEW_REQUEST.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_FLOAT_CANDIDATE_REVIEW_REQUEST.md",
+      "source_sha256": "d2497cf78eecb55a72d4bd6d2ff07ef17a4cbc02a1dc8553479d49f4d822051f",
+      "bundled_sha256": "d2497cf78eecb55a72d4bd6d2ff07ef17a4cbc02a1dc8553479d49f4d822051f"
+    },
+    {
+      "path": "review/pr39294/history/TRI_FLOAT_SUPPLEMENT_PLAN.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_FLOAT_SUPPLEMENT_PLAN.md",
+      "source_sha256": "67a274cfbc18394d6a1bd7a45f6a3a85807127630ab54f4faf73d7174dfe39b9",
+      "bundled_sha256": "67a274cfbc18394d6a1bd7a45f6a3a85807127630ab54f4faf73d7174dfe39b9"
+    },
+    {
+      "path": "review/pr39294/history/TRI_FLOAT_SUPPLEMENT_REVIEW.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_FLOAT_SUPPLEMENT_REVIEW.md",
+      "source_sha256": "4677bbbf42bb81c12b207d62278c4ca8225ef38bf67be11ea5b3207dd3336418",
+      "bundled_sha256": "4677bbbf42bb81c12b207d62278c4ca8225ef38bf67be11ea5b3207dd3336418"
+    },
+    {
+      "path": "review/pr39294/history/TRI_GPU_ACCEPTANCE.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_GPU_ACCEPTANCE.md",
+      "source_sha256": "6d7abc2c70e7f9788a6dd4f0c006021bba793a5a8897ff9e7bf7c2d205469299",
+      "bundled_sha256": "6d7abc2c70e7f9788a6dd4f0c006021bba793a5a8897ff9e7bf7c2d205469299"
+    },
+    {
+      "path": "review/pr39294/history/TRI_GPU_HARNESS_REVIEW.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_GPU_HARNESS_REVIEW.md",
+      "source_sha256": "448af3071d905252710b0ab43f1288613e601c62950d9bded0de97dbdf7a3633",
+      "bundled_sha256": "448af3071d905252710b0ab43f1288613e601c62950d9bded0de97dbdf7a3633"
+    },
+    {
+      "path": "review/pr39294/history/TRI_GPU_PLAN.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_GPU_PLAN.md",
+      "source_sha256": "8a7ed5ce2b72b9eecf5934fb263616b5f6a84eb01b8b4f1f74c8f613c4861afb",
+      "bundled_sha256": "8a7ed5ce2b72b9eecf5934fb263616b5f6a84eb01b8b4f1f74c8f613c4861afb"
+    },
+    {
+      "path": "review/pr39294/history/TRI_GPU_V3_REVIEW.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_GPU_V3_REVIEW.md",
+      "source_sha256": "57745a0336b26e4cc71353dbc046b70a8a065325b3ea842f23d909cc41a1e70c",
+      "bundled_sha256": "57745a0336b26e4cc71353dbc046b70a8a065325b3ea842f23d909cc41a1e70c"
+    },
+    {
+      "path": "review/pr39294/history/TRI_PLAN.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_PLAN.md",
+      "source_sha256": "617cca66339400bf8806166e9ac7d767b8c4192eb2bbfabb2ac453390f9b1ad4",
+      "bundled_sha256": "617cca66339400bf8806166e9ac7d767b8c4192eb2bbfabb2ac453390f9b1ad4"
+    },
+    {
+      "path": "review/pr39294/history/TRI_PLAN_ADDENDUM.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_PLAN_ADDENDUM.md",
+      "source_sha256": "ffe5828fa72fcd4a688555489d38a4d9e5cdc65c9356f7532da4998229948b11",
+      "bundled_sha256": "ffe5828fa72fcd4a688555489d38a4d9e5cdc65c9356f7532da4998229948b11"
+    },
+    {
+      "path": "review/pr39294/history/TRI_PLAN_REVIEW.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_PLAN_REVIEW.md",
+      "source_sha256": "5bb939a8c4727b87113706bfd06d0d4911be37c387fdf8b61a15db42d8c92718",
+      "bundled_sha256": "5bb939a8c4727b87113706bfd06d0d4911be37c387fdf8b61a15db42d8c92718"
+    },
+    {
+      "path": "review/pr39294/history/TRI_RETENTION_REGRESSION_REVIEW.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/TRI_RETENTION_REGRESSION_REVIEW.md",
+      "source_sha256": "84ed0a1d3b49486f16ebac8afe71387f23c46cdd6097c2df7398fde8224d6a62",
+      "bundled_sha256": "84ed0a1d3b49486f16ebac8afe71387f23c46cdd6097c2df7398fde8224d6a62"
+    },
+    {
+      "path": "review/pr39294/history/comparison.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/comparison.md",
+      "source_sha256": "ba2879701ddbec0e60dffe9dec791a47d092825326e4ffb6c237a53366dafefa",
+      "bundled_sha256": "ba2879701ddbec0e60dffe9dec791a47d092825326e4ffb6c237a53366dafefa"
+    },
+    {
+      "path": "review/pr39294/history/stage-a-supplement.md",
+      "source_path": "/home/sukwoo24/sglang-eval-results/pr39294-review-20260914/stage-a-supplement.md",
+      "source_sha256": "09739ebfe48ac625b9446aa3f1b124f7bfedca86c1604c93a804ef0d53ba7d01",
+      "bundled_sha256": "09739ebfe48ac625b9446aa3f1b124f7bfedca86c1604c93a804ef0d53ba7d01"
+    },
+    {
+      "path": "PR39294_REVIEW_REPLIES.md",
+      "source_path": "/home/sukwoo24/sglang/PR39294_REVIEW_REPLIES.md",
+      "source_sha256": "74369ea1d00a78e4f2ba29d8a734a775e3670a6b9022de74dccf0014009d00be",
+      "bundled_sha256": "74369ea1d00a78e4f2ba29d8a734a775e3670a6b9022de74dccf0014009d00be"
+    },
+    {
+      "path": "PR_UNIFIED_JOINT_ALLOCATION.md",
+      "source_path": "/home/sukwoo24/sglang/PR_UNIFIED_JOINT_ALLOCATION.md",
+      "source_sha256": "5293bec543f75c82e9a22d6a66a4f3d60de1e14f70f29617e4a22f1f7b253941",
+      "bundled_sha256": "5293bec543f75c82e9a22d6a66a4f3d60de1e14f70f29617e4a22f1f7b253941"
+    },
+    {
+      "path": "REVIEW_UNIFIED_JOINT_ALLOCATION.md",
+      "source_path": "/home/sukwoo24/sglang/REVIEW_UNIFIED_JOINT_ALLOCATION.md",
+      "source_sha256": "dd48ee923c37da3a3266df79b308c487b492767ec327e49f12ed180826087317",
+      "bundled_sha256": "dd48ee923c37da3a3266df79b308c487b492767ec327e49f12ed180826087317"
+    },
+    {
+      "path": "REVIEW_UNIFIED_JOINT_ALLOCATION_FOLLOWUP.md",
+      "source_path": "/home/sukwoo24/sglang/REVIEW_UNIFIED_JOINT_ALLOCATION_FOLLOWUP.md",
+      "source_sha256": "ee267bcffbe948535c7856e4206c756fab0257d38b9f3c8ad2b0d7907f817772",
+      "bundled_sha256": "ee267bcffbe948535c7856e4206c756fab0257d38b9f3c8ad2b0d7907f817772"
+    }
+  ]
+}
