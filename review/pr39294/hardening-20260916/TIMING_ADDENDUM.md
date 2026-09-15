@@ -1,0 +1,3 @@
+# Timing correction to FINDINGS.md
+
+The three reproduction processes took about27.6seconds combined execution time, but elapsed wall time from the initial Rust failure to completion of the baseline replay was 223.3seconds. This exceeds the planned two-minute reduction wall-clock cap; static source inspection and comparator worktree preparation occupied the intervening time. FINDINGS.md's sentence claiming the replay/comparison stayed within the time allowance is too broad and is superseded by this note. No further reproductions or expansions are launched. The overall20minute CPU batch deadline was not exhausted. Report this scheduling deviation separately from the reproduced capacity defect; it does not change the47/47/7 observed values.

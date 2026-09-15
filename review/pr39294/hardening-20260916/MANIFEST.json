@@ -1,0 +1,105 @@
+{
+  "code_commit": "88988f6ed8552e1f1df15238da8c13365e0c3721",
+  "tested_code_tree": "bbf48421d7d23dfd888b687a718e8714b39cea16",
+  "artifact_root": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916",
+  "files": [
+    {
+      "path": "HARDENING_RESULTS.md",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/HARDENING_RESULTS.md",
+      "source_sha256": "0309849878122f4b1dab238ad3a2f4d7aae5639233d8dd8d07562cfb6d4b4d9e",
+      "copied_sha256": "b180d912bb222f8050b9f70b02a88a89fe9b41883c0bc469c41bb309c541a722",
+      "presentation_edited": true
+    },
+    {
+      "path": "GATE_FIX_REVIEW.md",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/GATE_FIX_REVIEW.md",
+      "source_sha256": "177347df2fc67e1050b9aeded10215e07c9f2826819d5f9eb4fb18bf7d7a2c98",
+      "copied_sha256": "177347df2fc67e1050b9aeded10215e07c9f2826819d5f9eb4fb18bf7d7a2c98",
+      "presentation_edited": false
+    },
+    {
+      "path": "TIMING_ADDENDUM.md",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/TIMING_ADDENDUM.md",
+      "source_sha256": "d7af11c383c1a1063d801add06d98e5afa6027e54dfbb73833ae3997ed6efb92",
+      "copied_sha256": "d7af11c383c1a1063d801add06d98e5afa6027e54dfbb73833ae3997ed6efb92",
+      "presentation_edited": false
+    },
+    {
+      "path": "pending-fix-final/REVIEW.md",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/pending-fix-final/REVIEW.md",
+      "source_sha256": "2331759bf257ef8791957e732cd45975596ede920c438ca122e78ef96627defe",
+      "copied_sha256": "2331759bf257ef8791957e732cd45975596ede920c438ca122e78ef96627defe",
+      "presentation_edited": false
+    },
+    {
+      "path": "pending-fix-final/RESULTS.json",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/pending-fix-final/RESULTS.json",
+      "source_sha256": "f81c4475f56db7a9e8298354dc83896b4102eb83c7ca4b67b2019f77e6eaed89",
+      "copied_sha256": "f81c4475f56db7a9e8298354dc83896b4102eb83c7ca4b67b2019f77e6eaed89",
+      "presentation_edited": false
+    },
+    {
+      "path": "pending-fix-gpu/INDEX_REVIEW.md",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/pending-fix-gpu/INDEX_REVIEW.md",
+      "source_sha256": "59f35ba98b634695dfe956c40d9db1ab66e09cab597803e173f5cf4f7db29140",
+      "copied_sha256": "59f35ba98b634695dfe956c40d9db1ab66e09cab597803e173f5cf4f7db29140",
+      "presentation_edited": false
+    },
+    {
+      "path": "pending-fix-gpu/STATUS.json",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/pending-fix-gpu/STATUS.json",
+      "source_sha256": "fe78d7bccc6b10bc7d59dceebda1e38a616f027751bd84e0e80f49d8ad10bc2d",
+      "copied_sha256": "fe78d7bccc6b10bc7d59dceebda1e38a616f027751bd84e0e80f49d8ad10bc2d",
+      "presentation_edited": false
+    },
+    {
+      "path": "pending-fix-cpu-completion/STATUS.json",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/pending-fix-cpu-completion/STATUS.json",
+      "source_sha256": "8a76669c67a8c85d1d0a0332bdcb594f614ae069fff32192f0aa0fd47b2bacd3",
+      "copied_sha256": "8a76669c67a8c85d1d0a0332bdcb594f614ae069fff32192f0aa0fd47b2bacd3",
+      "presentation_edited": false
+    },
+    {
+      "path": "pending-fix-cpu-completion/SOURCE.json",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/pending-fix-cpu-completion/SOURCE.json",
+      "source_sha256": "9ece67bd85f9ca3700f0a4a9cf3818804cf69f80fce013bbcb409d3f37f0b5af",
+      "copied_sha256": "9ece67bd85f9ca3700f0a4a9cf3818804cf69f80fce013bbcb409d3f37f0b5af",
+      "presentation_edited": false
+    },
+    {
+      "path": "serving-startup-disposition/REVIEW.md",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/serving-startup-disposition/REVIEW.md",
+      "source_sha256": "6f2045bd38816f278130c96be3a0921d02fae61999c30a48d46f89a6542b4a9d",
+      "copied_sha256": "6f2045bd38816f278130c96be3a0921d02fae61999c30a48d46f89a6542b4a9d",
+      "presentation_edited": false
+    },
+    {
+      "path": "serving-v4/serving-status.json",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/serving-v4/serving-status.json",
+      "source_sha256": "bda025942446a4fadb8eea68077c4d923f29f598d85a665a88a9a41dc8723a70",
+      "copied_sha256": "bda025942446a4fadb8eea68077c4d923f29f598d85a665a88a9a41dc8723a70",
+      "presentation_edited": false
+    },
+    {
+      "path": "p2-final/SOURCE.json",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/p2-final/SOURCE.json",
+      "source_sha256": "e630d703d8dd4bf536933685052439327dd38f0828d4321f5e411a908c53bfbb",
+      "copied_sha256": "e630d703d8dd4bf536933685052439327dd38f0828d4321f5e411a908c53bfbb",
+      "presentation_edited": false
+    },
+    {
+      "path": "p2-final/p2.run.json",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/p2-final/p2.run.json",
+      "source_sha256": "16e0858af4dfecb611186f8fcfb26d4dadcabd9239fa30f7682d215baaa77b9c",
+      "copied_sha256": "16e0858af4dfecb611186f8fcfb26d4dadcabd9239fa30f7682d215baaa77b9c",
+      "presentation_edited": false
+    },
+    {
+      "path": "final-disposition/REVIEW.md",
+      "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/final-disposition/REVIEW.md",
+      "source_sha256": "21a2c2bff8b6bcdbf0c414c766ecc7b708229a10e88b5b1567a232cfd8a6afe6",
+      "copied_sha256": "21a2c2bff8b6bcdbf0c414c766ecc7b708229a10e88b5b1567a232cfd8a6afe6",
+      "presentation_edited": false
+    }
+  ]
+}

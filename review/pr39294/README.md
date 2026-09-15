@@ -1,5 +1,9 @@
 # PR #39294 review branch
 
+## 2026-09-16 hardening 추가 검증
+
+[최종 결과와 한계](hardening-20260916/HARDENING_RESULTS.md), [지정 세션의 최종 승인](hardening-20260916/final-disposition/REVIEW.md), [문서·원본 SHA manifest](hardening-20260916/MANIFEST.json). 동적 gate capacity 캐시와 같은 이벤트의 pending source 누락을 별도 수정했다. 최종 CPU 281 tests/1,636 subtests, Rust 25/131, P2 14/25를 통과했고 CUDA same-event 4 PASS / different-event 4 INCONCLUSIVE다. 실서빙은 baseline config-loader 호환성 문제로 추론 전에 중단됐다. 로컬 보존이며 push·PR 반영·merge 완료를 뜻하지 않는다. 아래 내용은 이전 rebase checkpoint 기록으로 보존한다.
+
 이 branch를 후속 수정의 작업 기준으로 사용한다. 최신으로 fetch한 #36729와 upstream main을 합친 기반 위에 기존 후속 수정 4개 커밋을 rebase했다. GitHub PR #39294 반영 또는 maintainer의 merge 승인을 뜻하지 않는다.
 
 ## 현재 기준과 변경

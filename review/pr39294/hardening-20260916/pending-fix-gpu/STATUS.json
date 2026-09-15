@@ -1,0 +1,22 @@
+[
+  {
+    "layout": 2,
+    "page": 1,
+    "exit_code": 0
+  },
+  {
+    "layout": 2,
+    "page": 4,
+    "exit_code": 0
+  },
+  {
+    "layout": 3,
+    "page": 1,
+    "exit_code": 0
+  },
+  {
+    "layout": 3,
+    "page": 4,
+    "exit_code": 0
+  }
+]

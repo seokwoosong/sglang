@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/home/sukwoo24/.venv_sglang_upstream_full/bin/python",
+    "-B",
+    "-m",
+    "pytest",
+    "-q",
+    "test/registered/unit/disaggregation/test_unified_memory_move_gate.py",
+    "test/registered/unit/server_args/test_unified_prefill_cuda_graph_gate.py"
+  ],
+  "cwd": "/home/sukwoo24/sglang-eval-worktrees/pr39294-gate-memo-hardening",
+  "start": 1789493550.2396698,
+  "end": 1789493564.2799,
+  "monotonic_start": 18868.517053197,
+  "monotonic_deadline": 18988.517053197,
+  "limits": {
+    "seconds": 120.0,
+    "rss_bytes": 8589934592,
+    "log_bytes": 33554432,
+    "gpu_process_mib": null
+  },
+  "exit_code": 0,
+  "reason": null,
+  "peak_rss": 1434038272,
+  "peak_gpu_process_mib": 0
+}
