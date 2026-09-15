@@ -1,0 +1,5 @@
+{
+  "extension": "/home/sukwoo24/.cache/sglang/rust_extensions/artifacts/sglang-radix-tree/63ed8ef735ec9651254972883a68b5572e8dd2fc4004ac540ae7bca54bbe865b/mem_cache.cpython-312-x86_64-linux-gnu.so",
+  "sha256": "3db28452350c9ee0f5db36f56fae5234237e6cabd864a3383b386e312268ec88",
+  "InsertParamsBinding": "(key, value, extra_key=None, cache_salt=None, session_id=None, prev_prefix_len=0, swa_evicted_seqlen=0, swa_branching_seqlen=None, chunked=False, priority=0, mamba_value=None, track_adopted_ranges=False)"
+}
