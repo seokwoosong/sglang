@@ -399,6 +399,48 @@ class TestTriJointReclaim(CustomTestCase):
         self.check_payload(b, a, slots[1:], states[1:], states)
         self.assertFalse(a.verify_byte_accounting())
 
+    def test_ready_allocation_preserves_payload_with_closed_move_gates(self):
+        for page_size, lazy, grouped in itertools.product(
+            (1, 4), (False, True), (False, True)
+        ):
+            with self.subTest(page_size=page_size, lazy=lazy, grouped=grouped):
+                b, a, c = self.build(
+                    page_size=page_size, lazy=lazy, state_cache=page_size == 1
+                )
+                slots = a.alloc(96 * page_size)
+                states = a.mamba_allocator.alloc(8)
+                self.assertIsNotNone(slots)
+                self.assertIsNotNone(states)
+                self.stamp(b, a, slots, states)
+                if page_size == 1:
+                    records = self.insert_parts(c, slots, states)
+                else:
+                    # Paged cache owns KV; the request retains all Mamba states.
+                    key = RadixKey(array("q", range(len(slots))))
+                    c.insert(InsertParams(key=key, value=slots))
+                    records = [(key, slots.clone())]
+                for member in a._flush_targets():
+                    member.disagg_move_gate = lambda: False
+                if grouped:
+                    a.free_group_begin()
+                self.assertGreaterEqual(a.available_size(), page_size)
+                before = snapshot(a)
+                self.assertTrue(a.evict_to_free_tokens(c, page_size))
+                self.assertEqual(snapshot(a), before)
+                got = a.alloc(page_size)
+                self.assertIsNotNone(got)
+                self.assertEqual(len(got), page_size)
+                for key, prior in records:
+                    torch.testing.assert_close(
+                        c.match_prefix(MatchPrefixParams(key=key)).device_indices,
+                        prior,
+                    )
+                self.check_payload(b, a, slots, states, states)
+                self.assertFalse(a.verify_byte_accounting())
+                if grouped:
+                    self.assertIsNotNone(a.free_group)
+                    a.free_group_end()
+
     def test_ready_and_no_progress_skip_repeated_preparation(self):
         b, a, c = self.build()
         slots = a.alloc(96)

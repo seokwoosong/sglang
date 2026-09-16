@@ -1615,14 +1615,19 @@ class UnifiedMambaSWATokenToKVPoolAllocator(UnifiedSWAAllocatorBase):
 
     @rank_consensus(same_params=["num_tokens"], same_results=True)
     def evict_to_free_tokens(self, tree_cache, num_tokens: int) -> bool | None:
-        from sglang.srt.mem_cache.base_prefix_cache import EvictParams
-
         if tree_cache is None or tree_cache.is_chunk_cache():
             return
         if num_tokens <= 0:
             return True
-        self.flush_deferred_full_frees()
+        if self.free_group is not None:
+            self.flush_deferred_full_frees()
         num_tokens = -(-num_tokens // self.page_size) * self.page_size
+        # Immediate capacity needs no reclaim plan or layout preparation.
+        if self._token_id_capacity(num_tokens) and num_tokens <= self.available_size():
+            return True
+
+        from sglang.srt.mem_cache.base_prefix_cache import EvictParams
+
         full_reclaim = tree_cache.full_evictable_size()
         swa_reclaim = tree_cache.swa_evictable_size()
         state_reclaim = tree_cache.mamba_evictable_size()
