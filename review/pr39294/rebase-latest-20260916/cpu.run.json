@@ -1,0 +1,41 @@
+{
+  "command": [
+    "/home/sukwoo24/.venv_sglang_upstream_full/bin/python",
+    "-B",
+    "-m",
+    "pytest",
+    "-q",
+    "test/registered/unit/mem_cache/test_multi_ended_allocator.py",
+    "test/registered/unit/mem_cache/test_unified_tri_pool.py",
+    "test/registered/unit/mem_cache/test_unified_joint_allocation_eviction.py",
+    "test/registered/unit/mem_cache/test_unified_tri_joint_reclaim.py",
+    "test/registered/unit/mem_cache/test_unified_float_move_gate.py",
+    "test/registered/unit/mem_cache/test_unified_npool_sweep.py",
+    "test/registered/unit/mem_cache/test_unified_byte_budget_sizing.py",
+    "test/registered/unit/mem_cache/test_unified_byte_accounting.py",
+    "test/registered/unit/mem_cache/test_unified_capacity_memo.py",
+    "test/registered/unit/mem_cache/test_unified_swa_shared_virtual_ids.py",
+    "test/registered/unit/mem_cache/test_unified_free_no_host_sync.py",
+    "test/registered/unit/mem_cache/test_unified_radix_allocation_eviction.py",
+    "test/registered/unit/mem_cache/test_session_unified_radix_cache.py",
+    "test/registered/unit/mem_cache/test_unified_dynamic_gate_capacity.py",
+    "test/registered/unit/mem_cache/test_unified_pending_event_batches.py",
+    "test/registered/unit/disaggregation/test_unified_memory_move_gate.py",
+    "test/registered/unit/server_args/test_unified_prefill_cuda_graph_gate.py"
+  ],
+  "cwd": "/home/sukwoo24/sglang-eval-worktrees/pr39294-review",
+  "start": 1789552042.623172,
+  "end": 1789552120.9084344,
+  "monotonic_start": 322.34655393,
+  "monotonic_deadline": 502.30947517,
+  "limits": {
+    "seconds": 180.0,
+    "rss_bytes": 8589934592,
+    "log_bytes": 33554432,
+    "gpu_process_mib": null
+  },
+  "exit_code": 0,
+  "reason": null,
+  "peak_rss": 2773135360,
+  "peak_gpu_process_mib": 0
+}

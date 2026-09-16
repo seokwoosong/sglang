@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/home/sukwoo24/.venv_sglang_upstream_full/bin/python",
+    "-B",
+    "/home/sukwoo24/sglang-eval-results/pr39294-rebase-latest-20260916/rust_build.py"
+  ],
+  "cwd": "/home/sukwoo24/sglang-eval-worktrees/pr39294-review",
+  "start": 1789552329.3285322,
+  "end": 1789552378.075427,
+  "monotonic_start": 609.051914055,
+  "monotonic_deadline": 789.019589627,
+  "limits": {
+    "seconds": 180.0,
+    "rss_bytes": 8589934592,
+    "log_bytes": 33554432,
+    "gpu_process_mib": null
+  },
+  "exit_code": 0,
+  "reason": null,
+  "peak_rss": 5634940928,
+  "peak_gpu_process_mib": 0
+}

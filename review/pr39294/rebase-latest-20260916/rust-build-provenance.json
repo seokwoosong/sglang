@@ -1,0 +1,12 @@
+{
+  "binding": "/home/sukwoo24/.cache/sglang/rust_extensions/artifacts/sglang-radix-tree/7fae3ea16abf42d08df52e7d594d6f5bcdcd7ac0bc2ea096e1ecfa199ebc5674/mem_cache.cpython-312-x86_64-linux-gnu.so",
+  "sha256": "1709a59dc2fb15a0f27e6bbce0dcb0d4906e39c0ec5e42a50bac19b886b6d42d",
+  "fingerprint": "7fae3ea16abf42d08df52e7d594d6f5bcdcd7ac0bc2ea096e1ecfa199ebc5674",
+  "loader": "/home/sukwoo24/sglang-eval-worktrees/pr39294-review/python/sglang/srt/mem_cache/rust_tree_core/extension.py",
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "torch": "2.13.0+cu130",
+  "head": "15ccf48036bf5de0ec0aa886dedaa74bbdea8123",
+  "tree": "ac086271d5e3bee1f32f84595f9a860ca5151ed4",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)\n"
+}

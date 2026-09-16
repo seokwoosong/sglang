@@ -1,0 +1,8 @@
+1:  95c4989210 = 1:  aa22416979 fix(mem-cache): bound unified joint allocation reclaim
+2:  2cbee5ec44 = 2:  8057f7a49b fix(mem-cache): respect FLOAT movement gates
+3:  a62664863b = 3:  fd90bdfd69 fix(mem-cache): preserve tri-pool prefixes during joint reclaim
+4:  276f389f04 = 4:  f12bcd3ff5 docs: bundle PR 39294 review history and response drafts
+5:  f92803e8f6 = 5:  24735f724a docs: record rebased unified allocation review and validation
+6:  8b15837f2e = 6:  04a845c22d Avoid memoizing gate-dependent unified capacity
+7:  88988f6ed8 = 7:  09bd2a7e82 Preserve all pending move batches sharing an event
+8:  a81393946a = 8:  15ccf48036 docs: preserve bounded unified allocation hardening results

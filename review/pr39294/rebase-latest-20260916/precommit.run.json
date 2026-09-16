@@ -1,0 +1,22 @@
+{
+  "command": [
+    "/home/sukwoo24/.venv_sglang/bin/pre-commit",
+    "run",
+    "--all-files"
+  ],
+  "cwd": "/home/sukwoo24/sglang-eval-worktrees/pr39294-review",
+  "start": 1789552488.3973882,
+  "end": 1789552514.2704387,
+  "monotonic_start": 768.120770036,
+  "monotonic_deadline": 948.100124833,
+  "limits": {
+    "seconds": 180.0,
+    "rss_bytes": 8589934592,
+    "log_bytes": 33554432,
+    "gpu_process_mib": null
+  },
+  "exit_code": 1,
+  "reason": null,
+  "peak_rss": 1025916928,
+  "peak_gpu_process_mib": 0
+}

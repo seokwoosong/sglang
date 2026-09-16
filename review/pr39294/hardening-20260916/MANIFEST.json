@@ -35,8 +35,10 @@
       "path": "pending-fix-final/RESULTS.json",
       "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/pending-fix-final/RESULTS.json",
       "source_sha256": "f81c4475f56db7a9e8298354dc83896b4102eb83c7ca4b67b2019f77e6eaed89",
-      "copied_sha256": "f81c4475f56db7a9e8298354dc83896b4102eb83c7ca4b67b2019f77e6eaed89",
-      "presentation_edited": false
+      "copied_sha256": "604743dc41001af2e4ee281a6ceac415edc6851856d0e3857ffdab655db34aba",
+      "presentation_edited": true,
+      "pre_format_copied_sha256": "f81c4475f56db7a9e8298354dc83896b4102eb83c7ca4b67b2019f77e6eaed89",
+      "presentation_edit": "End-of-file newline added by pre-commit during 2026-09-16 latest-upstream rebase; source artifact bytes and source_sha256 unchanged. Original repository bytes preserved at a81393946af98619c6f669dbfdc7dd3eada1080a."
     },
     {
       "path": "pending-fix-gpu/INDEX_REVIEW.md",
@@ -49,22 +51,28 @@
       "path": "pending-fix-gpu/STATUS.json",
       "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/pending-fix-gpu/STATUS.json",
       "source_sha256": "fe78d7bccc6b10bc7d59dceebda1e38a616f027751bd84e0e80f49d8ad10bc2d",
-      "copied_sha256": "fe78d7bccc6b10bc7d59dceebda1e38a616f027751bd84e0e80f49d8ad10bc2d",
-      "presentation_edited": false
+      "copied_sha256": "359d6a86920c94245023f1d11c2f8391a87a5010f7596c9a4a0e0db2ce560fed",
+      "presentation_edited": true,
+      "pre_format_copied_sha256": "fe78d7bccc6b10bc7d59dceebda1e38a616f027751bd84e0e80f49d8ad10bc2d",
+      "presentation_edit": "End-of-file newline added by pre-commit during 2026-09-16 latest-upstream rebase; source artifact bytes and source_sha256 unchanged. Original repository bytes preserved at a81393946af98619c6f669dbfdc7dd3eada1080a."
     },
     {
       "path": "pending-fix-cpu-completion/STATUS.json",
       "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/pending-fix-cpu-completion/STATUS.json",
       "source_sha256": "8a76669c67a8c85d1d0a0332bdcb594f614ae069fff32192f0aa0fd47b2bacd3",
-      "copied_sha256": "8a76669c67a8c85d1d0a0332bdcb594f614ae069fff32192f0aa0fd47b2bacd3",
-      "presentation_edited": false
+      "copied_sha256": "cc2d4446d42ac164a5955a7c99d080bb9e837dfd6c8beadce007eb84b5a75e18",
+      "presentation_edited": true,
+      "pre_format_copied_sha256": "8a76669c67a8c85d1d0a0332bdcb594f614ae069fff32192f0aa0fd47b2bacd3",
+      "presentation_edit": "End-of-file newline added by pre-commit during 2026-09-16 latest-upstream rebase; source artifact bytes and source_sha256 unchanged. Original repository bytes preserved at a81393946af98619c6f669dbfdc7dd3eada1080a."
     },
     {
       "path": "pending-fix-cpu-completion/SOURCE.json",
       "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/pending-fix-cpu-completion/SOURCE.json",
       "source_sha256": "9ece67bd85f9ca3700f0a4a9cf3818804cf69f80fce013bbcb409d3f37f0b5af",
-      "copied_sha256": "9ece67bd85f9ca3700f0a4a9cf3818804cf69f80fce013bbcb409d3f37f0b5af",
-      "presentation_edited": false
+      "copied_sha256": "d1deab3333d93f9ca56d1e1caeaeb16b0b90e59ba8da452a47ecbabf7ee6c91f",
+      "presentation_edited": true,
+      "pre_format_copied_sha256": "9ece67bd85f9ca3700f0a4a9cf3818804cf69f80fce013bbcb409d3f37f0b5af",
+      "presentation_edit": "End-of-file newline added by pre-commit during 2026-09-16 latest-upstream rebase; source artifact bytes and source_sha256 unchanged. Original repository bytes preserved at a81393946af98619c6f669dbfdc7dd3eada1080a."
     },
     {
       "path": "serving-startup-disposition/REVIEW.md",
@@ -77,8 +85,10 @@
       "path": "serving-v4/serving-status.json",
       "source": "/home/sukwoo24/sglang-eval-results/pr39294-hardening-20260916/serving-v4/serving-status.json",
       "source_sha256": "bda025942446a4fadb8eea68077c4d923f29f598d85a665a88a9a41dc8723a70",
-      "copied_sha256": "bda025942446a4fadb8eea68077c4d923f29f598d85a665a88a9a41dc8723a70",
-      "presentation_edited": false
+      "copied_sha256": "e4f5c92c03bd5ad28b5979b54a61fb5e0fe4db401cd76dc342ecbcb19d4db2d9",
+      "presentation_edited": true,
+      "pre_format_copied_sha256": "bda025942446a4fadb8eea68077c4d923f29f598d85a665a88a9a41dc8723a70",
+      "presentation_edit": "End-of-file newline added by pre-commit during 2026-09-16 latest-upstream rebase; source artifact bytes and source_sha256 unchanged. Original repository bytes preserved at a81393946af98619c6f669dbfdc7dd3eada1080a."
     },
     {
       "path": "p2-final/SOURCE.json",

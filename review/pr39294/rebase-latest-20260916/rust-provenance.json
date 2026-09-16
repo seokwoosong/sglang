@@ -1,0 +1,6 @@
+{
+  "cache": "/home/sukwoo24/sglang-eval-worktrees/pr39294-review/python/sglang/srt/mem_cache/unified_radix_cache.py",
+  "allocator": "/home/sukwoo24/sglang-eval-worktrees/pr39294-review/python/sglang/srt/mem_cache/allocator/unified_sub_pool.py",
+  "binding": "/home/sukwoo24/.cache/sglang/rust_extensions/artifacts/sglang-radix-tree/7fae3ea16abf42d08df52e7d594d6f5bcdcd7ac0bc2ea096e1ecfa199ebc5674/mem_cache.cpython-312-x86_64-linux-gnu.so",
+  "adapter": "sglang.srt.mem_cache.rust_tree_core.adapter"
+}

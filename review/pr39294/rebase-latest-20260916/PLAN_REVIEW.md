@@ -1,0 +1,34 @@
+# PR39294 latest-upstream rebase plan review — 2026-09-16
+
+**APPROVED for the pinned local rebase and the finite validation described below.** Substantive conflict resolutions or new functional fixes require concrete review before continuation. Final result acceptance remains required before the separate rebase-results documentation commit. No remote push, PR update, GPU/serving run or dependency change is authorized.
+
+Reviewed plan: `/home/sukwoo24/sglang-eval-results/pr39294-rebase-latest-20260916/PLAN.md`, SHA256 `c34d3df5b71dbdbc0bb8ee84d26e9ca547dacfb6b72ea628e0d2d77df387f3bd`.
+
+## Static findings
+
+The canonical worktree is clean on `review/pr39294-unified-joint-allocation` at `a81393946af98619c6f669dbfdc7dd3eada1080a`; the local origin tracking ref matches. The proposed backup ref is absent at review time. Locally fetched `upstream/main` resolves to `a3bf25dc620f31fc672aeced1465d6fe7c81d28f`, which contains `2929a39927a3943cee03e498f4e5f651185f1b1f` (“Use a shared byte budget for unified hybrid-SWA memory (#36729)”). No new fetch or remote verification was performed by this reviewer.
+
+The range from old combined base `0b1065a618f09f7fe04d00ceaeeb73ef8067af0f` to current HEAD contains exactly eight commits and no merge commits: five implementation commits (joint reclaim, FLOAT gates, tri preservation, dynamic gate memo, pending event accumulation) and three documentation commits. Selecting this range avoids replaying the obsolete PR36729 development/combined-base history onto its landed squash.
+
+The stated zero differences in `python/sglang/srt/mem_cache/allocator/unified_hybrid_swa.py` and `python/sglang/srt/mem_cache/prefill_budget.py` are confirmed against the old combined base. However, latest upstream also changes `base_prefix_cache.py`, `unified_radix_cache.py` and `streaming_session.py`, all touched by this follow-up series. Observed changes include cache-length flooring/free-range handling, transient SWA accounting interfaces, load-back return semantics, storage-prefetch retry handling and session delegation. These upstream changes must survive replay. Two unchanged files or a conflict-free Git operation alone do not establish semantic compatibility.
+
+## Rebase conditions
+
+1. Recheck clean state and exact old HEAD immediately before mutation. Create `backup/pr39294-review-before-upstream-20260916` at `a81393946af98619c6f669dbfdc7dd3eada1080a` only if absent. Preserve an existing backup; if it identifies another state, stop rather than overwrite it. Preserve the existing artifact history and other backup refs.
+2. Replay only the eight commits with the equivalent of `git rebase --onto a3bf25dc620f31fc672aeced1465d6fe7c81d28f 0b1065a618f09f7fe04d00ceaeeb73ef8067af0f` on the intended review branch/isolated candidate. Use immutable SHAs for the operation. Do not merge/replay the old combined base, use a moving upstream ref as a substitute, or change the published PR branch. Pin `PYTHONPATH` to the actual rebased worktree's `python` directory during validation.
+3. Routine mechanical context adjustments are permitted only when both upstream and reviewed behavior are demonstrably preserved. Do not resolve by choosing an entire old or upstream file. A changed eviction/callback contract, cumulative-quota meaning, session forwarding, accounting/recovery behavior, dropped implementation commit or ambiguous overlap is substantive: stop and present the exact proposed resolution before continuing. A newly empty commit needs an explicit upstream-equivalence explanation; do not silently skip it to finish the rebase.
+4. Save old-to-new commit mapping and full range-diff for `old_base..old_HEAD` versus `new_upstream..new_HEAD`. Run read-only diff/whitespace/source and ancestry checks. Account for every changed hunk, especially in the three upstream-modified cache/session files. The final candidate must descend from the pinned upstream. Preserve historical report hashes, results and source references as historical evidence; do not rewrite them into claims about the new base.
+
+## Validation authorized
+
+Use the pinned interpreter `/home/sukwoo24/.venv_sglang_upstream_full/bin/python -B`, CPU-only environment, actual rebased source imports, and reviewed guard SHA256 `2dbfcbefbccdf7b4fe58e4761b22c0d100f2c8981f21758b8c6ac03dc48fbb05`. Keep8GiB RSS/32MiB log limits per invocation and owned-process cleanup. Record independent fixed deadlines before each of the following phases; their maxima are180+120+180 seconds, with no automatic extension/retry. Run sequentially, stopping dependent validation on failure.
+
+- **CPU180s:** one invocation containing the exact15 files in `pending-fix-cpu-completion/cpu.run.json`, plus `test/registered/unit/disaggregation/test_unified_memory_move_gate.py` and `test/registered/unit/server_args/test_unified_prefill_cuda_graph_gate.py`. Preserve skips and exclusions, and require a completed summary/guard success.
+- **Rust120s:** one invocation of `test_unified_pending_event_batches.py`, `test_unified_dynamic_gate_capacity.py` and `test_unified_tri_joint_reclaim.py` from the registered mem-cache unit directory, using the explicit Rust backend and `-k 'not session'`. Record actual extension/binding and production-module paths; a Python fallback is not a Rust pass. Do not install/rebuild dependencies as an implicit response to a binding mismatch.
+- **All-files pre-commit180s:** set `GITHUB_BASE_REF=upstream/main` and verify that local ref still equals the pinned upstream. Record the hook interpreter/tool identity and inspect any mutations. Formatter-only output may be preserved for review; substantive modifications require a concrete proposal. This plan does not authorize automatic repeated hook invocations or silent amendment of rebased commits. Incomplete checks remain NOT_RUN/PARTIAL.
+
+New functional failures require classification and a concrete fix/validation review before retry. No random matrix, extra selectors, serving/model workaround, GPU test, remote CI or historic-coverage promotion is included. The prior blocked serving and asynchronous/tri/distributed limitations remain limits of the old checkpoint and are not resolved by this CPU rebase validation.
+
+Submit final commit/tree, diff/range-diff, source identities, exact commands, complete results and any conflict/formatter deltas for static acceptance. Only after that acceptance may the separately requested short documentation commit describe the new base and validation. Local rewriting will diverge from the archival origin tracking ref; this approval does not authorize updating it remotely or forcing any ref.
+
+Static plan, local Git/source and hash inspection only. The reviewer performed no rebase, backup creation, edit, test, hook, fetch or experiment. This review artifact is the sole output change.

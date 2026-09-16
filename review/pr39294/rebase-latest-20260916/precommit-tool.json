@@ -1,0 +1,7 @@
+{
+  "path": "/home/sukwoo24/.venv_sglang/bin/pre-commit",
+  "version": "pre-commit 4.6.1",
+  "shebang": "#!/home/sukwoo24/.venv_sglang/bin/python",
+  "base_ref": "upstream/main",
+  "base_sha": "a3bf25dc620f31fc672aeced1465d6fe7c81d28f"
+}

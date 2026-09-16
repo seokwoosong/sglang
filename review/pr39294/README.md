@@ -1,5 +1,9 @@
 # PR #39294 review branch
 
+## 2026-09-16 최신 upstream rebase
+
+#36729가 실제 merge된 upstream `a3bf25dc62` 위에 후속 8개 commit만 rebase했다. 충돌 없이 range-diff 모두 동일 패치다. 새 기반에서 CPU 295 tests/1,661 subtests(10 GPU skips), Rust 25/131(1 session 제외)를 통과했다. GPU·실서빙은 재실행하지 않았다. [새 기반 결과·제한](rebase-latest-20260916/RESULTS.md), [최종 검토](rebase-latest-20260916/FINAL_REVIEW.md), [커밋 매핑](rebase-latest-20260916/commit-map.json). 이번 rebase는 로컬 변경이며 아직 push하지 않았다. 아래 내용은 이전 checkpoint 기록이다.
+
 ## 2026-09-16 hardening 추가 검증
 
 [최종 결과와 한계](hardening-20260916/HARDENING_RESULTS.md), [지정 세션의 최종 승인](hardening-20260916/final-disposition/REVIEW.md), [문서·원본 SHA manifest](hardening-20260916/MANIFEST.json). 동적 gate capacity 캐시와 같은 이벤트의 pending source 누락을 별도 수정했다. 최종 CPU 281 tests/1,636 subtests, Rust 25/131, P2 14/25를 통과했고 CUDA same-event 4 PASS / different-event 4 INCONCLUSIVE다. 실서빙은 baseline config-loader 호환성 문제로 추론 전에 중단됐다. 로컬 보존이며 push·PR 반영·merge 완료를 뜻하지 않는다. 아래 내용은 이전 rebase checkpoint 기록으로 보존한다.
