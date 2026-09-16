@@ -1,5 +1,12 @@
 # PR #39294 review branch
 
+## 2026-09-17 ready-path and pending-event validation
+
+The current follow-up uses the landed #36729 baseline and adds the validated C2 immediate-ready path. Python 296 tests / 1,669 subtests and Rust 26 / 139 passed; synchronized CUDA 10/10 passed. Same-event and distinct-decision matrices each contain 9 normal passes and 3 expected negative detections. The fixed ready-path CPU criterion passed; pressure-path costs and asynchronous scope limits remain explicit.
+
+[Current results](gap-closure-20260917/RESULTS.md), [reproduction bundle](gap-closure-20260917/REPRODUCE.md), [current PR body](../../PR_UNIFIED_JOINT_ALLOCATION.md), [current reviewer reply drafts](../../PR39294_REVIEW_REPLIES.md). Final review/push status is recorded in the result document. The sections below preserve earlier checkpoints and are not the current status.
+
+
 ## 2026-09-16 최신 upstream rebase
 
 #36729가 실제 merge된 upstream `a3bf25dc62` 위에 후속 8개 commit만 rebase했다. 충돌 없이 range-diff 모두 동일 패치다. 새 기반에서 CPU 295 tests/1,661 subtests(10 GPU skips), Rust 25/131(1 session 제외)를 통과했다. GPU·실서빙은 재실행하지 않았다. [새 기반 결과·제한](rebase-latest-20260916/RESULTS.md), [최종 검토](rebase-latest-20260916/FINAL_REVIEW.md), [커밋 매핑](rebase-latest-20260916/commit-map.json). 이번 rebase는 로컬 변경이며 아직 push하지 않았다. 아래 내용은 이전 checkpoint 기록이다.

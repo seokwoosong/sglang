@@ -1,0 +1,201 @@
+{
+  "status": "PASS",
+  "rows": [
+    {
+      "ticket": "T19S",
+      "case": "pinned-C-normal",
+      "version": "C",
+      "layout": "M2",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "signature": null,
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        142,
+        143
+      ],
+      "result_sha256": "0d692b9a0d98fde6b9fd2096ec39e0ea00e9a54ac0126ceaeb601e293a8433b2"
+    },
+    {
+      "ticket": "T19S",
+      "case": "pinned-C-negative",
+      "version": "C",
+      "layout": "M2",
+      "repeat": 0,
+      "negative": true,
+      "status": "EXPECTED_FAULT_DETECTED",
+      "signature": "COMPLETED_READER_SOURCE_NOT_RECLAIMED",
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        142,
+        143
+      ],
+      "result_sha256": "809d5354b9478c43e9fa4b19235756131c12ecef4e7035855390f994facd1de6"
+    },
+    {
+      "ticket": "T20S",
+      "case": "C-M2-1-normal",
+      "version": "C",
+      "layout": "M2",
+      "repeat": 1,
+      "negative": false,
+      "status": "PASS",
+      "signature": null,
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        142,
+        143
+      ],
+      "result_sha256": "230b38887b11f05c247f2e1db54ff4a0be0ba34cf5dfbf5d1fdc98c7966e28a8"
+    },
+    {
+      "ticket": "T20S",
+      "case": "C-S2-0-normal",
+      "version": "C",
+      "layout": "S2",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "signature": null,
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        198,
+        199
+      ],
+      "result_sha256": "c7f724e7a0961773b8177e68a243588f36d1e4a0b3cc5aa4ec15936cdac8ce50"
+    },
+    {
+      "ticket": "T20S",
+      "case": "C-S2-1-normal",
+      "version": "C",
+      "layout": "S2",
+      "repeat": 1,
+      "negative": false,
+      "status": "PASS",
+      "signature": null,
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        198,
+        199
+      ],
+      "result_sha256": "ff44dd98d50e58972dea3610751736ec400fa985ebdd987fd0af16ece341ce08"
+    },
+    {
+      "ticket": "T20S",
+      "case": "C-T3-0-normal",
+      "version": "C",
+      "layout": "T3",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "signature": null,
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        242,
+        243
+      ],
+      "result_sha256": "d8fb2178e87bb166412c262dd65621da365c9925736a6090c288fab110e440c6"
+    },
+    {
+      "ticket": "T20S",
+      "case": "C-T3-1-normal",
+      "version": "C",
+      "layout": "T3",
+      "repeat": 1,
+      "negative": false,
+      "status": "PASS",
+      "signature": null,
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        242,
+        243
+      ],
+      "result_sha256": "b5b25fb31af809f4120b7a16cfa2db5f1bc19318cfc670f8a6ba23c00c08078b"
+    },
+    {
+      "ticket": "T20S",
+      "case": "C-S2-0-negative",
+      "version": "C",
+      "layout": "S2",
+      "repeat": 0,
+      "negative": true,
+      "status": "EXPECTED_FAULT_DETECTED",
+      "signature": "COMPLETED_READER_SOURCE_NOT_RECLAIMED",
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        198,
+        199
+      ],
+      "result_sha256": "602ea6d00fbc2ce02a849f799f59ef8c19864bd2cec799c20b6049e94723bc31"
+    },
+    {
+      "ticket": "T20S",
+      "case": "C-T3-0-negative",
+      "version": "C",
+      "layout": "T3",
+      "repeat": 0,
+      "negative": true,
+      "status": "EXPECTED_FAULT_DETECTED",
+      "signature": "COMPLETED_READER_SOURCE_NOT_RECLAIMED",
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        242,
+        243
+      ],
+      "result_sha256": "8a822bd3cf8a6372afa2023165328056c7f266be3545791d0544401b920479af"
+    },
+    {
+      "ticket": "T20S",
+      "case": "A-M2-0-normal",
+      "version": "A",
+      "layout": "M2",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "signature": null,
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        142,
+        143
+      ],
+      "result_sha256": "b541c57bf4efed621c02e8b639ea7701f40926c5e0e1c04f3309f11bbc80dfdd"
+    },
+    {
+      "ticket": "T20S",
+      "case": "A-S2-0-normal",
+      "version": "A",
+      "layout": "S2",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "signature": null,
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        198,
+        199
+      ],
+      "result_sha256": "6a7a1acc967f17c2f75aa39c4f8c267fa0a5af9ed48dc8b6d215cf4345ae4825"
+    },
+    {
+      "ticket": "T20S",
+      "case": "A-T3-0-normal",
+      "version": "A",
+      "layout": "T3",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "signature": null,
+      "actual_outstanding_wait": true,
+      "reused_source_pages": [
+        242,
+        243
+      ],
+      "result_sha256": "3544b52364d2ee47e74450f0f99f692372eb23233ad1c13e62f0f947b4eeca7f"
+    }
+  ],
+  "normal_pass": 9,
+  "negative_expected": 3,
+  "actual_outstanding_wait_count": 12,
+  "scope": "FULL-owner page1 lazy original-helper/prebuilt indices, explicit consumer; same-event aggregation only"
+}

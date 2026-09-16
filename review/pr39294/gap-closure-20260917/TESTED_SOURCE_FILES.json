@@ -1,0 +1,19 @@
+{
+  "baseline": "a3bf25dc620f31fc672aeced1465d6fe7c81d28f",
+  "candidate_head": "15ccf48036bf5de0ec0aa886dedaa74bbdea8123",
+  "candidate_diff_sha256": "4451ee8cc9ddb025f13a8ea954370c7d20ebac6310c454cd438379ff9433e5e0",
+  "files": {
+    "python/sglang/srt/mem_cache/allocation.py": "fc301ffa8458b1ed5538052fc31408d34750f278ba0d2b84353787bfe13eb33d",
+    "python/sglang/srt/mem_cache/allocator/base.py": "887effae8f0acd5a9ea59700222debf6b57c1d6c8763d948171b22447adb13c7",
+    "python/sglang/srt/mem_cache/allocator/unified_hybrid_swa.py": "4cfe9162c7da86b31584770693619495d985dd4b44239f732597e5bb0f156e8d",
+    "python/sglang/srt/mem_cache/allocator/unified_sub_pool.py": "cf373d5b8d88a1d9c84820df064b043f360b73c9b275141103e40a290795fae4",
+    "python/sglang/srt/mem_cache/base_prefix_cache.py": "4984bc85b56928d95e13bfa1e16e7fe86e239812aba819ed5ae1e1b8c1d87179",
+    "python/sglang/srt/mem_cache/unified_radix_cache.py": "9311b6ce7f1e7edf2f1f6bb4f265d62ab75bd40a712a2ef2a6b76d0dc08d61e8",
+    "python/sglang/srt/session/streaming_session.py": "1eda446f4c4e8603cfd374cd1ea717b6deb5ea66206abd584bcfcd27a57a24cd",
+    "test/registered/unit/mem_cache/test_unified_dynamic_gate_capacity.py": "47d473c8677ec7f1963d12e76951065e521cd9a567125187f22e829da48b9111",
+    "test/registered/unit/mem_cache/test_unified_float_move_gate.py": "6644f4a76225f7424d9993bb1b2477841f2689de8dd988247125a2777883834f",
+    "test/registered/unit/mem_cache/test_unified_joint_allocation_eviction.py": "c5f7fcacbaa9bd8d375bde42164ede157aa4e637cc7a166e0305d33aa391929b",
+    "test/registered/unit/mem_cache/test_unified_pending_event_batches.py": "22ad126c7a18f55d3edcabe109a3ce68d386c76a80282e24002db8450c1ed286",
+    "test/registered/unit/mem_cache/test_unified_tri_joint_reclaim.py": "f625a27d5e11bd0d3fef7186b671dc71203188e50ed79e6e78c18f23eb38ed3e"
+  }
+}

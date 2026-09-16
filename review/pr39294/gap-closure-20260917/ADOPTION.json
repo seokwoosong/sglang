@@ -1,0 +1,10 @@
+{
+  "code_commit": "e28633f640c49388cd491bc1f0eeb09c76c9bbb4",
+  "parent": "e8f51a123bb69bf03b4076eede5557536d686e3d",
+  "code_patch_sha256": "4451ee8cc9ddb025f13a8ea954370c7d20ebac6310c454cd438379ff9433e5e0",
+  "tested_candidate_patch_sha256": "4451ee8cc9ddb025f13a8ea954370c7d20ebac6310c454cd438379ff9433e5e0",
+  "all_12_source_file_hashes_match": true,
+  "local_final_review_sha256": "eb834b2d7bda4c61dca56359c17606fd56eeea37f7cf4c1dabc8c54a944dd451",
+  "required_document_corrections_applied": true,
+  "scope": "Local review-branch preparation; not maintainer approval, published PR update or universal async validation."
+}

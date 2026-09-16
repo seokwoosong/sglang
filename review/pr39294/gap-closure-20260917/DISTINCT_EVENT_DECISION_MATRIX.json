@@ -1,0 +1,301 @@
+{
+  "status": "PASS_SCOPED_DECISION_CONFIRMATION",
+  "normal_pass": 9,
+  "negative_expected": 3,
+  "normal_outstanding_waits": 9,
+  "all_both_sources_reused": true,
+  "scope": "FULL owner, page1, lazy, original helper, prebuilt indices; historical selection and actual urgent dependency; no concurrent snapshot/write claim",
+  "cases": [
+    {
+      "ticket": "t26v2-distinct-decision-admission",
+      "id": "M2-C-normal",
+      "layout": "M2",
+      "version": "C",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "historical_free": [
+        142
+      ],
+      "sources": [
+        142,
+        143
+      ],
+      "reused": [
+        142,
+        143
+      ],
+      "original_urgent_outstanding_wait": true,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "190a28d8ecf6eb5987885a4a12e9f4ce1c1d4d0ab936b94233ff316e72a7b86f"
+    },
+    {
+      "ticket": "t26v2-distinct-decision-admission",
+      "id": "M2-C-negative",
+      "layout": "M2",
+      "version": "C",
+      "repeat": 0,
+      "negative": true,
+      "status": "EXPECTED_FAULT_DETECTED",
+      "historical_free": [
+        142,
+        143
+      ],
+      "sources": [
+        142,
+        143
+      ],
+      "reused": [
+        142,
+        143
+      ],
+      "original_urgent_outstanding_wait": false,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "642e7049417b41f02dd59adc94d0dc159a18bc5805525862b60ecee121e37d34"
+    },
+    {
+      "ticket": "t27-distinct-decision-confirmation",
+      "id": "M2-C-r1-normal",
+      "layout": "M2",
+      "version": "C",
+      "repeat": 1,
+      "negative": false,
+      "status": "PASS",
+      "historical_free": [
+        142
+      ],
+      "sources": [
+        142,
+        143
+      ],
+      "reused": [
+        142,
+        143
+      ],
+      "original_urgent_outstanding_wait": true,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "8609b9fbf8e31dfbc7095fcf05e08a4b486e759474ff084f8a668f9a32c130f8"
+    },
+    {
+      "ticket": "t27-distinct-decision-confirmation",
+      "id": "S2-C-r0-normal",
+      "layout": "S2",
+      "version": "C",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "historical_free": [
+        198
+      ],
+      "sources": [
+        198,
+        199
+      ],
+      "reused": [
+        198,
+        199
+      ],
+      "original_urgent_outstanding_wait": true,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "dcfa41b222455d2f45fb7ab24a523c445ac71ee1c218420aaff36cab2a966dc2"
+    },
+    {
+      "ticket": "t27-distinct-decision-confirmation",
+      "id": "S2-C-r1-normal",
+      "layout": "S2",
+      "version": "C",
+      "repeat": 1,
+      "negative": false,
+      "status": "PASS",
+      "historical_free": [
+        198
+      ],
+      "sources": [
+        198,
+        199
+      ],
+      "reused": [
+        198,
+        199
+      ],
+      "original_urgent_outstanding_wait": true,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "73d09143a82b41172322b4a8921f81f783ee183dbb73bc734253dd5683392ec6"
+    },
+    {
+      "ticket": "t27-distinct-decision-confirmation",
+      "id": "T3-C-r0-normal",
+      "layout": "T3",
+      "version": "C",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "historical_free": [
+        242
+      ],
+      "sources": [
+        242,
+        243
+      ],
+      "reused": [
+        242,
+        243
+      ],
+      "original_urgent_outstanding_wait": true,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "e886a2dd57a6c24b46960669104ccb7576178f4e4e166a44639390b715a5526d"
+    },
+    {
+      "ticket": "t27-distinct-decision-confirmation",
+      "id": "T3-C-r1-normal",
+      "layout": "T3",
+      "version": "C",
+      "repeat": 1,
+      "negative": false,
+      "status": "PASS",
+      "historical_free": [
+        242
+      ],
+      "sources": [
+        242,
+        243
+      ],
+      "reused": [
+        242,
+        243
+      ],
+      "original_urgent_outstanding_wait": true,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "f612feb8fff88d328bb9f3a18476ae705e90bb14738bf9af5f8cd7fb8b31f2d0"
+    },
+    {
+      "ticket": "t27-distinct-decision-confirmation",
+      "id": "S2-C-r0-negative",
+      "layout": "S2",
+      "version": "C",
+      "repeat": 0,
+      "negative": true,
+      "status": "EXPECTED_FAULT_DETECTED",
+      "historical_free": [
+        198,
+        199
+      ],
+      "sources": [
+        198,
+        199
+      ],
+      "reused": [
+        198,
+        199
+      ],
+      "original_urgent_outstanding_wait": false,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "797a02d83892c0f95b4a3aff519cbddcdb7d4dbe99b9a6f8e52e28d524224a87"
+    },
+    {
+      "ticket": "t27-distinct-decision-confirmation",
+      "id": "T3-C-r0-negative",
+      "layout": "T3",
+      "version": "C",
+      "repeat": 0,
+      "negative": true,
+      "status": "EXPECTED_FAULT_DETECTED",
+      "historical_free": [
+        242,
+        243
+      ],
+      "sources": [
+        242,
+        243
+      ],
+      "reused": [
+        242,
+        243
+      ],
+      "original_urgent_outstanding_wait": false,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "e1c23e4d72f1c9f8ad445f974753dc4a3511afab53aa976c9dd53516a89070b9"
+    },
+    {
+      "ticket": "t27-distinct-decision-confirmation",
+      "id": "M2-A-r0-normal",
+      "layout": "M2",
+      "version": "A",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "historical_free": [
+        142
+      ],
+      "sources": [
+        142,
+        143
+      ],
+      "reused": [
+        142,
+        143
+      ],
+      "original_urgent_outstanding_wait": true,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "d589812aa881c15b666ea13641492420a7afb9251e730b759ded4aad19145111"
+    },
+    {
+      "ticket": "t27-distinct-decision-confirmation",
+      "id": "S2-A-r0-normal",
+      "layout": "S2",
+      "version": "A",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "historical_free": [
+        198
+      ],
+      "sources": [
+        198,
+        199
+      ],
+      "reused": [
+        198,
+        199
+      ],
+      "original_urgent_outstanding_wait": true,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "286ec480c4fa85dfbd78146c893f02a77453314248dcebae8891999af666abce"
+    },
+    {
+      "ticket": "t27-distinct-decision-confirmation",
+      "id": "T3-A-r0-normal",
+      "layout": "T3",
+      "version": "A",
+      "repeat": 0,
+      "negative": false,
+      "status": "PASS",
+      "historical_free": [
+        242
+      ],
+      "sources": [
+        242,
+        243
+      ],
+      "reused": [
+        242,
+        243
+      ],
+      "original_urgent_outstanding_wait": true,
+      "E2_pending_after_alloc": false,
+      "E2_pending_after_stamp": false,
+      "result_sha256": "f1353aa63082cb216c44d6c37f862be9c4a36e88ba5a21a21095f19b475f9c10"
+    }
+  ]
+}

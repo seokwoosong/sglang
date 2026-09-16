@@ -1,0 +1,177 @@
+{
+  "status": "PASS",
+  "cases": [
+    {
+      "id": "joint_control-0-A",
+      "status": "PASS",
+      "outcome": {
+        "demand": 1,
+        "retained_tokens": 96,
+        "initial_tokens": 96,
+        "allocation_success": true
+      },
+      "retained_movement_virtual_pages": null,
+      "retained_swa_moved": null,
+      "peak_gpu_mib": 2832
+    },
+    {
+      "id": "joint_control-0-C",
+      "status": "PASS",
+      "outcome": {
+        "demand": 1,
+        "retained_tokens": 96,
+        "initial_tokens": 96,
+        "allocation_success": true
+      },
+      "retained_movement_virtual_pages": null,
+      "retained_swa_moved": null,
+      "peak_gpu_mib": 2832
+    },
+    {
+      "id": "joint_control-1-C",
+      "status": "PASS",
+      "outcome": {
+        "demand": 1,
+        "retained_tokens": 96,
+        "initial_tokens": 96,
+        "allocation_success": true
+      },
+      "retained_movement_virtual_pages": null,
+      "retained_swa_moved": null,
+      "peak_gpu_mib": 2832
+    },
+    {
+      "id": "joint_control-1-A",
+      "status": "PASS",
+      "outcome": {
+        "demand": 1,
+        "retained_tokens": 96,
+        "initial_tokens": 96,
+        "allocation_success": true
+      },
+      "retained_movement_virtual_pages": null,
+      "retained_swa_moved": null,
+      "peak_gpu_mib": 2832
+    },
+    {
+      "id": "reclaim-0-A",
+      "status": "PASS",
+      "outcome": {
+        "demand": 4,
+        "retained_tokens": 95,
+        "initial_tokens": 96,
+        "allocation_success": true
+      },
+      "retained_movement_virtual_pages": {
+        "full": [],
+        "swa": [
+          96,
+          97,
+          98,
+          99,
+          100,
+          101
+        ],
+        "mamba": [
+          8
+        ]
+      },
+      "retained_swa_moved": null,
+      "peak_gpu_mib": 2832
+    },
+    {
+      "id": "reclaim-0-C",
+      "status": "PASS",
+      "outcome": {
+        "demand": 4,
+        "retained_tokens": 95,
+        "initial_tokens": 96,
+        "allocation_success": true
+      },
+      "retained_movement_virtual_pages": {
+        "full": [],
+        "swa": [
+          96,
+          97,
+          98,
+          99,
+          100,
+          101
+        ],
+        "mamba": [
+          8
+        ]
+      },
+      "retained_swa_moved": null,
+      "peak_gpu_mib": 2832
+    },
+    {
+      "id": "reclaim-1-C",
+      "status": "PASS",
+      "outcome": {
+        "demand": 4,
+        "retained_tokens": 95,
+        "initial_tokens": 96,
+        "allocation_success": true
+      },
+      "retained_movement_virtual_pages": {
+        "full": [],
+        "swa": [
+          96,
+          97,
+          98,
+          99,
+          100,
+          101
+        ],
+        "mamba": [
+          8
+        ]
+      },
+      "retained_swa_moved": null,
+      "peak_gpu_mib": 2832
+    },
+    {
+      "id": "reclaim-1-A",
+      "status": "PASS",
+      "outcome": {
+        "demand": 4,
+        "retained_tokens": 95,
+        "initial_tokens": 96,
+        "allocation_success": true
+      },
+      "retained_movement_virtual_pages": {
+        "full": [],
+        "swa": [
+          96,
+          97,
+          98,
+          99,
+          100,
+          101
+        ],
+        "mamba": [
+          8
+        ]
+      },
+      "retained_swa_moved": null,
+      "peak_gpu_mib": 2832
+    },
+    {
+      "id": "gate-1-C",
+      "status": "PASS",
+      "outcome": null,
+      "retained_movement_virtual_pages": null,
+      "retained_swa_moved": 4,
+      "peak_gpu_mib": 2832
+    },
+    {
+      "id": "gate-1-A",
+      "status": "PASS",
+      "outcome": null,
+      "retained_movement_virtual_pages": null,
+      "retained_swa_moved": 4,
+      "peak_gpu_mib": 2832
+    }
+  ]
+}
