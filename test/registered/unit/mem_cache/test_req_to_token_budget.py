@@ -327,6 +327,21 @@ class TestRequestTableBudget(CustomTestCase):
         self.assertEqual(rows[0]["collectives"], rows[1]["collectives"])
         self.assertLess(len(rows[0]["collectives"]), 200)
 
+    def test_only_final_request_limit_warning_is_emitted(self):
+        c = self.make_configurator(context=65536)
+        with (
+            patch.object(
+                kcc.KVCacheConfigurator,
+                "_profile_available_bytes",
+                return_value=8 << 20,
+            ),
+            self.assertLogs(kcc.logger, level="WARNING") as logs,
+        ):
+            config, _ = self.resolve(c, max_running_requests=8192)
+        self.assertEqual(config.max_running_requests, 30)
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("requested 8192 to 30", logs.output[0])
+
     def test_repeated_resolution_is_stable(self):
         c = self.make_configurator(context=65536)
         first, _ = self.resolve(c, max_running_requests=37, page_size=16)

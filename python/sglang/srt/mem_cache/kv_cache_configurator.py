@@ -2884,7 +2884,7 @@ class KVCacheConfigurator:
         return base + additional_ratio
 
     def _apply_token_constraints(
-        self, token_capacity: int, *, sync_pp: bool = True
+        self, token_capacity: int, *, sync_pp: bool = True, warn_limits: bool = True
     ) -> int:
         """Apply external constraints to token capacity: user cap, PP sync.
 
@@ -2895,7 +2895,7 @@ class KVCacheConfigurator:
 
         # Apply user-specified upper bound
         if user_limit is not None:
-            if user_limit > token_capacity:
+            if user_limit > token_capacity and warn_limits:
                 logging.warning(
                     f"max_total_tokens={user_limit} is larger than the profiled value "
                     f"{token_capacity}. Use the profiled value instead."
@@ -2914,7 +2914,9 @@ class KVCacheConfigurator:
 
         return token_capacity
 
-    def resolve_max_num_reqs(self, token_capacity: int) -> int:
+    def resolve_max_num_reqs(
+        self, token_capacity: int, *, warn_limits: bool = True
+    ) -> int:
         """Compute max concurrent requests (per dp worker) from the finalized
         token capacity."""
         # Estimate pool size (used as upper bound when user specifies max_running_requests)
@@ -2935,7 +2937,8 @@ class KVCacheConfigurator:
             mamba_cap = get_schedule().max_mamba_cache_size // ratio
             if mamba_cap < max_num_reqs:
                 capped_by_mamba = True
-                logger.warning(
+                logger.log(
+                    logging.WARNING if warn_limits else logging.DEBUG,
                     "max_running_requests is capped to %d by the mamba state "
                     "cache (max_mamba_cache_size=%d, %d state slots per "
                     "request). To raise it: increase --mamba-full-memory-ratio "
@@ -2961,7 +2964,8 @@ class KVCacheConfigurator:
             and max_num_reqs < requested_per_worker
             and not capped_by_mamba
         ):
-            logger.warning(
+            logger.log(
+                logging.WARNING if warn_limits else logging.DEBUG,
                 "max_running_requests was reduced from the requested %d to %d "
                 "(per dp worker) due to the available KV cache capacity.",
                 requested_per_worker,
@@ -3022,7 +3026,7 @@ class KVCacheConfigurator:
             budget = budget_at(step)
             try:
                 config = self.config_from_budget(
-                    budget, sync_pp=False, configurator=configurator
+                    budget, sync_pp=False, configurator=configurator, warn_limits=False
                 )
                 tokens = config.max_total_num_tokens
             except (InsufficientPoolMemoryError, InsufficientSWAMemoryError):
@@ -3032,7 +3036,7 @@ class KVCacheConfigurator:
             tokens = consensus(tokens)
             if tokens < 2:
                 return 0  # below the architecture's minimum feasible budget
-            requests = self.resolve_max_num_reqs(tokens)
+            requests = self.resolve_max_num_reqs(tokens, warn_limits=False)
             fits = budget + self._req_to_token_bytes(requests) <= available_bytes
             return 1 if consensus(int(fits)) else 2
 
@@ -3115,10 +3119,16 @@ class KVCacheConfigurator:
         cap_tokens: Optional[int] = None,
         sync_pp: bool = True,
         configurator: Optional[MemoryPoolConfigurator] = None,
+        warn_limits: bool = True,
     ) -> MemoryPoolConfig:
         """Turn a KV byte budget into a pool config via the configurator, re-applying
         the external token constraints (user cap, page alignment, PP sync) and the
-        optional ``cap_tokens`` clamp."""
+        optional ``cap_tokens`` clamp.
+
+        A supplied configurator must belong to this KVCacheConfigurator and
+        the same unchanged runtime settings. Budget probes reuse it and lower
+        sizing logs; final sizing uses a fresh instance and emits warnings.
+        """
         # Local import avoids a pool_configurator import cycle.
         from sglang.srt.model_executor.pool_configurator import (
             create_memory_pool_configurator,
@@ -3135,7 +3145,7 @@ class KVCacheConfigurator:
             # multiple and a profiled budget is not. Flooring never overcommits.
             config.unified_total_bytes = budget_bytes - (budget_bytes % 4096)
         max_tokens = self._apply_token_constraints(
-            config.max_total_num_tokens, sync_pp=sync_pp
+            config.max_total_num_tokens, sync_pp=sync_pp, warn_limits=warn_limits
         )
         if cap_tokens is not None:
             max_tokens = min(max_tokens, cap_tokens)
