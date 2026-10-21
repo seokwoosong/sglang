@@ -184,6 +184,8 @@ class MemoryPoolConfigurator:
     to be filled by the consumer).
     """
 
+    sizing_log_level = logging.INFO
+
     def calculate_pool_sizes(
         self, available_bytes: int, page_size: int
     ) -> MemoryPoolConfig:
@@ -1425,15 +1427,17 @@ class DSV4PoolConfigurator(MemoryPoolConfigurator):
                 if self._unified
                 else f"ratio ({source})"
             )
-            logger.info(
+            logger.log(
+                self.sizing_log_level,
                 f"DSV4 SWA sizing: mode={mode}, swa_tokens={swa_tokens}, "
-                f"swa_full_tokens_ratio={self.swa_ratio}"
+                f"swa_full_tokens_ratio={self.swa_ratio}",
             )
         else:
-            logger.info(
+            logger.log(
+                self.sizing_log_level,
                 f"DSV4 SWA sizing: mode=cap, swa_tokens={swa_tokens}, "
                 f"request_cap+headroom={self.swa_cap_tokens}, "
-                f"prefix_tails={self.swa_prefix_tails}"
+                f"prefix_tails={self.swa_prefix_tails}",
             )
         return _DSV4PoolSizes(
             full_max_total_num_tokens=full_token,
@@ -1551,12 +1555,13 @@ class DSV4PoolConfigurator(MemoryPoolConfigurator):
     def _to_config(self, sizes: _DSV4PoolSizes) -> MemoryPoolConfig:
         full = sizes.full_max_total_num_tokens
         swa = sizes.swa_max_total_num_tokens
-        logger.info(
+        logger.log(
+            self.sizing_log_level,
             f"DSV4 pool sizes: full={full}, swa={swa}, "
             f"c4={sizes.c4_max_total_num_tokens}, "
             f"c128={sizes.c128_max_total_num_tokens}, "
             f"c4_state={sizes.c4_state_pool_size}, "
-            f"c128_state={sizes.c128_state_pool_size}"
+            f"c128_state={sizes.c128_state_pool_size}",
         )
         return MemoryPoolConfig(
             max_total_num_tokens=full,
@@ -1625,7 +1630,8 @@ class DSV4PoolConfigurator(MemoryPoolConfigurator):
             )
 
         sizes = self._compute_dsv4_sizes(full_token, page_size)
-        logger.info(
+        logger.log(
+            self.sizing_log_level,
             f"DSV4 memory calculation: unified={self._unified}, "
             f"unified_fp8={self._unified_fp8}, "
             f"dspark_draft_bf16={self._dspark_draft_on_bf16}, "
@@ -1636,7 +1642,7 @@ class DSV4PoolConfigurator(MemoryPoolConfigurator):
             f"swa_fixed={swa_fixed_bytes / (1 << 30):.2f} GB, "
             f"swa_ring_fixed={swa_ring_fixed_bytes / (1 << 30):.2f} GB, "
             f"c4_state_fixed={c4_state_fixed_bytes / (1 << 30):.2f} GB, "
-            f"full_token={sizes.full_max_total_num_tokens}"
+            f"full_token={sizes.full_max_total_num_tokens}",
         )
         return self._to_config(sizes)
 

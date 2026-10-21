@@ -3,7 +3,7 @@ from __future__ import annotations
 import gc
 import logging
 import math
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -260,6 +260,7 @@ if TYPE_CHECKING:
     )
     from sglang.srt.model_executor.pool_configurator import (
         MemoryPoolConfig,
+        MemoryPoolConfigurator,
     )
 
 
@@ -2992,7 +2993,11 @@ class KVCacheConfigurator:
         from sglang.srt.model_executor.pool_configurator import (
             InsufficientPoolMemoryError,
             InsufficientSWAMemoryError,
+            create_memory_pool_configurator,
         )
+
+        configurator = create_memory_pool_configurator(self)
+        configurator.sizing_log_level = logging.DEBUG
 
         def consensus(value: int, op=torch.distributed.ReduceOp.MIN) -> int:
             if get_parallel().pp_size == 1:
@@ -3016,7 +3021,9 @@ class KVCacheConfigurator:
         def feasibility(step: int) -> int:
             budget = budget_at(step)
             try:
-                config = self.config_from_budget(budget, sync_pp=False)
+                config = self.config_from_budget(
+                    budget, sync_pp=False, configurator=configurator
+                )
                 tokens = config.max_total_num_tokens
             except (InsufficientPoolMemoryError, InsufficientSWAMemoryError):
                 tokens = 0
@@ -3029,15 +3036,59 @@ class KVCacheConfigurator:
             fits = budget + self._req_to_token_bytes(requests) <= available_bytes
             return 1 if consensus(int(fits)) else 2
 
-        # The key is monotone: below minimum (0), fits (1), over budget (2).
-        step = bisect_right(range(steps + 1), 1, key=feasibility) - 1
-        if step < 0 or feasibility(step) != 1:
-            raise ValueError(
-                "No KV capacity and request-to-token table fit the memory budget. "
-                "Reduce --max-running-requests or --context-length, or increase "
-                "--mem-fraction-static."
-            )
-        return budget_at(step)
+        # DSV4's request-scoped fixed costs jump at its internal request-count
+        # transitions. Tokens (and hence table bytes) can fall there. Within
+        # each interval the fixed costs are constant and the key is monotone:
+        # below minimum (0), fits (1), over budget (2).
+        boundaries = self._request_budget_intervals(steps, budget_at, configurator)
+        for start, stop in reversed(list(zip(boundaries, boundaries[1:]))):
+            if feasibility(start) == 2 or feasibility(stop - 1) == 0:
+                continue
+            step = start + bisect_right(range(start, stop), 1, key=feasibility) - 1
+            if step >= start and feasibility(step) == 1:
+                return budget_at(step)
+        raise ValueError(
+            "No KV capacity and request-to-token table fit the memory budget. "
+            "Reduce --max-running-requests or --context-length, or increase "
+            "--mem-fraction-static."
+        )
+
+    def _request_budget_intervals(
+        self, steps: int, budget_at, configurator: MemoryPoolConfigurator
+    ) -> list[int]:
+        from sglang.srt.model_executor.pool_configurator import (
+            DSV4PoolConfigurator,
+        )
+
+        boundaries = {0, steps + 1}
+        if (
+            isinstance(configurator, DSV4PoolConfigurator)
+            and configurator.requested_max_running_requests_per_worker is None
+        ):
+
+            def requests_at(step):
+                return configurator._resolve_max_running_requests_per_worker(
+                    budget_at(step)
+                )
+
+            for requests in range(1, requests_at(steps) + 1):
+                boundaries.add(bisect_left(range(steps + 1), requests, key=requests_at))
+        if get_parallel().pp_size > 1:
+            # Use tensor collectives, not pickled objects. Every rank supplies
+            # the same fixed-size vector; a non-DSV4 rank has only endpoints.
+            group = get_parallel().world_group.cpu_group
+            packed = torch.full((4098,), steps + 1, dtype=torch.int64)
+            values = sorted(boundaries)
+            packed[: len(values)] = torch.tensor(values, dtype=torch.int64)
+            gathered = [
+                torch.empty_like(packed)
+                for _ in range(torch.distributed.get_world_size(group))
+            ]
+            torch.distributed.all_gather(gathered, packed, group=group)
+            boundaries = {
+                int(value) for tensor in gathered for value in tensor.tolist()
+            }
+        return sorted(boundaries)
 
     def _req_to_token_bytes(self, max_num_reqs: int) -> int:
         disagg = get_disagg()
@@ -3063,6 +3114,7 @@ class KVCacheConfigurator:
         *,
         cap_tokens: Optional[int] = None,
         sync_pp: bool = True,
+        configurator: Optional[MemoryPoolConfigurator] = None,
     ) -> MemoryPoolConfig:
         """Turn a KV byte budget into a pool config via the configurator, re-applying
         the external token constraints (user cap, page alignment, PP sync) and the
@@ -3072,7 +3124,8 @@ class KVCacheConfigurator:
             create_memory_pool_configurator,
         )
 
-        configurator = create_memory_pool_configurator(self)
+        if configurator is None:
+            configurator = create_memory_pool_configurator(self)
         config = configurator.calculate_pool_sizes(
             budget_bytes, get_schedule().page_size
         )
