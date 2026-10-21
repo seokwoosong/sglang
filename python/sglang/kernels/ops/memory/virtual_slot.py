@@ -34,8 +34,10 @@ def alloc_bind_inplace_kernel(
     v2p_ptr,  # in/out: int64 — virtual_to_physical table
     p2v_ptr,  # in/out: int64 — physical_to_virtual table
     out_phys_ptr,  # out: [N] int64 — physical page ids
+    out_virtual_ptr,  # optional out: independently owned virtual page ids
     N,  # runtime: number of pages to allocate
     start_phys,  # runtime: lowest physical page id in the new range
+    COPY_VIRTUAL: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
     """Fused: ascending arange + out_phys/v2p/p2v scatter.
@@ -54,6 +56,8 @@ def alloc_bind_inplace_kernel(
     # Masked stores skip out-of-range lanes, and `other=0` keeps us off the
     # v2p[0]/p2v[0] padding-sink slot.
     tl.store(out_phys_ptr + offs, phys, mask=mask)
+    if COPY_VIRTUAL:
+        tl.store(out_virtual_ptr + offs, v, mask=mask)
     tl.store(v2p_ptr + v, phys, mask=mask)
     tl.store(p2v_ptr + phys, v, mask=mask)
 
@@ -66,11 +70,15 @@ def alloc_bind_inplace(
     v2p: torch.Tensor,
     p2v: torch.Tensor,
     start_phys: int,
+    *,
+    out_virtual_pages: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Allocate N ascending physical pages from `start_phys` and bind to `v_pages`.
 
     Caller must advance `watermark_physical` by N and verify overflow BEFORE
-    calling; this launcher does neither.
+    calling; this launcher does neither. An optional contiguous int64 output
+    of the same shape/device receives the virtual IDs in the binding kernel.
+    Its storage must not alias the inputs or either mapping table.
     """
     N = int(v_pages.numel())
     if N == 0:
@@ -83,6 +91,8 @@ def alloc_bind_inplace(
         v = v_pages.to(torch.int64)
         v2p[v] = phys_pages
         p2v[phys_pages] = v
+        if out_virtual_pages is not None:
+            out_virtual_pages.copy_(v)
         return phys_pages
     phys_pages = torch.empty(N, dtype=torch.int64, device=v_pages.device)
     grid = (triton.cdiv(N, ALLOC_BIND_BLOCK),)
@@ -91,8 +101,10 @@ def alloc_bind_inplace(
         v2p,
         p2v,
         phys_pages,
+        out_virtual_pages,
         N,
         start_phys,
+        COPY_VIRTUAL=out_virtual_pages is not None,
         BLOCK=ALLOC_BIND_BLOCK,
     )
     return phys_pages
@@ -130,9 +142,11 @@ def free_unbind_inplace_kernel(
 def bind_inplace_kernel(
     v_pages_ptr,  # in: [N] int64 — virtual page ids
     p_pages_ptr,  # in: [N] int64 — physical page ids to bind them to
+    out_virtual_ptr,  # optional out: independently owned virtual page ids
     v2p_ptr,  # in/out: int64
     p2v_ptr,  # in/out: int64
     N,  # runtime: number of pages
+    COPY_VIRTUAL: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
     """`alloc_bind_inplace_kernel` for a caller-supplied physical range.
@@ -149,6 +163,8 @@ def bind_inplace_kernel(
 
     tl.store(v2p_ptr + v, p, mask=mask)
     tl.store(p2v_ptr + p, v, mask=mask)
+    if COPY_VIRTUAL:
+        tl.store(out_virtual_ptr + offs, v, mask=mask)
 
 
 def free_unbind_inplace(
@@ -178,8 +194,14 @@ def bind_inplace(
     p_pages: torch.Tensor,
     v2p: torch.Tensor,
     p2v: torch.Tensor,
+    *,
+    out_virtual_pages: Optional[torch.Tensor] = None,
 ) -> None:
-    """Bind `v_pages` to `p_pages` in both tables."""
+    """Bind pages and optionally copy virtual IDs to a contiguous int64 output.
+
+    The optional output must have the same shape and device as `v_pages`,
+    with storage independent of the inputs and both mapping tables.
+    """
     N = int(v_pages.numel())
     if N == 0:
         return
@@ -188,9 +210,20 @@ def bind_inplace(
     if not v_pages.is_cuda:
         v2p[v] = p
         p2v[p] = v
+        if out_virtual_pages is not None:
+            out_virtual_pages.copy_(v)
         return
     grid = (triton.cdiv(N, ALLOC_BIND_BLOCK),)
-    bind_inplace_kernel[grid](v, p, v2p, p2v, N, BLOCK=ALLOC_BIND_BLOCK)
+    bind_inplace_kernel[grid](
+        v,
+        p,
+        out_virtual_pages,
+        v2p,
+        p2v,
+        N,
+        COPY_VIRTUAL=out_virtual_pages is not None,
+        BLOCK=ALLOC_BIND_BLOCK,
+    )
 
 
 TRANSLATE_TOKEN_IDS_BLOCK = 512

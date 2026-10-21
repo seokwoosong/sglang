@@ -982,7 +982,13 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
         self._free_phys_sorted = rest
         return taken
 
-    def bind(self, virtual_ids: torch.Tensor, physical_ids: torch.Tensor) -> None:
+    def bind(
+        self,
+        virtual_ids: torch.Tensor,
+        physical_ids: torch.Tensor,
+        *,
+        out_virtual_pages: Optional[torch.Tensor] = None,
+    ) -> None:
         """Bind page-granular virtual ids to physical ids."""
         with record_function("MultiEndedAlloc.bind"):
             bind_inplace(
@@ -990,12 +996,17 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
                 physical_ids,
                 self.virtual_to_physical,
                 self.physical_to_virtual,
+                out_virtual_pages=out_virtual_pages,
             )
 
     # -- fused take_physical_pages + bind --
 
     def _alloc_bind_fast_or_slow(
-        self, v_pages: torch.Tensor, N: int
+        self,
+        v_pages: torch.Tensor,
+        N: int,
+        *,
+        out_virtual_pages: Optional[torch.Tensor] = None,
     ) -> Optional[torch.Tensor]:
         """Fuse `take_physical_pages` + `bind` into ONE Triton kernel when no
         holes need draining; fall through to the slow path (drains holes first)
@@ -1038,6 +1049,7 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
                     self.virtual_to_physical,
                     self.physical_to_virtual,
                     start_phys,
+                    out_virtual_pages=out_virtual_pages,
                 )
 
                 if self.lazy_compaction:  # live_page_count tracked only in lazy mode
@@ -1049,7 +1061,7 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             phys_pages = self.take_physical_pages(N)
             if phys_pages is None:
                 return None
-            self.bind(v_pages, phys_pages)
+            self.bind(v_pages, phys_pages, out_virtual_pages=out_virtual_pages)
             self._maybe_zero_pages(phys_pages)
             return phys_pages
 
@@ -1165,11 +1177,21 @@ class MultiEndedAllocator(BaseTokenToKVPoolAllocator):
             if num_pages > len(self.free_virtual_ids):
                 return None
             v_pages = self.free_virtual_ids[:num_pages]
+            owned_ids = torch.empty_like(v_pages) if self.page_size == 1 else None
             self.free_virtual_ids = self.free_virtual_ids[num_pages:]
-            phys_pages = self._alloc_bind_fast_or_slow(v_pages, num_pages)
+            phys_pages = self._alloc_bind_fast_or_slow(
+                v_pages, num_pages, out_virtual_pages=owned_ids
+            )
             if phys_pages is None:
                 self.free_virtual_ids = torch.cat([v_pages, self.free_virtual_ids])
                 return None
+            # A request may retain these IDs across many frees. At page size
+            # one, returning the slice would pin the entire old free-list
+            # storage each time free() replaces it with torch.cat(). Larger
+            # pages already produce an independent tensor during expansion.
+            # Copy while binding to avoid a separate hot-path clone operation.
+            if self.page_size == 1:
+                return owned_ids
             return self._expand_pages_to_tokens(v_pages)
 
     def alloc_with_virtual(self, virtual_pages: torch.Tensor) -> None:
@@ -2429,7 +2451,11 @@ class FloatMultiEndedAllocator(MultiEndedAllocator):
         return self.take_physical_pages(need_size // self.page_size)
 
     def _alloc_bind_fast_or_slow(
-        self, v_pages: torch.Tensor, N: int
+        self,
+        v_pages: torch.Tensor,
+        N: int,
+        *,
+        out_virtual_pages: Optional[torch.Tensor] = None,
     ) -> Optional[torch.Tensor]:
         # Holes-first always routes through take_physical_pages (no fused
         # watermark fast path -- float alloc cadence doesn't need it).
@@ -2438,7 +2464,7 @@ class FloatMultiEndedAllocator(MultiEndedAllocator):
         phys_pages = self.take_physical_pages(N)
         if phys_pages is None:
             return None
-        self.bind(v_pages, phys_pages)
+        self.bind(v_pages, phys_pages, out_virtual_pages=out_virtual_pages)
         self._maybe_zero_pages(phys_pages)
         return phys_pages
 
