@@ -68,6 +68,14 @@ _is_hip = is_hip()
 _is_npu = is_npu()
 
 
+class InsufficientPoolMemoryError(RuntimeError):
+    """The byte budget cannot hold a nonempty KV pool."""
+
+
+class InsufficientSWAMemoryError(ValueError):
+    """The byte budget cannot hold one sliding window."""
+
+
 @dataclass
 class MemoryPoolConfig:
     """Resolved memory pool config, shared between target and draft workers."""
@@ -95,7 +103,7 @@ class MemoryPoolConfig:
             msg = "Not enough memory. Please try to increase --mem-fraction-static."
             if self.mem_fraction_static is not None:
                 msg += f" Current value: mem_fraction_static={self.mem_fraction_static}"
-            raise RuntimeError(msg)
+            raise InsufficientPoolMemoryError(msg)
 
 
 if TYPE_CHECKING:
@@ -207,7 +215,7 @@ class MemoryPoolConfigurator:
         if sliding_window_size is None:
             return
         if sliding_window_size + page_size >= swa_tokens:
-            raise ValueError(
+            raise InsufficientSWAMemoryError(
                 f"SWA pool ({swa_tokens} tokens) cannot hold even one request: "
                 f"the prefill admission floor is sliding_window_size "
                 f"({sliding_window_size}) + page_size ({page_size}). "
@@ -996,7 +1004,7 @@ class SWARequestCapPoolConfigurator(HybridSWAPoolConfigurator):
                 int((available_bytes - fixed_swa_bytes) // full_cell_size) // page_size
             ) * page_size
         if full_tokens <= 0:
-            raise RuntimeError(
+            raise InsufficientPoolMemoryError(
                 f"SWA pool cap ({swa_tokens} tokens, "
                 f"{fixed_swa_bytes / (1 << 30):.2f} GiB) leaves no room for the full "
                 f"KV pool within the available {available_bytes / (1 << 30):.2f} GiB. "
@@ -1608,7 +1616,7 @@ class DSV4PoolConfigurator(MemoryPoolConfigurator):
         available_bytes_for_tokens = max(available_bytes - fixed_bytes, 0)
         full_token = int(available_bytes_for_tokens / self.bytes_per_full_token)
         if full_token <= 0 and self.swa_cap_tokens is not None:
-            raise RuntimeError(
+            raise InsufficientPoolMemoryError(
                 f"The DSV4 SWA pool cap ({self.swa_cap_tokens} tokens, "
                 f"{swa_fixed_bytes / (1 << 30):.2f} GB) leaves no room for the full "
                 f"KV pool within the available {available_bytes / (1 << 30):.2f} GB. "

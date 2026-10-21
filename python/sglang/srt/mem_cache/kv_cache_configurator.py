@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import logging
 import math
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -2881,7 +2882,9 @@ class KVCacheConfigurator:
 
         return base + additional_ratio
 
-    def _apply_token_constraints(self, token_capacity: int) -> int:
+    def _apply_token_constraints(
+        self, token_capacity: int, *, sync_pp: bool = True
+    ) -> int:
         """Apply external constraints to token capacity: user cap, PP sync.
 
         Page alignment is handled by the configurator, not here.
@@ -2899,7 +2902,7 @@ class KVCacheConfigurator:
             token_capacity = min(token_capacity, user_limit)
 
         # Sync across PP ranks (each may have different layer counts)
-        if get_parallel().pp_size > 1:
+        if sync_pp and get_parallel().pp_size > 1:
             tensor = torch.tensor(token_capacity, dtype=torch.int64)
             torch.distributed.all_reduce(
                 tensor,
@@ -2974,6 +2977,8 @@ class KVCacheConfigurator:
         )
 
         available_bytes = self._profile_available_bytes(pre_model_load_memory)
+        if self.req_to_token_pool is None:
+            available_bytes = self._budget_with_request_tables(available_bytes)
         config = self.config_from_budget(available_bytes)
         config.max_running_requests = self.resolve_max_num_reqs(
             config.max_total_num_tokens
@@ -2983,8 +2988,81 @@ class KVCacheConfigurator:
         config.mem_fraction_static = get_schedule().mem_fraction_static
         return config
 
+    def _budget_with_request_tables(self, available_bytes: int) -> int:
+        from sglang.srt.model_executor.pool_configurator import (
+            InsufficientPoolMemoryError,
+            InsufficientSWAMemoryError,
+        )
+
+        def consensus(value: int, op=torch.distributed.ReduceOp.MIN) -> int:
+            if get_parallel().pp_size == 1:
+                return value
+            tensor = torch.tensor(value, dtype=torch.int64)
+            torch.distributed.all_reduce(
+                tensor, op=op, group=get_parallel().world_group.cpu_group
+            )
+            return int(tensor.item())
+
+        # Search the same fraction of each rank's budget. The shared range and
+        # collective verdict give every PP rank the same bisection call order.
+        # A step costs at most 4096 bytes on the largest-budget rank.
+        max_bytes = consensus(available_bytes, torch.distributed.ReduceOp.MAX)
+        steps = max((max_bytes + 4095) // 4096, 1)
+
+        def budget_at(step: int) -> int:
+            budget = available_bytes * step // steps
+            return budget - budget % 4096
+
+        def feasibility(step: int) -> int:
+            budget = budget_at(step)
+            try:
+                config = self.config_from_budget(budget, sync_pp=False)
+                tokens = config.max_total_num_tokens
+            except (InsufficientPoolMemoryError, InsufficientSWAMemoryError):
+                tokens = 0
+            # In particular, zero-KV PP stages return an unbounded token
+            # sentinel. Resolve requests only AFTER taking the common capacity.
+            tokens = consensus(tokens)
+            if tokens < 2:
+                return 0  # below the architecture's minimum feasible budget
+            requests = self.resolve_max_num_reqs(tokens)
+            fits = budget + self._req_to_token_bytes(requests) <= available_bytes
+            return 1 if consensus(int(fits)) else 2
+
+        # The key is monotone: below minimum (0), fits (1), over budget (2).
+        step = bisect_right(range(steps + 1), 1, key=feasibility) - 1
+        if step < 0 or feasibility(step) != 1:
+            raise ValueError(
+                "No KV capacity and request-to-token table fit the memory budget. "
+                "Reduce --max-running-requests or --context-length, or increase "
+                "--mem-fraction-static."
+            )
+        return budget_at(step)
+
+    def _req_to_token_bytes(self, max_num_reqs: int) -> int:
+        disagg = get_disagg()
+        pre_alloc_size = 0
+        if disagg.disaggregation_mode == "decode" or disagg.enable_pd_role_switch:
+            pre_alloc_size = disagg.disaggregation_decode_extra_slots or 0
+        rows = max_num_reqs + pre_alloc_size + 1
+        columns = self.model_config.context_len + get_req_to_token_extra_context_len()
+        tables = 1
+        if (
+            not self.is_draft_worker
+            and self.spec_algorithm.is_dflash()
+            and get_spec().speculative_draft_window_size is not None
+        ):
+            # Compact draft attention still allocates a full-context private
+            # table after the target has committed its KV budget.
+            tables += 1
+        return tables * rows * columns * torch.int32.itemsize
+
     def config_from_budget(
-        self, budget_bytes: int, *, cap_tokens: Optional[int] = None
+        self,
+        budget_bytes: int,
+        *,
+        cap_tokens: Optional[int] = None,
+        sync_pp: bool = True,
     ) -> MemoryPoolConfig:
         """Turn a KV byte budget into a pool config via the configurator, re-applying
         the external token constraints (user cap, page alignment, PP sync) and the
@@ -3003,7 +3081,9 @@ class KVCacheConfigurator:
             # buffer as the KV/state dtype, so the total must be a dtype-size
             # multiple and a profiled budget is not. Flooring never overcommits.
             config.unified_total_bytes = budget_bytes - (budget_bytes % 4096)
-        max_tokens = self._apply_token_constraints(config.max_total_num_tokens)
+        max_tokens = self._apply_token_constraints(
+            config.max_total_num_tokens, sync_pp=sync_pp
+        )
         if cap_tokens is not None:
             max_tokens = min(max_tokens, cap_tokens)
         # calculate_pool_sizes_from_max_tokens takes a token count, not a byte
