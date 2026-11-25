@@ -16,6 +16,7 @@ from sglang.srt.runtime_context import (
     get_memory,
 )
 from sglang.srt.utils.common import run_with_deadline
+from sglang.srt.utils.device import is_hip
 from sglang.srt.utils.network import NetworkAddress, get_free_port, get_local_ip_auto
 
 if TYPE_CHECKING:
@@ -114,6 +115,13 @@ def get_ib_devices_for_gpu(ib_device_str: Optional[str], gpu_id: int) -> Optiona
     )
 
 
+def _disable_hip_ipc_on_rocm() -> None:
+    if is_hip():
+        # Workaround for kvcache-ai/Mooncake#3546; drop when HIP IPC preserves
+        # sub-allocation offsets during multi-buffer transfers.
+        os.environ.setdefault("MC_DISABLE_HIP", "1")
+
+
 class MooncakeTransferEngine(KVTransferEngine):
     """Shared Mooncake transfer engine for RDMA/transfer operations."""
 
@@ -123,6 +131,7 @@ class MooncakeTransferEngine(KVTransferEngine):
         gpu_id: Optional[int] = None,
         ib_device: Optional[str] = None,
     ):
+        _disable_hip_ipc_on_rocm()
         try:
             from mooncake.engine import TransferEngine
         except ImportError as e:
