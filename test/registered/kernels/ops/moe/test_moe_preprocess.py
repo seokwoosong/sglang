@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from sglang.kernels.ops.moe.inkling_moe import (
+    BLOCK_SIZE_M,
     SMALL_M_BLOCK_SIZE_M,
     compute_grouped_gemm_metadata,
     fused_moe_preprocess,
@@ -88,6 +89,24 @@ def test_grouped_gemm_small_config_matches(tokens: int):
     # both are fp32-accumulated bf16 tensor-core dots; BLOCK_K differs so
     # accumulation grouping may differ by a few ulp
     torch.testing.assert_close(out16.float(), out128.float(), atol=1e-3, rtol=1e-3)
+
+
+@requires_cuda
+@pytest.mark.parametrize("block_size_m", [SMALL_M_BLOCK_SIZE_M, BLOCK_SIZE_M])
+def test_grouped_gemm_inkling_boot_shape(block_size_m: int):
+    """Inkling BF16 boot tiles must fit MI300X LDS and match an fp32 reference."""
+    torch.manual_seed(0)
+    e, m, k, n = 8, 6, 1024, 8192
+    sorted_ids = torch.arange(m, dtype=torch.int32, device="cuda") % e
+    a = (torch.randn(m, k, device="cuda") * 0.05).to(torch.bfloat16)
+    b = (torch.randn(e, n, k, device="cuda") * 0.02).to(torch.bfloat16)
+
+    meta = compute_grouped_gemm_metadata(sorted_ids, e, block_size_m=block_size_m)
+    got = grouped_gemm_triton(a, b, e, *meta, block_size_m=block_size_m)
+    expected = torch.stack(
+        [a[i].float() @ b[expert].float().T for i, expert in enumerate(sorted_ids)]
+    )
+    torch.testing.assert_close(got.float(), expected, atol=1e-3, rtol=1e-3)
 
 
 if __name__ == "__main__":
