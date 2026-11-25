@@ -84,7 +84,7 @@ _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
 _is_gfx95 = _is_hip and is_gfx95_supported()
 _is_gfx115 = _is_hip and is_gfx115_supported()
 # AITER picks the GEMM kernel, tile and split-K by the number of tokens, so
-# initialize_bf16_gemm_config sets this on gfx95 in deterministic mode and
+# initialize_bf16_gemm_config sets this on ROCm in deterministic mode and
 # unquantized layers then skip AITER.
 _skip_aiter_unquant = False
 
@@ -488,7 +488,7 @@ def initialize_bf16_gemm_config() -> None:
     global _skip_aiter_unquant
 
     _skip_aiter_unquant = (
-        _is_gfx95 and get_exec().deterministic.enable_deterministic_inference
+        _is_hip and get_exec().deterministic.enable_deterministic_inference
     )
 
     backend_str = get_exec().kernel.bf16_gemm_backend
@@ -1269,7 +1269,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, BaseFusedOp):
         if _use_aiter and _skip_aiter_unquant and get_moe_runner_backend().is_aiter():
             raise ValueError(
                 "--moe-runner-backend aiter is batch-size dependent and cannot be "
-                "combined with --enable-deterministic-inference on gfx95"
+                "combined with --enable-deterministic-inference on ROCm"
             )
         self._cache_permute_indices = dict({})
         self.runner: Optional[MoeRunner] = None
