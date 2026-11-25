@@ -361,6 +361,7 @@ class TestC128PrefetchCleanup(CustomTestCase):
         cache.tree_core = MagicMock(page_size=128)
         cache.host_memory_mode = "cache"
         cache.buffer_pipeline = None
+        cache.prefetch_stop_policy = "best_effort"
         cache.prefetch_threshold = 128
         cache.enable_storage_metrics = False
         cache.components = {
