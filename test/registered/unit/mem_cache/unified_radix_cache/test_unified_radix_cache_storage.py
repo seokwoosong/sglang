@@ -1753,6 +1753,80 @@ class UnifiedRadixCacheStorageSuite(UnifiedRadixCacheStorageFixtures):
 
     @requires_hicache
     @requires(
+        lambda cfg: cfg.has_mamba and not cfg.has_swa and cfg.page_size == 4,
+        "one FULL+Mamba page_size=4 fixture covers auxiliary restore completeness",
+    )
+    def test_decode_l3_query_requires_mamba_checkpoint(self):
+        """A KV-only L3 hit must not promise a prefix whose Mamba object is missing."""
+        storage_dir = self._make_storage_dir()
+        seq = self._make_seq(1, 1)
+        self._l3_produce(storage_dir, seq)
+        complete, _, _ = self._l3_consumer(storage_dir)
+        self.assertEqual(
+            complete.query_storage_hit_length(
+                complete.root_node_handle(), array("q", seq)
+            ),
+            len(seq),
+        )
+        mamba_files = [name for name in os.listdir(storage_dir) if ".mamba_" in name]
+        self.assertTrue(mamba_files)
+        for name in mamba_files:
+            os.remove(os.path.join(storage_dir, name))
+
+        cons, _, cons_rtp = self._l3_consumer(storage_dir)
+        req = self._make_req(cons_rtp)
+        req.origin_input_ids = array("q", seq + list(range(5000, 5016)))
+        result = match_kv_cache(req, cons, req.origin_input_ids)
+        decode = SimpleNamespace(
+            scheduler=SimpleNamespace(enable_decode_hicache=True), tree_cache=cons
+        )
+        match = DecodeHiCachePreallocMixin._build_decode_prefix_match(
+            decode, req, result
+        )
+        self.assertEqual(match.l3_storage_hit_length, 0)
+
+    @requires_hicache
+    @requires(
+        lambda cfg: cfg.has_mamba and not cfg.has_swa and cfg.page_size == 4,
+        "one FULL+Mamba page_size=4 fixture covers rank checkpoint intersection",
+    )
+    def test_decode_l3_query_rejects_divergent_trailing_maxima(self):
+        """Unknown sparse checkpoint sets must not turn unequal rank maxima into a false shared hit."""
+        storage_dir = self._make_storage_dir()
+        seq = self._make_seq(1, 4)
+        self._l3_produce(storage_dir, seq)
+        cons, _, _ = self._l3_consumer(storage_dir)
+        original_query = cons.cache_controller._storage_hit_query
+
+        def query_without_sparse_pages(operation):
+            result = original_query(operation)
+            operation.pool_storage_result.restorable_prefix_pages = None
+            return result
+
+        # This rank has a four-page local maximum. Its peer certifies only a
+        # three-page maximum, with no sparse checkpoint set on either rank.
+        peer_hits = torch.tensor([1, 0, 0, 1, 0], dtype=torch.int)
+
+        def intersect_with_peer(tensor, _op):
+            tensor.copy_(torch.minimum(tensor, peer_hits))
+
+        with (
+            mock.patch.object(
+                cons.cache_controller,
+                "_storage_hit_query",
+                side_effect=query_without_sparse_pages,
+            ),
+            mock.patch.object(
+                cons, "_all_reduce_attn_groups", side_effect=intersect_with_peer
+            ),
+        ):
+            self.assertEqual(
+                cons.query_storage_hit_length(cons.root_node_handle(), array("q", seq)),
+                0,
+            )
+
+    @requires_hicache
+    @requires(
         lambda cfg: cfg.components == (ComponentType.FULL,) and cfg.page_size == 4,
         "one FULL page_size=4 fixture covers namespace routing",
     )

@@ -79,6 +79,9 @@ def _decode_probe(page_size, kv_events, batch_exists, consumes_kv_hints=True):
         enable_storage=True, is_eagle=False, kv_events=kv_events
     )
     cache.page_size = cache.prefetch_threshold = page_size
+    cache.tree_components = ()
+    cache.host_memory_mode = "cache"
+    cache.sidecar_pool_specs = ()
     cache._all_reduce_attn_groups = Mock()
     cache.prefix_device_indices = lambda req: torch.arange(page_size)
     cache.hicache_storage_pass_prefix_keys = False
