@@ -524,6 +524,7 @@ class UnifiedRadixCache(BasePrefixCache):
         # last restorable SWA window (see _record_storage_swa_gap).
         self._storage_swa_gap_end_by_reqid: dict[CacheRequestHandle, int] = {}
         self.ongoing_prefetch: dict[CacheRequestHandle, _OngoingPrefetch] = {}
+        self.pending_storage_hit_allocs: deque[PrefetchOperation] = deque()
         self._storage_prefetch_wait: dict[CacheRequestHandle, _StoragePrefetchWait] = {}
         # Rank-agreed L3-hit tokens not yet resolved as usable or unfulfilled.
         # Cache-mode entries survive L3->L2 until H2D succeeds or admission
@@ -3924,8 +3925,7 @@ class UnifiedRadixCache(BasePrefixCache):
 
         def _try_alloc_storage_hit(operation) -> bool:
             """Allocate the hit-sized bounce and launch the transfer.
-            Returns False when staging pressure defers the allocation
-            (buffer mode parks and retries; cache mode revokes)."""
+            Returns False when staging pressure defers the allocation."""
             request = operation.handle
             info = self.ongoing_prefetch.get(request)
             hit_tokens = operation.storage_hit_count
@@ -3996,14 +3996,24 @@ class UnifiedRadixCache(BasePrefixCache):
             # shortened recovery boundary may be invalid in storage; only
             # full-only models may truncate the prefix to fit host capacity.
             allow_partial = not info.comp_xfers
-            host_indices, alloc_len = cc.allocate_storage_hit(
-                operation,
-                hit_tokens,
-                allow_partial=allow_partial,
-                min_tokens=self.prefetch_threshold if allow_partial else hit_tokens,
-                evict_host=self.evict_host,
+            oversized = self.prefetch_stop_policy != "best_effort" and not (
+                cc.can_fit_prefetch_host_buffers(operation, hit_tokens, empty=True)
             )
+            if oversized:
+                self._prefetch_outcome_stats["declined_host_oversize"] += 1
+                host_indices, alloc_len = None, hit_tokens
+            else:
+                host_indices, alloc_len = cc.allocate_storage_hit(
+                    operation,
+                    hit_tokens,
+                    allow_partial=allow_partial,
+                    min_tokens=self.prefetch_threshold if allow_partial else hit_tokens,
+                    evict_host=self.evict_host,
+                )
             if host_indices is None:
+                # Stop policies cover staging as well as the storage read.
+                if not oversized and self.prefetch_stop_policy != "best_effort":
+                    return False
                 self._finish_storage_prefetch(
                     request, fulfilled_tokens=0, reason="host_capacity"
                 )
@@ -4018,6 +4028,8 @@ class UnifiedRadixCache(BasePrefixCache):
             if not self._alloc_prefetch_aux_staging(info, aux_hit_tokens):
                 # Same outcome as a KV shortfall: nothing stays staged.
                 cc.append_host_mem_release(host_indices=host_indices)
+                if self.prefetch_stop_policy != "best_effort":
+                    return False
                 self._finish_storage_prefetch(
                     request, fulfilled_tokens=0, reason="host_capacity"
                 )
@@ -4030,6 +4042,20 @@ class UnifiedRadixCache(BasePrefixCache):
                 )
                 return True
 
+            if not buffer_mode and operation.cache_mode_anchor_unpinned is True:
+                try:
+                    anchor_lock_params = self.inc_host_lock_ref(
+                        info.anchor_node_id
+                    ).to_dec_params()
+                except (KeyError, RuntimeError):
+                    cc.append_host_mem_release(host_indices=host_indices)
+                    self._prefetch_outcome_stats["declined_anchor_lost"] += 1
+                    self._handle_storage_prefetch_anchor_loss(request)
+                    return True
+                operation.cache_mode_anchor_unpinned = False
+                info = info._replace(anchor_lock_params=anchor_lock_params)
+                self.ongoing_prefetch[request] = info
+
             self._resolve_storage_prefetch_tokens(
                 request, hit_tokens - alloc_len, reason="host_capacity"
             )
@@ -4041,13 +4067,40 @@ class UnifiedRadixCache(BasePrefixCache):
             return True
 
         def _drain_and_alloc_storage_hit():
-            # Parked hits first, in line order (buffer only).
             if buffer_mode:
                 parked = self.buffer_pipeline.pending_hit_allocs
-                while parked:
+            elif self.prefetch_stop_policy == "best_effort":
+                parked = ()
+            else:
+                parked = self.pending_storage_hit_allocs
+            retry_count = len(parked)
+
+            def _retry_parked(limit=None):
+                while parked and (limit is None or limit > 0):
                     if not _try_alloc_storage_hit(parked[0]):
                         break
                     parked.popleft()
+                    if limit is not None:
+                        limit -= 1
+
+            def _park(operation):
+                if buffer_mode:
+                    # Counted once at first parking, not per retry tick.
+                    self._prefetch_outcome_stats["declined_rate_limited"] += 1
+                else:
+                    info = self.ongoing_prefetch.get(operation.handle)
+                    if info is not None and info.anchor_lock_params is not None:
+                        self.dec_host_lock_ref(
+                            info.anchor_node_id, info.anchor_lock_params
+                        )
+                        operation.cache_mode_anchor_unpinned = True
+                        self.ongoing_prefetch[operation.handle] = info._replace(
+                            anchor_lock_params=None,
+                        )
+                parked.append(operation)
+
+            if buffer_mode or self.prefetch_stop_policy == "best_effort":
+                _retry_parked()
             for operation in _drain_queue(cc.prefetch_hit_queue, n_storage_hit):
                 self._invalidate_absent_from_hit_query(operation)
                 request = operation.handle
@@ -4090,13 +4143,12 @@ class UnifiedRadixCache(BasePrefixCache):
                 self._account_prefetch_outcome(operation, revoked=False)
                 # A parked hit keeps its turn: a newer hit must not take the
                 # staging or anchor budget the parked head is waiting for.
-                parked_ahead = buffer_mode and bool(
-                    self.buffer_pipeline.pending_hit_allocs
-                )
-                if parked_ahead or not _try_alloc_storage_hit(operation):
-                    # Counted once at first parking, not per retry tick.
-                    self._prefetch_outcome_stats["declined_rate_limited"] += 1
-                    self.buffer_pipeline.pending_hit_allocs.append(operation)
+                if parked:
+                    _park(operation)
+                elif not _try_alloc_storage_hit(operation):
+                    _park(operation)
+            if not buffer_mode and self.prefetch_stop_policy != "best_effort":
+                _retry_parked(retry_count)
 
         def _drain_ack_prefetch():
             for ack in _drain_queue(cc.ack_prefetch_queue, n_ack_prefetch):
@@ -4204,11 +4256,24 @@ class UnifiedRadixCache(BasePrefixCache):
                 drained[pool_name] = (len(host_indices_list), released_tokens)
             return drained
 
-        _drain_and_alloc_storage_hit()
-        _drain_ack_prefetch()
-        _drain_backup()
-        _drain_release()
-        _drain_extra_release()
+        if buffer_mode:
+            _drain_and_alloc_storage_hit()
+            _drain_ack_prefetch()
+            _drain_backup()
+            _drain_release()
+            _drain_extra_release()
+        else:
+            _drain_release()
+            _drain_extra_release()
+            _drain_and_alloc_storage_hit()
+            _drain_ack_prefetch()
+            _drain_backup()
+            if n_release is None:
+                _drain_release()
+            if extra_release_counts is not None and all(
+                count is None for count in extra_release_counts.values()
+            ):
+                _drain_extra_release()
 
     def _all_reduce_storage_drain(self, data: torch.Tensor) -> None:
         """MIN-reduce a per-drain tensor over the ranks whose storage drain

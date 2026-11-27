@@ -246,6 +246,7 @@ class PrefetchOperation(StorageOperation):
         self.sidecar_hit_pages = 0
         # Cut by the stop policy, not a storage shortfall: the span is still stored.
         self.deadline_expired = False
+        self.cache_mode_anchor_unpinned = False
 
     def mark_terminate(self):
         with self._lock:
@@ -952,11 +953,18 @@ class HybridCacheController(BaseHiCacheController):
     def can_fit_prefetch_host_buffers(
         self, operation: StorageOperation, need_size: int, *, empty: bool = True
     ) -> bool:
-        anchor = self.mem_pool_host.anchor_entry
-        if not uses_shared_host_layout(anchor.host_pool):
-            return super().can_fit_prefetch_host_buffers(operation, need_size)
-        domain = anchor.host_pool.shared_allocation_domain
+        anchor = self.mem_pool_host.anchor_entry.host_pool
         requests, _ = self._shared_prefetch_requests(operation, need_size)
+        if not uses_shared_host_layout(anchor):
+            anchor_need = need_size
+            for name, tokens in requests[1:]:
+                entry = self.mem_pool_host.entry_map[name]
+                if entry.host_pool is anchor:
+                    anchor_need += tokens
+                elif tokens > entry.host_pool.size:
+                    return False
+            return anchor_need <= self.mem_pool_host.logical_size
+        domain = anchor.shared_allocation_domain
         domain_requests = [
             (self.mem_pool_host.entry_map[name].host_pool.pool_label, size)
             for name, size in requests

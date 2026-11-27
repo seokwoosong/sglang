@@ -4,6 +4,7 @@ import os
 import time
 import unittest
 from array import array
+from collections import deque
 from contextlib import ExitStack
 from queue import Queue
 from types import SimpleNamespace
@@ -3065,6 +3066,7 @@ class TestPrefetchCommitOrdering(CustomTestCase):
             with self.subTest(component=component):
                 cache = mock.MagicMock()
                 cache.host_memory_mode = "cache"
+                cache.prefetch_stop_policy = "best_effort"
                 cache.page_size = 4
                 cache.prefetch_threshold = 4
                 cc = cache.cache_controller
@@ -3127,6 +3129,433 @@ class TestPrefetchCommitOrdering(CustomTestCase):
                 cache.storage_prefetch_retries.poll_miss.assert_called_once_with(
                     operation.handle.rid, 12
                 )
+
+    def test_timed_prefetch_retries_transient_host_capacity(self):
+        """A backup-pinned host pool must not turn a timed L3 hit into prefill."""
+        cache = mock.MagicMock()
+        cache.host_memory_mode = "cache"
+        cache.buffer_pipeline = None
+        cache.pending_storage_hit_allocs = deque()
+        cache.prefetch_stop_policy = "timeout"
+        cache.page_size = cache.prefetch_threshold = 4
+        cache.linker = None
+        cache._is_pp_ticketed.return_value = False
+        cache._can_terminate_prefetch.return_value = False
+        cc = cache.cache_controller
+        cc.page_size = cache.page_size
+        cc.prefetch_hit_queue = Queue()
+        cc.ack_prefetch_queue = Queue()
+        cc.ack_backup_queue = Queue()
+        cc.host_mem_release_queue = Queue()
+        cc.prefetch_buffer = Queue()
+
+        operation = mock.Mock()
+        operation.handle = CacheRequestHandle("backup-pinned-capacity", 0)
+        operation.storage_start = 0
+        operation.storage_hit_count = 8
+        operation.hash_value = ["h1", "h2"]
+        operation.host_indices = None
+        operation.deadline_expired = False
+        operation.is_terminated.return_value = False
+        cache.ongoing_prefetch = {
+            operation.handle: _OngoingPrefetch(
+                anchor_node_id=0,
+                prefetch_key=RadixKey(array("q", range(8))),
+                host_indices=None,
+                operation=operation,
+                anchor_lock_params=None,
+                comp_xfers={ComponentType.MAMBA: [PoolTransfer(name=PoolName.MAMBA)]},
+            )
+        }
+        cache.revoke_pending_prefetch.side_effect = lambda request: (
+            cache.ongoing_prefetch.pop(request, None)
+        )
+        cache._alloc_prefetch_aux_staging.return_value = True
+        cc.allocate_storage_hit.side_effect = [
+            (None, 8),
+            (torch.arange(8, dtype=torch.int64), 8),
+        ]
+        cc.prefetch_hit_queue.put(operation)
+
+        UnifiedRadixCache._drain_storage_control_queues_impl(
+            cache,
+            n_storage_hit=1,
+            n_ack_prefetch=0,
+            n_backup=0,
+            n_release=0,
+            extra_release_counts=None,
+            log_metrics=False,
+        )
+
+        cache.revoke_pending_prefetch.assert_not_called()
+        self.assertFalse(
+            UnifiedRadixCache.check_prefetch_progress(cache, operation.handle)
+        )
+
+        UnifiedRadixCache._drain_storage_control_queues_impl(
+            cache,
+            n_storage_hit=0,
+            n_ack_prefetch=0,
+            n_backup=0,
+            n_release=0,
+            extra_release_counts=None,
+            log_metrics=False,
+        )
+
+        self.assertIsNotNone(operation.host_indices)
+        self.assertEqual(cc.prefetch_buffer.qsize(), 1)
+
+    def test_wait_complete_rejects_oversized_aux_staging(self):
+        """An auxiliary hit larger than its empty pool must not block FIFO forever."""
+        from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
+            HybridCacheController,
+        )
+
+        cache = mock.MagicMock()
+        cache.host_memory_mode = "cache"
+        cache.buffer_pipeline = None
+        cache.pending_storage_hit_allocs = deque()
+        cache.prefetch_stop_policy = "wait_complete"
+        cache.page_size = cache.prefetch_threshold = 4
+        cc = cache.cache_controller
+        cc.page_size = cache.page_size
+        cc.prefetch_hit_queue = Queue()
+        cc.ack_prefetch_queue = Queue()
+        cc.ack_backup_queue = Queue()
+        cc.host_mem_release_queue = Queue()
+        cc.prefetch_buffer = Queue()
+        anchor_pool = SimpleNamespace(size=16, page_size=4)
+        cc.mem_pool_host.anchor_entry.host_pool = anchor_pool
+        cc.mem_pool_host.logical_size = 16
+        cc.mem_pool_host.entry_map = {
+            PoolName.MAMBA: SimpleNamespace(
+                host_pool=SimpleNamespace(size=4, page_size=4)
+            )
+        }
+        cc._shared_prefetch_requests = (
+            HybridCacheController._shared_prefetch_requests.__get__(cc)
+        )
+        cc.can_fit_prefetch_host_buffers = (
+            HybridCacheController.can_fit_prefetch_host_buffers.__get__(cc)
+        )
+        cc.allocate_storage_hit.return_value = (None, 8)
+
+        operation = mock.Mock()
+        operation.handle = CacheRequestHandle("oversized-aux", 0)
+        operation.storage_start = 0
+        operation.storage_hit_count = 8
+        operation.hash_value = ["h1", "h2"]
+        operation.host_indices = None
+        operation.deadline_expired = False
+        operation.sidecar_hash_values = None
+        operation.pool_transfers = [
+            PoolTransfer(name=PoolName.MAMBA, keys=["h1", "h2"])
+        ]
+        operation.is_terminated.return_value = False
+        cache.ongoing_prefetch = {
+            operation.handle: _OngoingPrefetch(
+                anchor_node_id=0,
+                prefetch_key=RadixKey(array("q", range(8))),
+                host_indices=None,
+                operation=operation,
+                anchor_lock_params=None,
+                comp_xfers={ComponentType.MAMBA: [PoolTransfer(name=PoolName.MAMBA)]},
+            )
+        }
+        cc.prefetch_hit_queue.put(operation)
+
+        UnifiedRadixCache._drain_storage_control_queues_impl(
+            cache,
+            n_storage_hit=1,
+            n_ack_prefetch=0,
+            n_backup=0,
+            n_release=0,
+            extra_release_counts=None,
+            log_metrics=False,
+        )
+
+        cache.revoke_pending_prefetch.assert_called_once_with(operation.handle)
+        self.assertEqual(cache.pending_storage_hit_allocs, deque())
+        cc.allocate_storage_hit.assert_not_called()
+        cache._finish_storage_prefetch.assert_called_once_with(
+            operation.handle, fulfilled_tokens=0, reason="host_capacity"
+        )
+
+    def test_auxiliary_rollback_is_released_before_retry(self):
+        """A retry must see the failed attempt's KV and auxiliary slots as free."""
+        cache = mock.MagicMock()
+        cache.host_memory_mode = "cache"
+        cache.buffer_pipeline = None
+        cache.pending_storage_hit_allocs = deque()
+        cache.prefetch_stop_policy = "wait_complete"
+        cache.page_size = cache.prefetch_threshold = 4
+        cc = cache.cache_controller
+        cc.page_size = cache.page_size
+        cc.prefetch_hit_queue = Queue()
+        cc.ack_prefetch_queue = Queue()
+        cc.ack_backup_queue = Queue()
+        cc.host_mem_release_queue = Queue()
+        cc.extra_host_mem_release_queues = {PoolName.MAMBA: Queue()}
+        cc.prefetch_buffer = Queue()
+
+        def append_release(host_indices=None, extra_pools=None):
+            if host_indices is not None:
+                cc.host_mem_release_queue.put(host_indices)
+            for transfer in extra_pools or []:
+                if transfer.host_indices is not None:
+                    cc.extra_host_mem_release_queues[transfer.name].put(
+                        transfer.host_indices
+                    )
+
+        cc.append_host_mem_release.side_effect = append_release
+
+        operation = mock.Mock()
+        operation.handle = CacheRequestHandle("aux-rollback-retry", 0)
+        operation.storage_start = 0
+        operation.storage_hit_count = 8
+        operation.hash_value = ["h1", "h2"]
+        operation.host_indices = None
+        operation.deadline_expired = False
+        operation.is_terminated.return_value = False
+        cache.ongoing_prefetch = {
+            operation.handle: _OngoingPrefetch(
+                anchor_node_id=0,
+                prefetch_key=RadixKey(array("q", range(8))),
+                host_indices=None,
+                operation=operation,
+                anchor_lock_params=None,
+                comp_xfers={ComponentType.MAMBA: [PoolTransfer(name=PoolName.MAMBA)]},
+            )
+        }
+        aux_attempts = []
+
+        def allocate_aux(info, hit_tokens):
+            if aux_attempts:
+                return True
+            aux_attempts.append(hit_tokens)
+            transfer = info.comp_xfers[ComponentType.MAMBA][0]
+            transfer.host_indices = torch.arange(8, dtype=torch.int64)
+            cc.append_host_mem_release(extra_pools=[transfer])
+            transfer.host_indices = None
+            return False
+
+        cache._alloc_prefetch_aux_staging.side_effect = allocate_aux
+        cc.allocate_storage_hit.side_effect = [
+            (torch.arange(8, dtype=torch.int64), 8),
+            (torch.arange(8, dtype=torch.int64), 8),
+        ]
+        cc.prefetch_hit_queue.put(operation)
+
+        UnifiedRadixCache._drain_storage_control_queues_impl(
+            cache,
+            n_storage_hit=1,
+            n_ack_prefetch=0,
+            n_backup=0,
+            n_release=0,
+            extra_release_counts=None,
+            log_metrics=False,
+        )
+        self.assertEqual(cc.host_mem_release_queue.qsize(), 1)
+        self.assertEqual(cc.extra_host_mem_release_queues[PoolName.MAMBA].qsize(), 1)
+
+        events = []
+        cc.mem_pool_host.free.side_effect = lambda *args, **kwargs: events.append(
+            ("free", kwargs.get("pool"))
+        )
+
+        def allocate(*args, **kwargs):
+            events.append(("allocate", None))
+            return torch.arange(8, dtype=torch.int64), 8
+
+        cc.allocate_storage_hit.side_effect = allocate
+        UnifiedRadixCache._drain_storage_control_queues_impl(
+            cache,
+            n_storage_hit=0,
+            n_ack_prefetch=0,
+            n_backup=0,
+            n_release=1,
+            extra_release_counts={PoolName.MAMBA: 1},
+            log_metrics=False,
+        )
+
+        self.assertEqual(
+            events,
+            [("free", None), ("free", PoolName.MAMBA), ("allocate", None)],
+        )
+        self.assertEqual(cc.prefetch_buffer.qsize(), 1)
+
+    def test_wait_complete_parked_hits_unpin_and_relock_anchors(self):
+        """Queued anchors must not pin capacity needed by the FIFO head."""
+        cache = mock.MagicMock()
+        cache.host_memory_mode = "cache"
+        cache.buffer_pipeline = None
+        cache.pending_storage_hit_allocs = deque()
+        cache.prefetch_stop_policy = "wait_complete"
+        cache.page_size = cache.prefetch_threshold = 4
+        cc = cache.cache_controller
+        cc.page_size = cache.page_size
+        cc.prefetch_hit_queue = Queue()
+        cc.ack_prefetch_queue = Queue()
+        cc.ack_backup_queue = Queue()
+        cc.host_mem_release_queue = Queue()
+        cc.prefetch_buffer = Queue()
+        unlocks = []
+
+        def unlock(node_id, params):
+            unlocks.append(node_id)
+
+        cache.dec_host_lock_ref.side_effect = unlock
+
+        def relock(node_id):
+            return SimpleNamespace(to_dec_params=lambda: f"relocked-{node_id}")
+
+        cache.inc_host_lock_ref.side_effect = relock
+        cache.ongoing_prefetch = {}
+
+        def make_operation(node_id):
+            operation = mock.Mock()
+            operation.handle = CacheRequestHandle(f"parked-anchor-{node_id}", 0)
+            operation.storage_start = 0
+            operation.storage_hit_count = 8
+            operation.hash_value = ["h1", "h2"]
+            operation.host_indices = None
+            operation.deadline_expired = False
+            operation.is_terminated.return_value = False
+            cache.ongoing_prefetch[operation.handle] = _OngoingPrefetch(
+                anchor_node_id=node_id,
+                prefetch_key=RadixKey(array("q", range(8))),
+                host_indices=None,
+                operation=operation,
+                anchor_lock_params=f"locked-{node_id}",
+                comp_xfers={},
+            )
+            return operation
+
+        first = make_operation(1)
+        cc.allocate_storage_hit.return_value = (None, 8)
+        cc.prefetch_hit_queue.put(first)
+        UnifiedRadixCache._drain_storage_control_queues_impl(
+            cache,
+            n_storage_hit=1,
+            n_ack_prefetch=0,
+            n_backup=0,
+            n_release=0,
+            extra_release_counts=None,
+            log_metrics=False,
+        )
+        self.assertEqual(unlocks, [1])
+
+        second = make_operation(2)
+        cc.prefetch_hit_queue.put(second)
+        cc.allocate_storage_hit.side_effect = [
+            (torch.arange(8, dtype=torch.int64), 8),
+            (torch.arange(8, dtype=torch.int64), 8),
+        ]
+        UnifiedRadixCache._drain_storage_control_queues_impl(
+            cache,
+            n_storage_hit=1,
+            n_ack_prefetch=0,
+            n_backup=0,
+            n_release=0,
+            extra_release_counts=None,
+            log_metrics=False,
+        )
+        self.assertEqual(unlocks, [1, 2])
+        self.assertEqual(cc.prefetch_buffer.qsize(), 1)
+
+        UnifiedRadixCache._drain_storage_control_queues_impl(
+            cache,
+            n_storage_hit=0,
+            n_ack_prefetch=0,
+            n_backup=0,
+            n_release=0,
+            extra_release_counts=None,
+            log_metrics=False,
+        )
+        self.assertEqual(cc.prefetch_buffer.qsize(), 2)
+        self.assertEqual(
+            cache.inc_host_lock_ref.call_args_list, [mock.call(1), mock.call(2)]
+        )
+        self.assertEqual(
+            cache.ongoing_prefetch[first.handle].anchor_lock_params,
+            "relocked-1",
+        )
+        self.assertEqual(
+            cache.ongoing_prefetch[second.handle].anchor_lock_params,
+            "relocked-2",
+        )
+
+    def test_parked_hit_revalidates_anchor_before_launch(self):
+        """An anchor evicted while unpinned must trigger a fresh storage query."""
+        cache = mock.MagicMock()
+        cache.host_memory_mode = "cache"
+        cache.buffer_pipeline = None
+        cache.pending_storage_hit_allocs = deque()
+        cache.prefetch_stop_policy = "wait_complete"
+        cache.page_size = cache.prefetch_threshold = 4
+        cc = cache.cache_controller
+        cc.page_size = cache.page_size
+        cc.prefetch_hit_queue = Queue()
+        cc.ack_prefetch_queue = Queue()
+        cc.ack_backup_queue = Queue()
+        cc.host_mem_release_queue = Queue()
+        cc.prefetch_buffer = Queue()
+        cc.append_host_mem_release.side_effect = (
+            lambda host_indices=None, extra_pools=None: cc.host_mem_release_queue.put(
+                host_indices
+            )
+        )
+
+        operation = mock.Mock()
+        operation.handle = CacheRequestHandle("parked-anchor-lost", 0)
+        operation.storage_start = 0
+        operation.storage_hit_count = 8
+        operation.hash_value = ["h1", "h2"]
+        operation.host_indices = None
+        operation.deadline_expired = False
+        operation.is_terminated.return_value = False
+        cache.ongoing_prefetch = {
+            operation.handle: _OngoingPrefetch(
+                anchor_node_id=9,
+                prefetch_key=RadixKey(array("q", range(8))),
+                host_indices=None,
+                operation=operation,
+                anchor_lock_params="locked-9",
+                comp_xfers={},
+            )
+        }
+        cc.allocate_storage_hit.return_value = (None, 8)
+        cc.prefetch_hit_queue.put(operation)
+        UnifiedRadixCache._drain_storage_control_queues_impl(
+            cache,
+            n_storage_hit=1,
+            n_ack_prefetch=0,
+            n_backup=0,
+            n_release=0,
+            extra_release_counts=None,
+            log_metrics=False,
+        )
+
+        cache.inc_host_lock_ref.side_effect = KeyError("missing anchor")
+        cc.allocate_storage_hit.return_value = (
+            torch.arange(8, dtype=torch.int64),
+            8,
+        )
+        UnifiedRadixCache._drain_storage_control_queues_impl(
+            cache,
+            n_storage_hit=0,
+            n_ack_prefetch=0,
+            n_backup=0,
+            n_release=0,
+            extra_release_counts=None,
+            log_metrics=False,
+        )
+
+        cache._handle_storage_prefetch_anchor_loss.assert_called_once_with(
+            operation.handle
+        )
+        self.assertEqual(cc.host_mem_release_queue.qsize(), 1)
+        self.assertTrue(cc.prefetch_buffer.empty())
 
     def test_prefetch_commit_applies_host_insert_actions_before_transfers(self):
         """The prefetch commit applies the host-insert walk's actions before
