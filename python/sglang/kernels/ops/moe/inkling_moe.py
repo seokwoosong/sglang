@@ -961,7 +961,8 @@ def grouped_gemm_triton(
     # Sparse decode uses smaller row blocks; prefill uses the standard size.
     # This must match the size used to build expert_block_schedule.
     arch = current_arch()
-    # Two-stage HIP pipelines fit MI300X's 64 KiB LDS (36/48 KiB for bf16);
+    is_gfx942 = arch.hip is not None and arch.hip.gcn_arch == "gfx942"
+    # Two-stage pipelines fit gfx942's 64 KiB LDS (36/48 KiB for bf16);
     # the default NVIDIA pipelines need 108/96 KiB.
     if block_size_m == SMALL_M_BLOCK_SIZE_M:
         config = {
@@ -973,9 +974,7 @@ def grouped_gemm_triton(
             # sm_121 (GB10 / DGX Spark) caps shared memory at 99 KB per block and
             # num_stages=4 needs 108 KB. The BLOCK_SIZE_M=128 branch below fits at
             # its default 3 (96 KB) and needs no gate.
-            "num_stages": (
-                3 if arch.is_sm(12, 1) else 2 if arch.hip is not None else 4
-            ),
+            "num_stages": (3 if arch.is_sm(12, 1) else 2 if is_gfx942 else 4),
         }
     else:
         assert block_size_m == BLOCK_SIZE_M, f"{block_size_m=}"
@@ -985,7 +984,7 @@ def grouped_gemm_triton(
             "BLOCK_SIZE_K": 64,
             "GROUP_SIZE_M": 8,
             "num_warps": 8,
-            "num_stages": 2 if arch.hip is not None else 3,
+            "num_stages": 2 if is_gfx942 else 3,
         }
 
     # Set grid_m to the max number of M blocks and skip padding-only blocks
