@@ -405,6 +405,7 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
         )
         self._qwen_bcg_hc_sidechannel = qwen_bcg and not model_runner.is_draft_worker
         self._qwen_bcg_mtp_draft = qwen_bcg and model_runner.is_draft_worker
+        self._qwen_bcg_hc_static: Optional[torch.Tensor] = None
         self.prefer_eager_mixed_prefill = (
             self.prefill_backend_name == Backend.BREAKABLE
             and get_parallel().attn_dp_enabled
@@ -2437,14 +2438,32 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
         ].copy_(ie)
 
     def _pack_qwen_bcg_hc_output(self, output):
-        if self._qwen_bcg_hc_sidechannel:
-            # Replay cannot repeat the model's Python assignment of HC state.
-            return output, self.layer_model.last_hc_hidden_states
+        if not self._qwen_bcg_hc_sidechannel:
+            return output
+        # Replay cannot repeat the model's Python assignment of HC state.
+        hc = self.layer_model.last_hc_hidden_states
+        if hc is None:
+            return output
+        # Under SP, hidden states are local shards while HC states have full
+        # rows. Keep HC out of the backend's common-row-count output buffer.
+        if self._qwen_bcg_hc_static is None:
+            # Capture starts with the largest shape after an eager warmup.
+            assert not torch.cuda.is_current_stream_capturing()
+            self._qwen_bcg_hc_static = hc.new_empty(
+                (self.max_num_tokens, *hc.shape[1:])
+            )
+        self._qwen_bcg_hc_static[: hc.shape[0]].copy_(hc)
         return output
 
-    def _restore_qwen_bcg_hc_output(self, output):
-        if self._qwen_bcg_hc_sidechannel:
-            output, self.layer_model.last_hc_hidden_states = output
+    def _restore_qwen_bcg_hc_output(self, output, static_num_tokens: int):
+        if not self._qwen_bcg_hc_sidechannel:
+            return output
+        if self._qwen_bcg_hc_static is None:
+            self.layer_model.last_hc_hidden_states = None
+            return output
+        self.layer_model.last_hc_hidden_states = self._qwen_bcg_hc_static[
+            :static_num_tokens
+        ]
         return output
 
     def _execute_body_capture(
@@ -2483,7 +2502,9 @@ class PrefillCudaGraphRunner(BaseCudaGraphRunner):
             ):
                 self._fill_input_embeds_slot(args, layer_kwargs, static_num_tokens)
             hs = self.backend.replay(shape_key, static_forward_batch, **kwargs)
-            hs = self._restore_qwen_bcg_hc_output(hs)
+            hs = self._restore_qwen_bcg_hc_output(
+                hs, static_num_tokens=static_num_tokens
+            )
             return _slice_output_rows(hs, raw_num_tokens) if full_path else hs
 
         original_layer_forward = self.layer_model.forward

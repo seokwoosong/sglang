@@ -198,15 +198,30 @@ class TestPrefillCudaGraphRunnerHelpers(CustomTestCase):
             self.assertEqual(buckets, [8, 16, 32])
             self.assertEqual(PrefillCudaGraphRunner._pad_to_bucket(28, buckets), 32)
 
-    def test_qwen_hc_restore_round_trip(self):
+    def test_qwen_hc_restore_preserves_full_rows_under_sp(self):
+        """SP-local model output must not truncate the full-row HC stream
+        returned to the draft during graph replay."""
         runner = PrefillCudaGraphRunner.__new__(PrefillCudaGraphRunner)
         runner._qwen_bcg_hc_sidechannel = True
-        hidden = torch.ones((8, 4))
-        runner.layer_model = SimpleNamespace(last_hc_hidden_states=hidden)
-        captured = runner._pack_qwen_bcg_hc_output(hidden)
+        runner.max_num_tokens = 8
+        runner._qwen_bcg_hc_static = None
+        hidden = torch.ones((2, 4))
+        hc = torch.arange(96, dtype=torch.float32).reshape(8, 12)
+        expected_hc = hc.clone()
+        runner.layer_model = SimpleNamespace(last_hc_hidden_states=hc)
+
+        with patch("torch.cuda.is_current_stream_capturing", return_value=False):
+            captured = runner._pack_qwen_bcg_hc_output(hidden)
+        self.assertIs(captured, hidden)
+
+        hc.fill_(-1)
         runner.layer_model.last_hc_hidden_states = None
-        self.assertIs(runner._restore_qwen_bcg_hc_output(captured), hidden)
-        self.assertIs(runner.layer_model.last_hc_hidden_states, hidden)
+        restored = runner._restore_qwen_bcg_hc_output(captured, static_num_tokens=8)
+        self.assertIs(restored, hidden)
+        self.assertEqual(runner.layer_model.last_hc_hidden_states.shape, (8, 12))
+        torch.testing.assert_close(
+            runner.layer_model.last_hc_hidden_states, expected_hc
+        )
 
     def test_ple_prefetch_buffer_does_not_grow_under_breakable_replay(self):
         from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph.context import (
