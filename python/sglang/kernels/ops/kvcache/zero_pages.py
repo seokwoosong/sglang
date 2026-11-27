@@ -13,6 +13,7 @@ from typing import Optional
 import torch
 import triton
 import triton.language as tl
+from triton.runtime.jit import MockTensor
 
 
 @triton.jit
@@ -137,3 +138,34 @@ def bind_zero_pages(
         BLOCK=_BLOCK,
     )
     return out
+
+
+class _LargeArenaMockTensor(MockTensor):
+    # AMD uses 32-bit buffer operations only for storage that fits in 2 GiB.
+    @staticmethod
+    def ptr_range():
+        return 1 << 31
+
+
+def _prewarm_large_arena_bind_zero(virtual_pages, v2p, p2v, *, page_bytes):
+    m = int(virtual_pages.numel())
+    page_words = page_bytes // 8
+    for pages in (None, virtual_pages):
+        out = (
+            torch.empty(m, dtype=torch.int64, device=virtual_pages.device)
+            if pages is None
+            else pages
+        )
+        _bind_zero_pages_kernel.warmup(
+            _LargeArenaMockTensor(torch.int64),
+            virtual_pages,
+            out,
+            out,
+            v2p,
+            p2v,
+            0,
+            page_words,
+            HAS_PAGES=pages is not None,
+            BLOCK=_BLOCK,
+            grid=(m, triton.cdiv(page_words, _BLOCK)),
+        )

@@ -28,7 +28,7 @@ import triton.language as tl
 # `.item()`, no tensor branching); runs on the scheduler thread.
 
 
-@triton.jit(do_not_specialize=["v_pages_ptr"])
+@triton.jit(do_not_specialize=["v_pages_ptr", "N", "start_phys"])
 def alloc_bind_inplace_kernel(
     v_pages_ptr,  # in: [N] int64 — virtual page ids
     v2p_ptr,  # in/out: int64 — virtual_to_physical table
@@ -98,7 +98,7 @@ def alloc_bind_inplace(
     return phys_pages
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["N"])
 def free_unbind_inplace_kernel(
     v_pages_ptr,  # in: [N] int64 — virtual page ids being freed
     v2p_ptr,  # in/out: int64 — virtual_to_physical table
@@ -127,7 +127,7 @@ def free_unbind_inplace_kernel(
     tl.store(p2v_ptr + p, -1, mask=mask & (p >= 0))
 
 
-@triton.jit(do_not_specialize=["v_pages_ptr", "p_pages_ptr"])
+@triton.jit(do_not_specialize=["v_pages_ptr", "p_pages_ptr", "N"])
 def bind_inplace_kernel(
     v_pages_ptr,  # in: [N] int64 — virtual page ids
     p_pages_ptr,  # in: [N] int64 — physical page ids to bind them to
@@ -201,7 +201,18 @@ def bind_inplace(
 TRANSLATE_TOKEN_IDS_BLOCK = 512
 
 
-@triton.jit
+@triton.jit(
+    do_not_specialize=[
+        "N",
+        "W",
+        "num_v_pages",
+        "cols",
+        "loc_row_stride",
+        "loc_col_stride",
+        "out_row_stride",
+        "out_col_stride",
+    ]
+)
 def translate_token_ids_kernel(
     loc_ptr,  # in:  [N] or strided (rows, cols), int32/int64 — virtual token ids, widened under DCP
     v2p_ptr,  # in:  [num_pages + 1] int64 — virtual->physical page table
