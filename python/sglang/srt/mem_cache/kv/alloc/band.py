@@ -149,6 +149,19 @@ def _page_runs(pages: Sequence[int]) -> List[Tuple[int, int]]:
     return runs
 
 
+# Measured on ROCm 7.15/MI300X: these cover small and large int64 sort setup.
+_ROCM_SORT_PREWARM_SIZES = (1024, 8192)
+
+
+def _prewarm_free_list_sort(device):
+    if torch.version.hip is None:
+        return
+    for size in _ROCM_SORT_PREWARM_SIZES:
+        probe = torch.arange(size - 1, -1, -1, dtype=torch.int64, device=device)
+        torch.sort(probe)
+    torch.cuda.synchronize()
+
+
 def _holds_stream_copy(key) -> bool:
     """Whether a release key holds a host copy's events."""
     return any(isinstance(k, StreamTransfer) for k in keys_of(key))
@@ -1993,6 +2006,7 @@ class Band:
         """
         if torch.device(self.device).type != "cuda":
             return
+        _prewarm_free_list_sort(self.device)
         assert self.min_page_index >= 1, (
             f"Band({self.sub_pool_name!r}).prewarm_compaction needs "
             "the reserved sink page 0"
