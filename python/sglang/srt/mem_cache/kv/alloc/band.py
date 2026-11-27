@@ -50,10 +50,16 @@ import numpy as np
 import torch
 from torch.profiler import record_function
 
+from sglang.kernels.ops.kvcache.zero_pages import (
+    _prewarm_large_arena_bind_zero,
+    bind_zero_pages,
+)
 from sglang.kernels.ops.memory.page_pack import pack_pairs, remap_packed_pages
 from sglang.kernels.ops.memory.virtual_slot import (
     alloc_bind_inplace,
+    bind_inplace,
     free_unbind_inplace,
+    translate_token_ids,
 )
 from sglang.srt.environ import InvariantCheckLevel, envs
 from sglang.srt.mem_cache.kv.alloc.forward_steps import (
@@ -159,6 +165,27 @@ def _prewarm_free_list_sort(device):
     for size in _ROCM_SORT_PREWARM_SIZES:
         probe = torch.arange(size - 1, -1, -1, dtype=torch.int64, device=device)
         torch.sort(probe)
+    torch.cuda.synchronize()
+
+
+def _prewarm_bind_kernels(device, *, page_bytes):
+    if torch.version.hip is None:
+        return
+    virtual = torch.arange(2, dtype=torch.int64, device=device)
+    v2p = torch.arange(2, dtype=torch.int64, device=device)
+    p2v = torch.arange(3, dtype=torch.int64, device=device)
+    free_unbind_inplace(virtual, v2p, p2v)
+    alloc_bind_inplace(virtual, v2p, p2v, 1)
+    bind_inplace(virtual, virtual, v2p, p2v)
+    raw = torch.zeros(2 * page_bytes, dtype=torch.uint8, device=device)
+    bind_zero_pages(
+        raw, virtual, v2p, p2v, num_pages=2, page_bytes=page_bytes, start_page=0
+    )
+    bind_zero_pages(
+        raw, virtual, v2p, p2v, num_pages=2, page_bytes=page_bytes, pages=virtual
+    )
+    _prewarm_large_arena_bind_zero(virtual, v2p, p2v, page_bytes=page_bytes)
+    translate_token_ids(loc=virtual, v2p=v2p, page_size=1)
     torch.cuda.synchronize()
 
 
@@ -2007,6 +2034,7 @@ class Band:
         if torch.device(self.device).type != "cuda":
             return
         _prewarm_free_list_sort(self.device)
+        _prewarm_bind_kernels(self.device, page_bytes=self.entry_bytes_per_page)
         assert self.min_page_index >= 1, (
             f"Band({self.sub_pool_name!r}).prewarm_compaction needs "
             "the reserved sink page 0"
